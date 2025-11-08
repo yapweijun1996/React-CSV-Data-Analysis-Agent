@@ -144,7 +144,11 @@ export const AnalysisCard: React.FC<AnalysisCardProps> = ({ cardId }) => {
     const selectedData = selectedIndices.map(index => dataForDisplay[index]);
 
     return (
-        <div ref={cardRef} id={id} className="bg-white rounded-lg shadow-lg p-4 flex flex-col transition-all duration-300 hover:shadow-blue-500/20 border border-slate-200">
+        <div
+            ref={cardRef}
+            id={id}
+            className="bg-white rounded-lg shadow-lg p-4 flex flex-col transition-all duration-300 hover:shadow-blue-500/20 border border-slate-200"
+        >
             <div className="flex justify-between items-start gap-4 mb-2">
                 <h3 className="text-lg font-bold text-slate-900 flex-1">{plan.title}</h3>
                 <div className="flex items-center bg-slate-100 rounded-md p-0.5 space-x-0.5 flex-shrink-0">

@@ -15,7 +15,7 @@ const DeleteIcon: React.FC = () => (
     </svg>
 );
 
-type SearchResult = { text: string; score: number };
+type SearchResult = { id: string; text: string; score: number };
 
 // Soft capacity limit for the visual progress bar (in KB)
 const MEMORY_CAPACITY_KB = 5 * 1024; // 5 MB
@@ -192,8 +192,8 @@ export const MemoryPanel: React.FC = () => {
                             {searchResults.length > 0 && (
                                 <div className="space-y-2">
                                     <h4 className="text-sm font-medium text-slate-600">Top Results:</h4>
-                                    {searchResults.map((result, index) => (
-                                        <div key={index} onClick={() => handleSearchResultClick(result.text)} className="bg-white p-2.5 border border-slate-200 rounded-lg text-xs cursor-pointer hover:border-blue-500 hover:ring-1 hover:ring-blue-500">
+                                    {searchResults.map((result) => (
+                                        <div key={result.id} onClick={() => handleSearchResultClick(result.text)} className="bg-white p-2.5 border border-slate-200 rounded-lg text-xs cursor-pointer hover:border-blue-500 hover:ring-1 hover:ring-blue-500">
                                             <div className="flex justify-between items-center mb-1">
                                                  <p className="text-slate-700 font-semibold">Match</p>
                                                  <p className="text-blue-600 font-bold">{(result.score * 100).toFixed(1)}%</p>

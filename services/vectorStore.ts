@@ -153,7 +153,11 @@ class VectorStore {
         });
     }
 
-    public async search(queryText: string, k: number = 5, options?: { signal?: AbortSignal }): Promise<{ text: string; score: number }[]> {
+    public async search(
+        queryText: string,
+        k: number = 5,
+        options?: { signal?: AbortSignal }
+    ): Promise<{ id: string; text: string; score: number }[]> {
         if (!this.embedder || this.documents.length === 0) {
             return [];
         }
@@ -167,8 +171,8 @@ class VectorStore {
             const queryVector = Array.from(queryEmbedding.data) as number[];
             
             const results = this.documents.map(doc => {
-                 const score = this.cosineSimilarity(queryVector, doc.embedding);
-                 return { text: doc.text, score };
+                const score = this.cosineSimilarity(queryVector, doc.embedding);
+                return { id: doc.id, text: doc.text, score };
             });
 
             // Filter out results with low similarity before sorting

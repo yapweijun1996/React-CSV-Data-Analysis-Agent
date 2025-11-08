@@ -1,5 +1,6 @@
 # Main Rules
 * Review codebase
+* Make this project code easy to understand and cheap to maintain.
 * This is frontend project.
 * Think hard about this.
 * reply in mandarin english mixed.

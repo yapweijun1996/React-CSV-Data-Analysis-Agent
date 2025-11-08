@@ -76,6 +76,12 @@ export interface ClarificationRequest extends ClarificationRequestPayload {
     status: ClarificationStatus;
 }
 
+export interface MemoryReference {
+    id: string;
+    text: string;
+    score?: number;
+}
+
 export interface ChatMessage {
     sender: 'user' | 'ai';
     text: string;
@@ -89,6 +95,7 @@ export interface ChatMessage {
         label: string;
         helperText?: string;
     };
+    usedMemories?: MemoryReference[]; // Snapshot of memories that informed this response
 }
 
 export interface Settings {

@@ -35,6 +35,9 @@ const LoadingIcon: React.FC = () => (
     </svg>
 );
 
+const formatMemorySnippet = (text: string, maxLength = 60) =>
+    text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
+
 
 export const ChatPanel: React.FC = () => {
     const {
@@ -54,6 +57,11 @@ export const ChatPanel: React.FC = () => {
         skipClarification,
         focusDataPreview,
         isCancellationRequested,
+        chatMemoryPreview,
+        chatMemoryExclusions,
+        previewChatMemories,
+        toggleMemoryPreviewSelection,
+        isMemoryPreviewLoading,
     } = useAppStore(state => ({
         progressMessages: state.progressMessages,
         chatHistory: state.chatHistory,
@@ -71,6 +79,11 @@ export const ChatPanel: React.FC = () => {
         skipClarification: state.skipClarification,
         focusDataPreview: state.focusDataPreview,
         isCancellationRequested: state.isCancellationRequested,
+        chatMemoryPreview: state.chatMemoryPreview,
+        chatMemoryExclusions: state.chatMemoryExclusions,
+        previewChatMemories: state.previewChatMemories,
+        toggleMemoryPreviewSelection: state.toggleMemoryPreviewSelection,
+        isMemoryPreviewLoading: state.isMemoryPreviewLoading,
     }));
 
     const [input, setInput] = useState('');
@@ -81,6 +94,9 @@ export const ChatPanel: React.FC = () => {
 
     const timeline = [...progressMessages, ...chatHistory]
         .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+    
+    const selectedMemoryCount = chatMemoryPreview.filter(mem => !chatMemoryExclusions.includes(mem.id)).length;
+    const showMemoryPreview = chatMemoryPreview.length > 0;
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -97,6 +113,18 @@ export const ChatPanel: React.FC = () => {
             textarea.style.height = `${scrollHeight}px`;
         }
     }, [input]);
+
+    useEffect(() => {
+        const trimmed = input.trim();
+        if (!trimmed) {
+            previewChatMemories('');
+            return;
+        }
+        const timeoutId = window.setTimeout(() => {
+            previewChatMemories(trimmed);
+        }, 400);
+        return () => window.clearTimeout(timeoutId);
+    }, [input, previewChatMemories]);
 
     const handleSend = (e: React.FormEvent | React.KeyboardEvent) => {
         e.preventDefault();
@@ -267,6 +295,23 @@ export const ChatPanel: React.FC = () => {
                                 {msg.cta.helperText && <span className="block text-[11px] text-slate-500 mt-0.5">{msg.cta.helperText}</span>}
                             </button>
                          )}
+                         {msg.usedMemories && msg.usedMemories.length > 0 && (
+                            <div className="mt-2 border border-blue-100 bg-white rounded-md p-2">
+                                <p className="text-[11px] font-semibold text-blue-700 mb-1">
+                                    Used memory ({msg.usedMemories.length})
+                                </p>
+                                <div className="flex flex-wrap gap-1">
+                                    {msg.usedMemories.map(memory => (
+                                        <span
+                                            key={memory.id}
+                                            className="text-[11px] text-slate-600 bg-blue-50 border border-blue-100 rounded-full px-2 py-0.5"
+                                        >
+                                            {formatMemorySnippet(memory.text, 48)}
+                                        </span>
+                                    ))}
+                                </div>
+                            </div>
+                         )}
                     </div>
                 </div>
             );
@@ -317,6 +362,34 @@ export const ChatPanel: React.FC = () => {
                 <div ref={messagesEndRef} />
             </div>
             <div className="p-4 border-t border-slate-200 bg-white">
+                {showMemoryPreview && (
+                    <div className="mb-3">
+                        <div className="flex items-center gap-2 text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
+                            Used memory ({selectedMemoryCount}/{chatMemoryPreview.length})
+                            {isMemoryPreviewLoading && <span className="text-slate-400 font-normal normal-case">Updating…</span>}
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                            {chatMemoryPreview.map(memory => {
+                                const isExcluded = chatMemoryExclusions.includes(memory.id);
+                                return (
+                                    <button
+                                        type="button"
+                                        key={memory.id}
+                                        onClick={() => toggleMemoryPreviewSelection(memory.id)}
+                                        className={`text-[11px] px-2 py-1 rounded-full border transition-colors ${
+                                            isExcluded
+                                                ? 'bg-white border-slate-300 text-slate-400 line-through'
+                                                : 'bg-blue-50 border-blue-200 text-blue-700'
+                                        }`}
+                                        title={isExcluded ? 'Click to include this memory' : 'Click to exclude this memory'}
+                                    >
+                                        {formatMemorySnippet(memory.text, 42)}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </div>
+                )}
                 <form onSubmit={handleSend} className="flex items-start space-x-2">
                     <textarea
                         ref={textareaRef}

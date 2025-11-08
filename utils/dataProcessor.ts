@@ -152,9 +152,10 @@ export const applyTopNWithOthers = (data: CsvRow[], groupByKey: string, valueKey
     }
 
     const sortedData = [...data].sort((a, b) => (Number(b[valueKey]) || 0) - (Number(a[valueKey]) || 0));
-    
-    const topData = sortedData.slice(0, topN -1);
-    const otherData = sortedData.slice(topN -1);
+
+    // Always take exactly the requested Top N rows; the remainder collapses into "Others".
+    const topData = sortedData.slice(0, topN);
+    const otherData = sortedData.slice(topN);
 
     if (otherData.length > 0) {
         const otherSum = otherData.reduce((acc, row) => acc + (Number(row[valueKey]) || 0), 0);
