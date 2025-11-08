@@ -14,6 +14,46 @@ export interface ColumnProfile {
     missingPercentage?: number;
 }
 
+export interface DataTransformMeta {
+    rowsBefore: number;
+    rowsAfter: number;
+    addedRows: number;
+    removedRows: number;
+    modifiedRows: number;
+}
+
+export interface SelectionDrilldownFilter {
+    sourceCardId: string;
+    column: string;
+    values: (string | number)[];
+    label: string;
+    createdAt: string;
+}
+
+export interface PendingDataTransform {
+    id: string;
+    summary: string;
+    explanation?: string;
+    meta: DataTransformMeta;
+    previewRows: CsvRow[];
+    nextData: CsvData;
+    nextColumnProfiles: ColumnProfile[];
+    nextAliasMap: Record<string, string>;
+    sourceCode?: string;
+    createdAt: string;
+}
+
+export interface AppliedDataTransformRecord {
+    id: string;
+    summary: string;
+    explanation?: string;
+    meta: DataTransformMeta;
+    previousData: CsvData | null;
+    previousColumnProfiles: ColumnProfile[];
+    previousAliasMap: Record<string, string>;
+    appliedAt: string;
+}
+
 export type ChartType = 'bar' | 'line' | 'pie' | 'doughnut' | 'scatter' | 'combo';
 export type AggregationType = 'sum' | 'count' | 'avg';
 
@@ -144,10 +184,21 @@ export interface AppState {
     toasts: AppToast[];
     agentActionTraces: AgentActionTrace[];
     columnAliasMap: Record<string, string>;
+    pendingDataTransform: PendingDataTransform | null;
+    lastAppliedDataTransform: AppliedDataTransformRecord | null;
+    interactiveSelectionFilter: SelectionDrilldownFilter | null;
 }
 
 export interface DomAction {
-    toolName: 'highlightCard' | 'changeCardChartType' | 'showCardData' | 'filterCard';
+    toolName:
+        | 'highlightCard'
+        | 'changeCardChartType'
+        | 'showCardData'
+        | 'filterCard'
+        | 'setTopN'
+        | 'toggleHideOthers'
+        | 'toggleLegendLabel'
+        | 'exportCard';
     args: { [key: string]: any };
 }
 

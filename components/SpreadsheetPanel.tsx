@@ -49,6 +49,7 @@ export const SpreadsheetPanel: React.FC<SpreadsheetPanelProps> = ({ isVisible })
         handleNaturalLanguageQuery,
         clearAiFilter,
         cancelAiFilterRequest,
+        interactiveSelectionFilter,
     } = useAppStore(state => ({
         csvData: state.csvData,
         spreadsheetFilterFunction: state.spreadsheetFilterFunction,
@@ -57,6 +58,7 @@ export const SpreadsheetPanel: React.FC<SpreadsheetPanelProps> = ({ isVisible })
         handleNaturalLanguageQuery: state.handleNaturalLanguageQuery,
         clearAiFilter: state.clearAiFilter,
         cancelAiFilterRequest: state.cancelAiFilterRequest,
+        interactiveSelectionFilter: state.interactiveSelectionFilter,
     }));
     const onToggleVisibility = () => useAppStore.getState().setIsSpreadsheetVisible(!isVisible);
 
@@ -125,6 +127,14 @@ export const SpreadsheetPanel: React.FC<SpreadsheetPanelProps> = ({ isVisible })
         if (!csvData) return [];
         let dataToProcess: CsvRow[] = [...csvData.data];
 
+        if (interactiveSelectionFilter && interactiveSelectionFilter.column) {
+            const normalizedValues = interactiveSelectionFilter.values.map(value => String(value));
+            dataToProcess = dataToProcess.filter(row => {
+                const candidate = row[interactiveSelectionFilter.column!];
+                return normalizedValues.includes(candidate === undefined || candidate === null ? '' : String(candidate));
+            });
+        }
+
         // AI Filtering
         if (spreadsheetFilterFunction) {
             try {
@@ -171,7 +181,7 @@ export const SpreadsheetPanel: React.FC<SpreadsheetPanelProps> = ({ isVisible })
         }
 
         return dataToProcess;
-    }, [csvData, sortConfig, filterText, spreadsheetFilterFunction]);
+    }, [csvData, sortConfig, filterText, spreadsheetFilterFunction, interactiveSelectionFilter]);
     
     if (!csvData) return null;
 
@@ -191,6 +201,19 @@ export const SpreadsheetPanel: React.FC<SpreadsheetPanelProps> = ({ isVisible })
             
             {isVisible && (
                 <div className="flex flex-col h-full p-4 pt-0">
+                    {interactiveSelectionFilter && (
+                        <div className="bg-amber-50 text-amber-900 border border-amber-200 rounded-md p-2 text-xs mb-2">
+                            <p className="font-semibold">Chart Drilldown Active</p>
+                            <p className="mt-1">
+                                {interactiveSelectionFilter.label} · {interactiveSelectionFilter.column} →{' '}
+                                {interactiveSelectionFilter.values.map(value => String(value)).join(', ')}
+                            </p>
+                            <p className="mt-1 text-amber-800">
+                                Adjust or clear the selection directly on the chart to remove this link.
+                            </p>
+                        </div>
+                    )}
+
                     <div className="flex items-center space-x-2 mb-2">
                         <div className="relative flex-grow">
                             <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">

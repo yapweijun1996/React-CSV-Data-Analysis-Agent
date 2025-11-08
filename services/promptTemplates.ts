@@ -259,8 +259,16 @@ export const createChatPrompt = (
         You MUST respond by creating a sequence of one or more actions in a JSON object.
         1.  **text_response**: For conversation. If your text explains a specific card, you MUST include its 'cardId'.
         2.  **plan_creation**: To create a NEW chart. Use a 'defaultTopN' of 8 for readability on high-cardinality columns.
-        3.  **dom_action**: To INTERACT with an EXISTING card ('highlightCard', 'changeCardChartType', 'showCardData', 'filterCard').
-        4.  **execute_js_code**: For PERMANENT data transformations (creating new columns, deleting rows). This action WILL modify the main dataset and cause ALL charts to regenerate. Use it for requests like "Remove all data from the USA".
+        3.  **dom_action**: To INTERACT with an EXISTING card. Available tools: 
+            - \`highlightCard\`: Scroll and spotlight a chart.
+            - \`changeCardChartType\`: Switch among bar/line/pie/doughnut/scatter/combo.
+            - \`showCardData\`: Toggle the full data table visibility (set \`visible\` true/false).
+            - \`filterCard\`: Apply the card-level categorical filter (specify \`column\` + \`values\` array).
+            - \`setTopN\`: Change the Top N dropdown. Provide a positive \`topN\` integer; omit it to revert to “All”.
+            - \`toggleHideOthers\`: Check/uncheck the “Hide Others” box (pass \`hide: true\`/false, or omit to flip).
+            - \`toggleLegendLabel\`: Simulate clicking a legend label (\`label\` must match the on-screen text exactly).
+            - \`exportCard\`: Trigger the export menu (\`format\` = 'png' | 'csv' | 'html').
+        4.  **execute_js_code**: For PERMANENT data transformations (creating new columns, deleting rows). This action WILL modify the main dataset and cause ALL charts to regenerate. Whenever you emit this action you MUST supply a fully-formed JavaScript function body (no placeholders, no empty strings). If you cannot write the code confidently, do NOT emit this action—explain the limitation instead. Use it for requests like "Remove all data from the USA".
         5.  **filter_spreadsheet**: For TEMPORARY, exploratory filtering of the Raw Data Explorer view. This action does NOT modify the main dataset and does NOT affect the analysis cards. Use it for requests like "show me record ORD1001" or "find all entries for Hannah".
         6.  **clarification_request**: To ask the user for more information when their request is ambiguous.
             - **Use Case**: The user says "show sales" but there are multiple sales-related columns ('Sales_USD', 'Sales_Units'). DO NOT GUESS. Ask for clarification.

@@ -153,7 +153,7 @@ export const multiActionChatResponseSchema = {
                         type: Type.OBJECT,
                         description: "A DOM manipulation action for the frontend to execute. Required for 'dom_action'.",
                         properties: {
-                            toolName: { type: Type.STRING, enum: ['highlightCard', 'changeCardChartType', 'showCardData', 'filterCard'] },
+                            toolName: { type: Type.STRING, enum: ['highlightCard', 'changeCardChartType', 'showCardData', 'filterCard', 'setTopN', 'toggleHideOthers', 'toggleLegendLabel', 'exportCard'] },
                             args: {
                                 type: Type.OBJECT,
                                 description: 'Arguments for the tool. e.g., { cardId: "..." }',
@@ -163,6 +163,10 @@ export const multiActionChatResponseSchema = {
                                     visible: { type: Type.BOOLEAN, description: "For 'showCardData'." },
                                     column: { type: Type.STRING, description: "For 'filterCard', the column to filter on." },
                                     values: { type: Type.ARRAY, items: { type: Type.STRING }, description: "For 'filterCard', the values to include." },
+                                    topN: { type: Type.INTEGER, description: "For 'setTopN'. Provide a positive integer. Omit this field to revert to showing all categories." },
+                                    hide: { type: Type.BOOLEAN, description: "For 'toggleHideOthers'. True hides the 'Others' bucket, false shows it." },
+                                    label: { type: Type.STRING, description: "For 'toggleLegendLabel'. The exact legend label to toggle visibility for." },
+                                    format: { type: Type.STRING, enum: ['png', 'csv', 'html'], description: "For 'exportCard'. Choose the export format." },
                                 },
                                 required: ['cardId'],
                             },
@@ -174,7 +178,11 @@ export const multiActionChatResponseSchema = {
                         description: "For 'execute_js_code', the code to run.",
                         properties: {
                             explanation: { type: Type.STRING, description: "A brief, user-facing explanation of what the code will do." },
-                            jsFunctionBody: { type: Type.STRING, description: "The body of a JavaScript function that takes 'data' and returns the transformed 'data'." },
+                            jsFunctionBody: {
+                                type: Type.STRING,
+                                description: "The non-empty body of a JavaScript function that takes 'data' and returns the transformed 'data'. Blank strings or placeholders are invalid.",
+                                minLength: 10,
+                            },
                         },
                         required: ['explanation', 'jsFunctionBody']
                     },

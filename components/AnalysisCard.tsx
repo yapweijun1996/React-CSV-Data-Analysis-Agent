@@ -1,4 +1,4 @@
-import React, { useRef, useState, useMemo } from 'react';
+import React, { useRef, useState, useMemo, useEffect } from 'react';
 import { AnalysisCardData, ChartType } from '../types';
 import { ChartRenderer, ChartRendererHandle } from './ChartRenderer';
 import { DataTable } from './DataTable';
@@ -39,13 +39,15 @@ export const AnalysisCard: React.FC<AnalysisCardProps> = ({ cardId }) => {
         handleToggleDataVisibility, 
         handleTopNChange, 
         handleHideOthersChange, 
-        handleToggleLegendLabel 
+        handleToggleLegendLabel,
+        linkChartSelectionToRawData,
     } = useAppStore(state => ({
         handleChartTypeChange: state.handleChartTypeChange,
         handleToggleDataVisibility: state.handleToggleDataVisibility,
         handleTopNChange: state.handleTopNChange,
         handleHideOthersChange: state.handleHideOthersChange,
         handleToggleLegendLabel: state.handleToggleLegendLabel,
+        linkChartSelectionToRawData: state.linkChartSelectionToRawData,
     }));
 
     const cardRef = useRef<HTMLDivElement>(null);
@@ -142,6 +144,24 @@ export const AnalysisCard: React.FC<AnalysisCardProps> = ({ cardId }) => {
     };
     
     const selectedData = selectedIndices.map(index => dataForDisplay[index]);
+
+    useEffect(() => {
+        if (!groupByKey || selectedIndices.length === 0) {
+            linkChartSelectionToRawData(id, null, [], plan.title);
+            return;
+        }
+        const values = selectedIndices
+            .map(index => dataForDisplay[index]?.[groupByKey])
+            .filter(value => value !== undefined && value !== null) as (string | number)[];
+        if (values.length === 0) {
+            linkChartSelectionToRawData(id, null, [], plan.title);
+            return;
+        }
+        linkChartSelectionToRawData(id, groupByKey, values, plan.title);
+        return () => {
+            linkChartSelectionToRawData(id, null, [], plan.title);
+        };
+    }, [groupByKey, selectedIndices, dataForDisplay, id, linkChartSelectionToRawData, plan.title]);
 
     return (
         <div

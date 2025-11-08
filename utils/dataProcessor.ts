@@ -1,4 +1,4 @@
-import { CsvData, CsvRow, AnalysisPlan, ColumnProfile, AggregationType } from '../types';
+import { CsvData, CsvRow, AnalysisPlan, ColumnProfile, AggregationType, DataTransformMeta } from '../types';
 
 declare const Papa: any;
 
@@ -265,6 +265,30 @@ const splitNumericString = (input: string | null | undefined): string[] => {
     return parsableString.split('|');
 };
 
+const normalizeKeyValue = (value: any): string => {
+    if (value === null || value === undefined || value === '') return '__NULL__';
+    return String(value);
+};
+
+type PivotReducer = 'sum' | 'avg' | 'count';
+type WindowReducer = (windowRows: CsvRow[], index: number) => any;
+
+const reduceNumeric = (values: any[], reducer: PivotReducer): number => {
+    const parsed = values
+        .map(v => (typeof v === 'number' ? v : robustParseFloat(v)))
+        .filter((v): v is number => typeof v === 'number');
+    if (parsed.length === 0) return 0;
+    const total = parsed.reduce((acc, val) => acc + val, 0);
+    switch (reducer) {
+        case 'avg':
+            return total / parsed.length;
+        case 'count':
+            return parsed.length;
+        default:
+            return total;
+    }
+};
+
 const createUtilObject = () => ({
     /**
      * Safely parses a string into a number, handling currency symbols, commas, and percentages.
@@ -279,15 +303,159 @@ const createUtilObject = () => ({
      * @returns An array of strings, each representing one number.
      */
     splitNumericString: splitNumericString,
-});
+    /**
+     * Groups rows by a column name or selector function.
+     */
+    groupBy: (rows: CsvRow[] = [], key: string | ((row: CsvRow) => any)) => {
+        const selector = typeof key === 'function' ? key : (row: CsvRow) => row[key];
+        const buckets: Record<string, CsvRow[]> = {};
+        rows.forEach(row => {
+            const bucketKey = normalizeKeyValue(selector(row));
+            if (!buckets[bucketKey]) buckets[bucketKey] = [];
+            buckets[bucketKey].push(row);
+        });
+        return Object.entries(buckets).map(([bucketKey, members]) => ({
+            key: bucketKey === '__NULL__' ? null : bucketKey,
+            rows: members,
+            count: members.length,
+        }));
+    },
+    /**
+     * Creates a simple pivot table.
+     */
+    pivot: (
+        rows: CsvRow[] = [],
+        rowKey: string,
+        columnKey: string,
+        valueKey: string,
+        reducer: PivotReducer | ((values: any[]) => any) = 'sum',
+    ) => {
+        const columnSet = new Set<string>();
+        const grouped = new Map<string, Record<string, any>>();
 
-interface DataTransformMeta {
-    rowsBefore: number;
-    rowsAfter: number;
-    addedRows: number;
-    removedRows: number;
-    modifiedRows: number;
-}
+        rows.forEach(row => {
+            const rKey = normalizeKeyValue(row[rowKey]);
+            const cKey = normalizeKeyValue(row[columnKey]);
+            columnSet.add(cKey);
+            const currentRow = grouped.get(rKey) ?? { [rowKey]: row[rowKey] };
+            const cellValues = currentRow[cKey] ?? [];
+            cellValues.push(row[valueKey]);
+            currentRow[cKey] = cellValues;
+            grouped.set(rKey, currentRow);
+        });
+
+        const reducerFn =
+            typeof reducer === 'function'
+                ? reducer
+                : (values: any[]) => reduceNumeric(values, reducer);
+
+        const columns = Array.from(columnSet);
+        return Array.from(grouped.values()).map(pivotRow => {
+            const result: CsvRow = { ...pivotRow };
+            columns.forEach(col => {
+                const cellValues: any[] = Array.isArray(result[col]) ? result[col] : [];
+                result[col] = reducerFn(cellValues);
+            });
+            return result;
+        });
+    },
+    /**
+     * Performs a basic relational join between two datasets.
+     */
+    join: (
+        leftRows: CsvRow[] = [],
+        rightRows: CsvRow[] = [],
+        options: {
+            leftKey: string;
+            rightKey?: string;
+            how?: 'inner' | 'left' | 'right' | 'full';
+        },
+    ) => {
+        if (!options?.leftKey) {
+            throw new Error('join requires a leftKey.');
+        }
+        const how = options.how || 'inner';
+        const rightKey = options.rightKey ?? options.leftKey;
+        const rightIndex = new Map<string, CsvRow[]>();
+        rightRows.forEach(row => {
+            const key = normalizeKeyValue(row[rightKey]);
+            const bucket = rightIndex.get(key) ?? [];
+            bucket.push(row);
+            rightIndex.set(key, bucket);
+        });
+
+        const buildRow = (left: CsvRow | null, right: CsvRow | null) => {
+            if (left && right) return { ...right, ...left };
+            if (left) return { ...left };
+            if (right) return { ...right };
+            return {};
+        };
+
+        const results: CsvRow[] = [];
+        const matchedRight = new Set<CsvRow>();
+
+        leftRows.forEach(leftRow => {
+            const key = normalizeKeyValue(leftRow[options.leftKey]);
+            const matches = rightIndex.get(key);
+            if (matches && matches.length > 0) {
+                matches.forEach(match => {
+                    matchedRight.add(match);
+                    results.push(buildRow(leftRow, match));
+                });
+            } else if (how === 'left' || how === 'full') {
+                results.push(buildRow(leftRow, null));
+            }
+        });
+
+        if (how === 'right' || how === 'full') {
+            rightRows.forEach(row => {
+                if (!matchedRight.has(row)) {
+                    if (how === 'right') {
+                        results.push(buildRow(null, row));
+                    } else if (how === 'full') {
+                        const key = normalizeKeyValue(row[rightKey]);
+                        const leftMatches = leftRows.filter(
+                            left => normalizeKeyValue(left[options.leftKey]) === key,
+                        );
+                        if (leftMatches.length === 0) {
+                            results.push(buildRow(null, row));
+                        }
+                    }
+                }
+            });
+        }
+
+        return results;
+    },
+    /**
+     * Computes rolling window aggregates.
+     */
+    rollingWindow: (
+        rows: CsvRow[] = [],
+        windowSize: number,
+        config: WindowReducer | { column: string; op?: PivotReducer } = { column: 'value', op: 'avg' },
+    ) => {
+        if (!Array.isArray(rows) || windowSize <= 0) return [];
+        const reducerFn: WindowReducer =
+            typeof config === 'function'
+                ? config
+                : (windowRows: CsvRow[]) => {
+                      const values = windowRows.map(r => r[config.column]);
+                      return reduceNumeric(values, config.op ?? 'avg');
+                  };
+
+        return rows.map((_, index) => {
+            const start = Math.max(0, index - windowSize + 1);
+            const windowRows = rows.slice(start, index + 1);
+            return {
+                index,
+                start,
+                end: index,
+                value: reducerFn(windowRows, index),
+            };
+        });
+    },
+});
 
 const normalizeCellValue = (value: any): string => {
     if (value === null || value === undefined) return '';

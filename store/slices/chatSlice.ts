@@ -176,50 +176,112 @@ export const createChatSlice = (
                             markTrace('failed', 'Missing DOM action payload.');
                         }
                         break;
-                    case 'execute_js_code':
-                        if (action.code?.jsFunctionBody && get().csvData) {
-                            try {
-                                const aliasMap = get().columnAliasMap;
-                                const dataForTransform = cloneRowsWithAliases(get().csvData!.data, aliasMap);
-                                const transformResult = executeJavaScriptDataTransform(dataForTransform, action.code!.jsFunctionBody);
-                                const normalizedRows = normalizeRowsFromAliases(transformResult.data, aliasMap);
-                                const newData: CsvData = { ...get().csvData!, data: normalizedRows };
-                                const updatedProfiles = profileData(newData.data);
-                                const updatedAliasMap = buildColumnAliasMap(updatedProfiles.map(p => p.name));
-                                set({ csvData: newData, columnProfiles: updatedProfiles, columnAliasMap: updatedAliasMap });
-                                const { rowsBefore, rowsAfter, removedRows, addedRows, modifiedRows } = transformResult.meta;
-                                const summaryParts = [
-                                    `${rowsBefore} → ${rowsAfter} rows`,
-                                    removedRows ? `${removedRows} removed` : null,
-                                    addedRows ? `${addedRows} added` : null,
-                                    modifiedRows ? `${modifiedRows} modified` : null,
-                                ].filter(Boolean);
-                                const summaryDescription = summaryParts.length > 0 ? summaryParts.join(', ') : 'changes detected';
-                                get().addProgress(`AI data transformation applied (${summaryDescription}).`);
-                                await get().regenerateAnalyses(newData);
-                                markTrace('succeeded', summaryDescription);
-                            } catch (error) {
-                                const errorMessage = error instanceof Error ? error.message : String(error);
-                                get().addProgress(`AI data transformation failed: ${errorMessage}`, 'error');
-                                const failureMessage: ChatMessage = {
-                                    sender: 'ai',
-                                    text: `I couldn't apply that data transformation: ${errorMessage}`,
-                                    timestamp: new Date(),
-                                    type: 'ai_message',
-                                    isError: true,
-                                };
-                                set(prev => ({ chatHistory: [...prev.chatHistory, failureMessage] }));
-                                if (retryAttempts < MAX_AUTO_RETRIES) {
-                                    retryRequest = { type: 'execute_js_code', reason: errorMessage };
-                                }
-                                markTrace('failed', errorMessage);
-                                abortActionLoop = true;
-                                break;
+                    case 'execute_js_code': {
+                        const dataset = get().csvData;
+                        const jsBody = action.code?.jsFunctionBody?.trim();
+
+                        if (!dataset) {
+                            const warning = 'Dataset unavailable for transformation.';
+                            get().addProgress(warning, 'error');
+                            const aiMessage: ChatMessage = {
+                                sender: 'ai',
+                                text: `${warning} I could not run the requested update.`,
+                                timestamp: new Date(),
+                                type: 'ai_message',
+                                isError: true,
+                            };
+                            set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
+                            markTrace('failed', warning);
+                            break;
+                        }
+
+                        if (!jsBody) {
+                            const warning = 'AI requested a data transformation but did not include executable code, so no changes were applied.';
+                            get().addProgress(warning, 'error');
+                            const aiMessage: ChatMessage = {
+                                sender: 'ai',
+                                text: warning,
+                                timestamp: new Date(),
+                                type: 'ai_message',
+                                isError: true,
+                            };
+                            set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
+                            markTrace('failed', 'Missing jsFunctionBody in execute_js_code payload.');
+                            break;
+                        }
+
+                        if (get().pendingDataTransform) {
+                            const warning = 'A previous AI transformation is still awaiting your approval. Please confirm or discard it before running another one.';
+                            get().addProgress(warning, 'error');
+                            const aiMessage: ChatMessage = {
+                                sender: 'ai',
+                                text: `${warning} You can review it in the Data Change banner above the dashboard.`,
+                                timestamp: new Date(),
+                                type: 'ai_message',
+                                isError: true,
+                            };
+                            set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
+                            markTrace('failed', warning);
+                            break;
+                        }
+
+                        try {
+                            const aliasMap = get().columnAliasMap;
+                            const dataForTransform = cloneRowsWithAliases(dataset.data, aliasMap);
+                            const transformResult = executeJavaScriptDataTransform(dataForTransform, jsBody);
+                            const normalizedRows = normalizeRowsFromAliases(transformResult.data, aliasMap);
+                            const newData: CsvData = { ...dataset, data: normalizedRows };
+                            const updatedProfiles = profileData(newData.data);
+                            const updatedAliasMap = buildColumnAliasMap(updatedProfiles.map(p => p.name));
+                            const { rowsBefore, rowsAfter, removedRows, addedRows, modifiedRows } = transformResult.meta;
+                            const summaryParts = [
+                                `${rowsBefore} → ${rowsAfter} rows`,
+                                removedRows ? `${removedRows} removed` : null,
+                                addedRows ? `${addedRows} added` : null,
+                                modifiedRows ? `${modifiedRows} modified` : null,
+                            ].filter(Boolean);
+                            const summaryDescription = summaryParts.length > 0 ? summaryParts.join(', ') : 'changes detected';
+                            get().queuePendingDataTransform({
+                                id: `transform-${Date.now()}`,
+                                summary: summaryDescription,
+                                explanation: action.code?.explanation,
+                                meta: transformResult.meta,
+                                previewRows: normalizedRows.slice(0, 5),
+                                nextData: newData,
+                                nextColumnProfiles: updatedProfiles,
+                                nextAliasMap: updatedAliasMap,
+                                sourceCode: jsBody,
+                                createdAt: new Date().toISOString(),
+                            });
+                            const aiMessage: ChatMessage = {
+                                sender: 'ai',
+                                text: `I drafted a data transformation (${summaryDescription}). Please review the banner above the dashboard to confirm or discard it.`,
+                                timestamp: new Date(),
+                                type: 'ai_message',
+                                cardId: action.cardId,
+                            };
+                            set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
+                            markTrace('succeeded', `${summaryDescription} (awaiting confirmation)`);
+                        } catch (error) {
+                            const errorMessage = error instanceof Error ? error.message : String(error);
+                            get().addProgress(`AI data transformation failed: ${errorMessage}`, 'error');
+                            const failureMessage: ChatMessage = {
+                                sender: 'ai',
+                                text: `I couldn't apply that data transformation: ${errorMessage}`,
+                                timestamp: new Date(),
+                                type: 'ai_message',
+                                isError: true,
+                            };
+                            set(prev => ({ chatHistory: [...prev.chatHistory, failureMessage] }));
+                            if (retryAttempts < MAX_AUTO_RETRIES) {
+                                retryRequest = { type: 'execute_js_code', reason: errorMessage };
                             }
-                        } else {
-                            markTrace('failed', 'Dataset unavailable for transformation.');
+                            markTrace('failed', errorMessage);
+                            abortActionLoop = true;
+                            break;
                         }
                         break;
+                    }
                     case 'filter_spreadsheet':
                         if (action.args?.query) {
                             get().addProgress('AI is filtering the data explorer based on your request.');

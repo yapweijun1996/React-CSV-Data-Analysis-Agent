@@ -2,13 +2,14 @@ import { create } from 'zustand';
 // Fix: Import MouseEvent from React and alias it to resolve the type error.
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import { AnalysisCardData, ChatMessage, ProgressMessage, CsvData, AnalysisPlan, AppState, CardContext, ChartType, DomAction, Settings, Report, ReportListItem, ClarificationRequest, ClarificationRequestPayload, ClarificationStatus, ColumnProfile, AgentActionStatus, AgentActionSource } from '../types';
-import { executePlan } from '../utils/dataProcessor';
+import { executePlan, applyTopNWithOthers } from '../utils/dataProcessor';
 import { generateAnalysisPlans, generateSummary, generateFinalSummary, generateCoreAnalysisSummary, generateProactiveInsights } from '../services/aiService';
 import { getReportsList, saveReport, getReport, deleteReport, getSettings, saveSettings, CURRENT_SESSION_KEY } from '../storageService';
 import { vectorStore } from '../services/vectorStore';
 import { runWithBusyState } from '../utils/runWithBusy';
 import { preparePlanForExecution } from '../utils/planValidation';
 import { buildColumnAliasMap } from '../utils/columnAliases';
+import { exportToPng, exportToCsv, exportToHtml } from '../utils/exportUtils';
 import type { StoreActions, StoreState } from './appStoreTypes';
 import { createChatSlice } from './slices/chatSlice';
 import { createFileUploadSlice } from './slices/fileUploadSlice';
@@ -33,6 +34,11 @@ const MAX_AGENT_TRACE_HISTORY = 40;
 
 const deriveAliasMap = (profiles: ColumnProfile[] = []) => buildColumnAliasMap(profiles.map(p => p.name));
 
+const arraysAreEqual = (a: (string | number)[], b: (string | number)[]) => {
+    if (a.length !== b.length) return false;
+    return a.every((value, index) => value === b[index]);
+};
+
 const initialAppState: AppState = {
     currentView: 'file_upload',
     isBusy: false,
@@ -55,6 +61,9 @@ const initialAppState: AppState = {
     toasts: [],
     agentActionTraces: [],
     columnAliasMap: {},
+    pendingDataTransform: null,
+    lastAppliedDataTransform: null,
+    interactiveSelectionFilter: null,
 };
 
 export const useAppStore = create<StoreState & StoreActions>((set, get) => {
@@ -247,6 +256,105 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 toasts: state.toasts.filter(t => t.id !== toastId),
             }));
         },
+        queuePendingDataTransform: (preview) => {
+            if (get().pendingDataTransform) {
+                get().addProgress('An AI data transformation is already awaiting approval. Please confirm or discard it first.', 'error');
+                return;
+            }
+            set({ pendingDataTransform: preview });
+            get().addProgress('AI proposed a data transformation. Review it above the dashboard before applying.');
+            get().addToast('AI data change pending confirmation.', 'info', 5000);
+        },
+        confirmPendingDataTransform: async () => {
+            const pending = get().pendingDataTransform;
+            if (!pending) {
+                get().addProgress('No pending data transformation to confirm.', 'error');
+                return;
+            }
+            const previousData = get().csvData;
+            const previousProfiles = get().columnProfiles;
+            const previousAliasMap = get().columnAliasMap;
+            set({
+                csvData: pending.nextData,
+                columnProfiles: pending.nextColumnProfiles,
+                columnAliasMap: pending.nextAliasMap,
+                pendingDataTransform: null,
+                lastAppliedDataTransform: {
+                    id: pending.id,
+                    summary: pending.summary,
+                    explanation: pending.explanation,
+                    meta: pending.meta,
+                    previousData,
+                    previousColumnProfiles: previousProfiles,
+                    previousAliasMap,
+                    appliedAt: new Date().toISOString(),
+                },
+            });
+            get().addProgress('Applied the AI data transformation after confirmation.');
+            await get().regenerateAnalyses(pending.nextData);
+        },
+        discardPendingDataTransform: () => {
+            if (!get().pendingDataTransform) {
+                get().addProgress('No pending data transformation to discard.', 'error');
+                return;
+            }
+            set({ pendingDataTransform: null });
+            get().addProgress('Discarded the pending AI data transformation.');
+        },
+        undoLastDataTransform: async () => {
+            if (get().pendingDataTransform) {
+                get().addProgress('Resolve the pending AI transformation before undoing.', 'error');
+                return;
+            }
+            const last = get().lastAppliedDataTransform;
+            if (!last || !last.previousData) {
+                get().addProgress('No AI data transformation is available to undo.', 'error');
+                return;
+            }
+            set({
+                csvData: last.previousData,
+                columnProfiles: last.previousColumnProfiles,
+                columnAliasMap: last.previousAliasMap,
+                lastAppliedDataTransform: null,
+            });
+            get().addProgress('Reverted the last AI data transformation.');
+            await get().regenerateAnalyses(last.previousData);
+        },
+        linkChartSelectionToRawData: (cardId, column, values, label) => {
+            const hasValues = !!column && values.length > 0;
+            const current = get().interactiveSelectionFilter;
+            if (!hasValues) {
+                if (current && current.sourceCardId === cardId) {
+                    set({ interactiveSelectionFilter: null });
+                }
+                return;
+            }
+            const normalizedValues = values.map(val => (typeof val === 'number' ? val : String(val)));
+            if (
+                current &&
+                current.sourceCardId === cardId &&
+                current.column === column &&
+                arraysAreEqual(current.values, normalizedValues)
+            ) {
+                return;
+            }
+            set({
+                interactiveSelectionFilter: {
+                    sourceCardId: cardId,
+                    column,
+                    values: normalizedValues,
+                    label,
+                    createdAt: new Date().toISOString(),
+                },
+                isSpreadsheetVisible: true,
+            });
+            setTimeout(() => {
+                document
+                    .getElementById('raw-data-explorer')
+                    ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }, 150);
+        },
+        clearInteractiveSelectionFilter: () => set({ interactiveSelectionFilter: null }),
 
     init: async () => {
         const currentSession = await getReport(CURRENT_SESSION_KEY);
@@ -271,6 +379,9 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 chatMemoryPreviewQuery: '',
                 isMemoryPreviewLoading: false,
                 columnAliasMap: currentSession.appState.columnAliasMap ?? deriveAliasMap(currentSession.appState.columnProfiles ?? []),
+                pendingDataTransform: null,
+                lastAppliedDataTransform: null,
+                interactiveSelectionFilter: null,
             });
             if (currentSession.appState.vectorStoreDocuments && vectorStore.getIsInitialized()) {
                 vectorStore.rehydrate(currentSession.appState.vectorStoreDocuments);
@@ -548,55 +659,142 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
     },
     
     executeDomAction: (action) => {
-        // Implementation moved from useApp hook
         get().addProgress(`AI is performing action: ${action.toolName}...`);
-        
-        set(prev => {
-            const newCards = [...prev.analysisCards];
-            let cardUpdated = false;
+        const updateCardById = (cardId: string, updater: (card: AnalysisCardData) => AnalysisCardData | null) => {
+            set(prev => {
+                const cardIndex = prev.analysisCards.findIndex(c => c.id === cardId);
+                if (cardIndex === -1) return {};
+                const updatedCard = updater(prev.analysisCards[cardIndex]);
+                if (!updatedCard) return {};
+                const newCards = [...prev.analysisCards];
+                newCards[cardIndex] = updatedCard;
+                return { analysisCards: newCards };
+            });
+        };
 
-            switch(action.toolName) {
-                case 'highlightCard': {
-                    const cardId = action.args.cardId;
-                    const element = document.getElementById(cardId);
-                    if (element) {
-                        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                        element.classList.add('ring-4', 'ring-blue-500', 'transition-all', 'duration-500');
-                        setTimeout(() => element.classList.remove('ring-4', 'ring-blue-500'), 2500);
-                    }
-                    break;
-                }
-                case 'changeCardChartType': {
-                    const { cardId, newType } = action.args;
-                    const cardIndex = newCards.findIndex(c => c.id === cardId);
-                    if (cardIndex > -1) {
-                        newCards[cardIndex].displayChartType = newType as ChartType;
-                        cardUpdated = true;
-                    }
-                    break;
-                }
-                case 'showCardData': {
-                     const { cardId, visible } = action.args;
-                     const cardIndex = newCards.findIndex(c => c.id === cardId);
-                     if (cardIndex > -1) {
-                         newCards[cardIndex].isDataVisible = visible;
-                         cardUpdated = true;
-                     }
-                     break;
-                }
-                 case 'filterCard': {
-                    const { cardId, column, values } = action.args;
-                    const cardIndex = newCards.findIndex(c => c.id === cardId);
-                    if (cardIndex > -1) {
-                        newCards[cardIndex].filter = values.length > 0 ? { column, values } : undefined;
-                        cardUpdated = true;
-                    }
-                    break;
-                }
+        const getCardById = (cardId: string) => get().analysisCards.find(c => c.id === cardId);
+        const buildDisplayData = (card: AnalysisCardData) => {
+            const groupByKey = card.plan.groupByColumn || '';
+            const valueKey = card.plan.valueColumn || 'count';
+            let data = card.aggregatedData;
+            const activeFilter = card.filter;
+
+            if (activeFilter?.column && activeFilter.values && activeFilter.values.length > 0) {
+                data = data.filter(row => activeFilter.values.includes(row[activeFilter.column]));
             }
-            if (cardUpdated) return { analysisCards: newCards };
-            return {};
-        });
+
+            if (card.plan.chartType !== 'scatter' && groupByKey && card.topN) {
+                data = applyTopNWithOthers(data, groupByKey, valueKey, card.topN);
+            }
+
+            if (card.topN && card.hideOthers && groupByKey) {
+                data = data.filter(row => row[groupByKey] !== 'Others');
+            }
+
+            if (groupByKey && card.hiddenLabels && card.hiddenLabels.length > 0) {
+                const hiddenSet = new Set(card.hiddenLabels.map(String));
+                data = data.filter(row => !hiddenSet.has(String(row[groupByKey])));
+            }
+            return data;
+        };
+
+        switch(action.toolName) {
+            case 'highlightCard': {
+                const cardId = action.args.cardId;
+                const element = document.getElementById(cardId);
+                if (element) {
+                    element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    element.classList.add('ring-4', 'ring-blue-500', 'transition-all', 'duration-500');
+                    setTimeout(() => element.classList.remove('ring-4', 'ring-blue-500'), 2500);
+                }
+                break;
+            }
+            case 'changeCardChartType': {
+                const { cardId, newType } = action.args;
+                updateCardById(cardId, card => ({ ...card, displayChartType: newType as ChartType }));
+                break;
+            }
+            case 'showCardData': {
+                const { cardId, visible } = action.args;
+                const isVisible = typeof visible === 'boolean' ? visible : true;
+                updateCardById(cardId, card => ({ ...card, isDataVisible: isVisible }));
+                break;
+            }
+            case 'filterCard': {
+                const { cardId, column, values } = action.args;
+                if (!column) break;
+                const filterValues = Array.isArray(values) ? values : [];
+                updateCardById(cardId, card => ({
+                    ...card,
+                    filter: filterValues.length > 0 ? { column, values: filterValues } : undefined,
+                }));
+                break;
+            }
+            case 'setTopN': {
+                const { cardId, topN } = action.args;
+                const normalizedTopN =
+                    topN === null || topN === undefined || topN === 'all'
+                        ? null
+                        : Number(topN);
+                if (normalizedTopN !== null && (!Number.isFinite(normalizedTopN) || normalizedTopN <= 0)) {
+                    break;
+                }
+                updateCardById(cardId, card => ({ ...card, topN: normalizedTopN }));
+                break;
+            }
+            case 'toggleHideOthers': {
+                const { cardId, hide } = action.args;
+                updateCardById(cardId, card => ({
+                    ...card,
+                    hideOthers: typeof hide === 'boolean' ? hide : !card.hideOthers,
+                }));
+                break;
+            }
+            case 'toggleLegendLabel': {
+                const { cardId, label } = action.args;
+                if (!label) break;
+                updateCardById(cardId, card => {
+                    const currentHidden = card.hiddenLabels || [];
+                    const exists = currentHidden.includes(label);
+                    const newHidden = exists ? currentHidden.filter(l => l !== label) : [...currentHidden, label];
+                    return { ...card, hiddenLabels: newHidden };
+                });
+                break;
+            }
+            case 'exportCard': {
+                const { cardId, format = 'png' } = action.args;
+                const card = getCardById(cardId);
+                const cardElement = document.getElementById(cardId);
+                if (!card || !cardElement) {
+                    console.warn('exportCard: card or DOM node not found', cardId);
+                    break;
+                }
+                const dataForDisplay = buildDisplayData(card);
+                const normalizedFormat = typeof format === 'string' ? format.toLowerCase() : 'png';
+                (async () => {
+                    try {
+                        switch(normalizedFormat) {
+                            case 'csv':
+                                exportToCsv(dataForDisplay, card.plan.title);
+                                break;
+                            case 'html':
+                                await exportToHtml(cardElement, card.plan.title, dataForDisplay, card.summary);
+                                break;
+                            default:
+                                await exportToPng(cardElement, card.plan.title);
+                                break;
+                        }
+                        get().addProgress(`Exported "${card.plan.title}" as ${normalizedFormat.toUpperCase()}.`);
+                    } catch (error) {
+                        console.error('Failed to export card', error);
+                        get().addProgress('Export failed. Please try again.', 'error');
+                    }
+                })();
+                break;
+            }
+            default:
+                break;
+        }
     },
 
 
