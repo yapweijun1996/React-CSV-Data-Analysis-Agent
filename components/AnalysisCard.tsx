@@ -167,7 +167,7 @@ export const AnalysisCard: React.FC<AnalysisCardProps> = ({ cardId }) => {
         <div
             ref={cardRef}
             id={id}
-            className="bg-white rounded-lg shadow-lg p-4 flex flex-col transition-all duration-300 hover:shadow-blue-500/20 border border-slate-200 break-inside-avoid inline-block w-full mb-6"
+            className="bg-white rounded-lg shadow-lg p-4 flex flex-col transition-all duration-300 hover:shadow-blue-500/20 border border-slate-200 w-full"
         >
             <div className="flex justify-between items-start gap-4 mb-2">
                 <h3 className="text-lg font-bold text-slate-900 flex-1">{plan.title}</h3>
