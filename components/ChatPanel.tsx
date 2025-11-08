@@ -1,0 +1,302 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { ProgressMessage, ChatMessage, AppView, ClarificationRequest } from '../types';
+import { useAppStore } from '../store/useAppStore';
+
+const HideIcon: React.FC = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+    </svg>
+);
+
+const SettingsIcon: React.FC = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+    </svg>
+);
+
+const MemoryIcon: React.FC = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
+    </svg>
+);
+
+
+const SendIcon: React.FC = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+        <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
+    </svg>
+);
+
+const LoadingIcon: React.FC = () => (
+     <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+    </svg>
+);
+
+
+export const ChatPanel: React.FC = () => {
+    const {
+        progressMessages,
+        chatHistory,
+        isBusy,
+        handleChatMessage,
+        isApiKeySet,
+        setIsAsideVisible,
+        setIsSettingsModalOpen,
+        setIsMemoryPanelOpen,
+        handleShowCardFromChat,
+        currentView,
+        pendingClarification,
+        handleClarificationResponse,
+    } = useAppStore(state => ({
+        progressMessages: state.progressMessages,
+        chatHistory: state.chatHistory,
+        isBusy: state.isBusy,
+        handleChatMessage: state.handleChatMessage,
+        isApiKeySet: state.isApiKeySet,
+        setIsAsideVisible: state.setIsAsideVisible,
+        setIsSettingsModalOpen: state.setIsSettingsModalOpen,
+        setIsMemoryPanelOpen: state.setIsMemoryPanelOpen,
+        handleShowCardFromChat: state.handleShowCardFromChat,
+        currentView: state.currentView,
+        pendingClarification: state.pendingClarification,
+        handleClarificationResponse: state.handleClarificationResponse,
+    }));
+
+    const [input, setInput] = useState('');
+    const messagesEndRef = useRef<HTMLDivElement>(null);
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+    const timeline = [...progressMessages, ...chatHistory]
+        .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+
+    const scrollToBottom = () => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    };
+
+    useEffect(scrollToBottom, [timeline]);
+
+    // Auto-resize textarea based on content
+    useEffect(() => {
+        const textarea = textareaRef.current;
+        if (textarea) {
+            textarea.style.height = 'auto'; // Reset height
+            const scrollHeight = textarea.scrollHeight;
+            textarea.style.height = `${scrollHeight}px`;
+        }
+    }, [input]);
+
+    const handleSend = (e: React.FormEvent | React.KeyboardEvent) => {
+        e.preventDefault();
+        if (input.trim() && !isBusy) {
+            handleChatMessage(input.trim());
+            setInput('');
+        }
+    };
+    
+    const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            handleSend(e);
+        }
+    };
+
+    const getPlaceholder = () => {
+        if (!isApiKeySet) return "Set API Key in settings to chat";
+        if (pendingClarification) return "Please select an option above to continue";
+        switch (currentView) {
+            case 'analysis_dashboard':
+                return "Ask for a new analysis or data transformation...";
+            case 'file_upload':
+            default:
+                return "Upload a file to begin chatting";
+        }
+    };
+
+    const renderMessage = (item: ProgressMessage | ChatMessage, index: number) => {
+        if ('sender' in item) { // It's a ChatMessage
+            const msg = item as ChatMessage;
+
+            if (msg.type === 'ai_clarification' && msg.clarificationRequest) {
+                const isPending = pendingClarification?.question === msg.clarificationRequest.question;
+                return (
+                    <div key={`chat-${index}`} className="my-2 p-3 bg-white border border-blue-200 rounded-lg">
+                        <div className="flex items-center text-blue-700 mb-2">
+                            <span className="text-lg mr-2">🤔</span>
+                            <h4 className="font-semibold">Clarification Needed</h4>
+                        </div>
+                        <p className="text-sm text-slate-700 mb-3">{msg.clarificationRequest.question}</p>
+                        <div className="flex flex-col space-y-2">
+                            {msg.clarificationRequest.options.map(option => (
+                                <button
+                                    key={option.value}
+                                    onClick={() => handleClarificationResponse(option)}
+                                    disabled={!isPending || isBusy}
+                                    className="w-full text-left text-sm px-3 py-2 bg-slate-100 rounded-md hover:bg-blue-100 hover:border-blue-500 border border-slate-200 transition-colors disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:bg-slate-100"
+                                >
+                                    {option.label}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                );
+            }
+
+            if (msg.type === 'ai_plan_start') {
+                return (
+                    <div key={`chat-${index}`} className="my-2 p-3 bg-slate-100 border border-slate-200 rounded-lg">
+                        <div className="flex items-center text-slate-700 mb-2">
+                             <span className="text-lg mr-2">⚙️</span>
+                             <h4 className="font-semibold">Plan Execution</h4>
+                        </div>
+                        <p className="text-sm text-slate-700 whitespace-pre-wrap">{msg.text}</p>
+                    </div>
+                );
+            }
+
+            if (msg.type === 'ai_thinking') {
+                return (
+                    <div key={`chat-${index}`} className="my-2 p-3 bg-white border border-blue-200 rounded-lg">
+                        <div className="flex items-center text-blue-700 mb-2">
+                             <span className="text-lg mr-2">🧠</span>
+                             <h4 className="font-semibold">AI's Initial Analysis</h4>
+                        </div>
+                        <p className="text-sm text-slate-700 whitespace-pre-wrap">{msg.text}</p>
+                    </div>
+                )
+            }
+            
+            if (msg.type === 'ai_proactive_insight') {
+                return (
+                    <div key={`chat-${index}`} className="my-2 p-3 bg-yellow-50 border border-yellow-300 rounded-lg">
+                        <div className="flex items-center text-yellow-800 mb-2">
+                             <span className="text-lg mr-2">💡</span>
+                             <h4 className="font-semibold">Proactive Insight</h4>
+                        </div>
+                        <p className="text-sm text-slate-700 whitespace-pre-wrap">{msg.text}</p>
+                         {msg.cardId && (
+                            <button 
+                                onClick={() => handleShowCardFromChat(msg.cardId!)}
+                                className="mt-2 text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded-md hover:bg-yellow-200 transition-colors w-full text-left font-medium"
+                            >
+                                → Show Related Card
+                            </button>
+                         )}
+                    </div>
+                )
+            }
+
+
+            if (msg.sender === 'user') {
+                return (
+                    <div key={`chat-${index}`} className="flex justify-end">
+                        <div className="bg-blue-600 rounded-lg px-3 py-2 max-w-xs lg:max-w-md">
+                            <p className="text-sm text-white">{msg.text}</p>
+                        </div>
+                    </div>
+                );
+            }
+            // AI message
+            return (
+                <div key={`chat-${index}`} className="flex">
+                    <div className={`rounded-lg px-3 py-2 max-w-xs lg:max-w-md ${msg.isError ? 'bg-red-100' : 'bg-slate-200'}`}>
+                         <p className={`text-sm ${msg.isError ? 'text-red-800' : 'text-slate-800'}`}>{msg.text}</p>
+                         {msg.cardId && !msg.isError && (
+                            <button 
+                                onClick={() => handleShowCardFromChat(msg.cardId!)}
+                                className="mt-2 text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-md hover:bg-blue-200 transition-colors w-full text-left font-medium"
+                            >
+                                → Show Related Card
+                            </button>
+                         )}
+                    </div>
+                </div>
+            );
+        } else { // It's a ProgressMessage
+            const msg = item as ProgressMessage;
+             return (
+                 <div key={`prog-${index}`} className={`flex text-xs ${msg.type === 'error' ? 'text-red-600' : 'text-slate-500'}`}>
+                    <span className="mr-2 text-slate-400">{msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                    <span>{msg.text}</span>
+                </div>
+            )
+        }
+    }
+
+    return (
+        <div className="flex flex-col h-full bg-slate-100 rounded-lg md:rounded-none">
+            <div className="p-4 border-b border-slate-200 flex justify-between items-center relative">
+                <h2 className="text-xl font-semibold text-slate-900">Assistant</h2>
+                 <div className="flex items-center space-x-3">
+                    <button
+                        onClick={() => setIsMemoryPanelOpen(true)}
+                        className="p-1 text-slate-500 rounded-full hover:bg-slate-200 hover:text-slate-800 transition-colors"
+                        title="View AI Memory"
+                        aria-label="View AI Memory"
+                    >
+                        <MemoryIcon />
+                    </button>
+                    <button
+                        onClick={() => setIsSettingsModalOpen(true)}
+                        className="p-1 text-slate-500 rounded-full hover:bg-slate-200 hover:text-slate-800 transition-colors"
+                        title="Settings"
+                        aria-label="Open Settings"
+                    >
+                        <SettingsIcon />
+                    </button>
+                    <button 
+                        onClick={() => setIsAsideVisible(false)} 
+                        className="p-1 text-slate-500 rounded-full hover:bg-slate-200 hover:text-slate-800 transition-colors"
+                        title="Hide Panel"
+                        aria-label="Hide Assistant Panel"
+                    >
+                        <HideIcon />
+                    </button>
+                </div>
+                {isBusy && (
+                    <div
+                        className="absolute bottom-0 left-0 right-0 h-0.5 animate-loading-shimmer"
+                        style={{
+                            backgroundImage: 'linear-gradient(to right, #bfdbfe 25%, #3b82f6 50%, #bfdbfe 75%)',
+                            backgroundSize: '200% 100%',
+                        }}
+                    ></div>
+                )}
+            </div>
+            <div className="flex-1 p-4 overflow-y-auto space-y-4">
+                {timeline.map(renderMessage)}
+                <div ref={messagesEndRef} />
+            </div>
+            <div className="p-4 border-t border-slate-200 bg-white">
+                <form onSubmit={handleSend} className="flex items-start space-x-2">
+                    <textarea
+                        ref={textareaRef}
+                        rows={1}
+                        value={input}
+                        onChange={(e) => setInput(e.target.value)}
+                        onKeyDown={handleKeyDown}
+                        placeholder={getPlaceholder()}
+                        disabled={isBusy || !isApiKeySet || currentView === 'file_upload' || !!pendingClarification}
+                        className="flex-grow bg-white border border-slate-300 rounded-md py-2 px-3 text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 resize-none max-h-32"
+                        style={{ overflowY: 'auto' }}
+                    />
+                     <button
+                        type="submit"
+                        disabled={isBusy || !input.trim() || !isApiKeySet || currentView === 'file_upload' || !!pendingClarification}
+                        className="flex-shrink-0 w-10 h-10 flex items-center justify-center bg-blue-600 text-white font-semibold rounded-md hover:bg-blue-700 transition-colors disabled:bg-blue-300 disabled:cursor-not-allowed"
+                        aria-label={isBusy ? "Sending message" : "Send message"}
+                    >
+                        {isBusy ? <LoadingIcon /> : <SendIcon />}
+                    </button>
+                </form>
+                 <div className="text-xs text-slate-400 mt-2">
+                    {currentView === 'analysis_dashboard' 
+                        ? 'e.g., "Sum of sales by region", or "Remove rows for USA"'
+                        : ''
+                    }
+                </div>
+            </div>
+        </div>
+    );
+};
