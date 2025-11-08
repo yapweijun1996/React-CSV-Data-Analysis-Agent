@@ -47,7 +47,7 @@ export const DataTransformGuard: React.FC = () => {
                     </p>
                     {pendingDataTransform.previewRows.length > 0 && (
                         <pre className="bg-white text-amber-900 text-xs rounded-md mt-2 p-2 overflow-auto max-h-40 border border-amber-200">
-{JSON.stringify(pendingDataTransform.previewRows.slice(0, 2), null, 2)}
+                            {JSON.stringify(pendingDataTransform.previewRows.slice(0, 2), null, 2)}
                         </pre>
                     )}
                     <div className="flex flex-wrap gap-2 mt-3">

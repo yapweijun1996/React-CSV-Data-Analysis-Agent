@@ -13,6 +13,7 @@ const commonRules = {
     - A row is likely **valid data** if it has a value in its primary identifier column(s) (e.g., 'Account Code', 'Product ID') and in its metric columns.
     - **CRITICAL: Do not confuse hierarchical data with summary rows.** Look for patterns in identifier columns where one code is a prefix of another (e.g., '50' is a parent to '5010'). These hierarchical parent rows are **valid data** representing a higher level of aggregation and MUST be kept. Your role is to reshape the data, not to pre-summarize it by removing these levels.
     - A row is likely **non-data** and should be removed if it's explicitly a summary (e.g., contains 'Total', 'Subtotal' in a descriptive column) OR if it's metadata (e.g., the primary identifier column is empty but other columns contain text, like a section header).`,
+    dataframeHelpers: `- **DataFrame Helper DSL**: The runtime provides reliable helpers via \`_util\`. Use \`_util.groupBy(rows, key)\`, \`_util.pivot(rows, rowKey, columnKey, valueKey, reducer)\`, \`_util.join(leftRows, rightRows, { leftKey, rightKey, how })\`, and \`_util.rollingWindow(rows, windowSize, { column, op })\` instead of rewriting these routines. These helpers dramatically reduce JavaScript mistakes—use them whenever you need grouping, reshaping, joining, or window calculations.`,
 };
 
 export const createDataPreparationPrompt = (columns: ColumnProfile[], sampleData: CsvRow[], lastError?: Error): string => `
@@ -23,6 +24,7 @@ export const createDataPreparationPrompt = (columns: ColumnProfile[], sampleData
     ${commonRules.numberParsing}
     ${commonRules.splitNumeric}
     ${commonRules.dataVsSummaries}
+    ${commonRules.dataframeHelpers}
     - **Crosstab/Wide Format**: Unpivot data where column headers are values (e.g., years, regions).
     - **Multi-header Rows**: Skip initial junk rows.
 
@@ -67,6 +69,7 @@ export const createFilterFunctionPrompt = (query: string, columns: ColumnProfile
     
     **CRITICAL Rules for Code Generation:**
     ${commonRules.numberParsing}
+    ${commonRules.dataframeHelpers}
     - When comparing strings, convert both the data and the comparison value to the same case (e.g., lower case) using \`.toLowerCase()\` to ensure case-insensitive matching.
     - For date comparisons, you can use \`new Date(row.date_column) > new Date('YYYY-MM-DD')\`.
     - The function you write will be the body of a new Function that receives 'data' (the full array of objects) and '_util'.
@@ -268,7 +271,7 @@ export const createChatPrompt = (
             - \`toggleHideOthers\`: Check/uncheck the “Hide Others” box (pass \`hide: true\`/false, or omit to flip).
             - \`toggleLegendLabel\`: Simulate clicking a legend label (\`label\` must match the on-screen text exactly).
             - \`exportCard\`: Trigger the export menu (\`format\` = 'png' | 'csv' | 'html').
-        4.  **execute_js_code**: For PERMANENT data transformations (creating new columns, deleting rows). This action WILL modify the main dataset and cause ALL charts to regenerate. Whenever you emit this action you MUST supply a fully-formed JavaScript function body (no placeholders, no empty strings). If you cannot write the code confidently, do NOT emit this action—explain the limitation instead. Use it for requests like "Remove all data from the USA".
+        4.  **execute_js_code**: For PERMANENT data transformations (creating new columns, deleting rows). This action WILL modify the main dataset and cause ALL charts to regenerate. Whenever you emit this action you MUST supply a fully-formed JavaScript function body (no placeholders, no empty strings). Use the provided helpers—\`_util.parseNumber\`, \`_util.splitNumericString\`, \`_util.groupBy\`, \`_util.pivot\`, \`_util.join\`, and \`_util.rollingWindow\`—instead of writing ad-hoc code for these operations. If you cannot write the code confidently, do NOT emit this action—explain the limitation instead. Use it for requests like "Remove all data from the USA".
         5.  **filter_spreadsheet**: For TEMPORARY, exploratory filtering of the Raw Data Explorer view. This action does NOT modify the main dataset and does NOT affect the analysis cards. Use it for requests like "show me record ORD1001" or "find all entries for Hannah".
         6.  **clarification_request**: To ask the user for more information when their request is ambiguous.
             - **Use Case**: The user says "show sales" but there are multiple sales-related columns ('Sales_USD', 'Sales_Units'). DO NOT GUESS. Ask for clarification.

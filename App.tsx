@@ -10,6 +10,7 @@ import { DataPrepDebugPanel } from './components/DataPrepDebugPanel';
 import { AppHeader } from './components/AppHeader';
 import { BusyStatusBar } from './components/BusyStatusBar';
 import { ToastStack } from './components/ToastStack';
+import { DataTransformGuard } from './components/DataTransformGuard';
 import { useAppStore } from './store/useAppStore';
 
 
@@ -78,6 +79,7 @@ const App: React.FC = () => {
             <main className="flex-1 overflow-hidden p-4 flex flex-col">
                 <AppHeader />
                 <BusyStatusBar />
+                <DataTransformGuard />
                 {renderMainContent()}
             </main>
             

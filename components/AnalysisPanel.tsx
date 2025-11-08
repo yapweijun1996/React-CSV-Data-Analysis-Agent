@@ -20,8 +20,15 @@ export const AnalysisPanel: React.FC = () => {
 
     return (
         <div className="p-1">
-            {finalSummary && <FinalSummary summary={finalSummary} />}
-            <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-6 mt-6">
+            {finalSummary && (
+                <div className="mb-6">
+                    <FinalSummary summary={finalSummary} />
+                </div>
+            )}
+            <div
+                className="mt-6 columns-1 md:columns-2 2xl:columns-3 [column-fill:_balance]"
+                style={{ columnGap: '1.5rem' }}
+            >
                 {cards.map((card) => (
                     <AnalysisCard 
                         key={card.id} 
