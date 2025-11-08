@@ -82,8 +82,20 @@ export const createFileUploadSlice = (
                 if (prepPlan && prepPlan.jsFunctionBody) {
                     get().addProgress(`AI Plan: ${prepPlan.explanation}`);
                     get().addProgress('Executing AI data transformation...');
-                    dataForAnalysis.data = executeJavaScriptDataTransform(dataForAnalysis.data, prepPlan.jsFunctionBody);
-                    get().addProgress('Transformation complete.');
+                    try {
+                        const transformResult = executeJavaScriptDataTransform(dataForAnalysis.data, prepPlan.jsFunctionBody);
+                        dataForAnalysis.data = transformResult.data;
+                        const { rowsBefore, rowsAfter, removedRows, addedRows, modifiedRows } = transformResult.meta;
+                        const summary = [`${rowsBefore} → ${rowsAfter} rows`];
+                        if (removedRows) summary.push(`${removedRows} removed`);
+                        if (addedRows) summary.push(`${addedRows} added`);
+                        if (modifiedRows) summary.push(`${modifiedRows} modified`);
+                        get().addProgress(`Transformation complete (${summary.join(', ')}).`);
+                    } catch (transformError) {
+                        const errorMessage = transformError instanceof Error ? transformError.message : String(transformError);
+                        get().addProgress(`Data transformation failed: ${errorMessage}`, 'error');
+                        throw transformError;
+                    }
                 } else {
                     get().addProgress('AI found no necessary data transformations.');
                 }

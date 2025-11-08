@@ -281,12 +281,40 @@ const createUtilObject = () => ({
     splitNumericString: splitNumericString,
 });
 
-export const executeJavaScriptDataTransform = (data: CsvRow[], jsFunctionBody: string): CsvRow[] => {
+interface DataTransformMeta {
+    rowsBefore: number;
+    rowsAfter: number;
+    addedRows: number;
+    removedRows: number;
+    modifiedRows: number;
+}
+
+const normalizeCellValue = (value: any): string => {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'number') return value.toString();
+    return String(value);
+};
+
+const rowsAreEqual = (rowA: CsvRow, rowB: CsvRow): boolean => {
+    const keysA = Object.keys(rowA);
+    const keysB = Object.keys(rowB);
+    if (keysA.length !== keysB.length) return false;
+    for (const key of keysA) {
+        if (!Object.prototype.hasOwnProperty.call(rowB, key)) return false;
+        if (normalizeCellValue(rowA[key]) !== normalizeCellValue(rowB[key])) return false;
+    }
+    return true;
+};
+
+export const executeJavaScriptDataTransform = (
+    data: CsvRow[],
+    jsFunctionBody: string,
+): { data: CsvRow[]; meta: DataTransformMeta } => {
     try {
         const _util = createUtilObject();
         const transformFunction = new Function('data', '_util', jsFunctionBody);
         const result = transformFunction(data, _util);
-        
+
         if (!Array.isArray(result)) {
             console.error("AI-generated transform function returned a non-array value. This is likely due to a missing 'return' statement in the generated code.", {
                 returnedValue: result,
@@ -299,7 +327,34 @@ export const executeJavaScriptDataTransform = (data: CsvRow[], jsFunctionBody: s
              throw new Error('AI-generated transform function did not return an array of objects.');
         }
 
-        return result as CsvRow[];
+        const castResult = result as CsvRow[];
+        const rowsBefore = data.length;
+        const rowsAfter = castResult.length;
+        const removedRows = rowsBefore > rowsAfter ? rowsBefore - rowsAfter : 0;
+        const addedRows = rowsAfter > rowsBefore ? rowsAfter - rowsBefore : 0;
+        const comparableLength = Math.min(rowsBefore, rowsAfter);
+        let modifiedRows = 0;
+        for (let i = 0; i < comparableLength; i++) {
+            if (!rowsAreEqual(data[i], castResult[i])) {
+                modifiedRows++;
+            }
+        }
+
+        const hasChanges = removedRows > 0 || addedRows > 0 || modifiedRows > 0;
+        if (!hasChanges) {
+            throw new Error('AI-generated data transformation produced no observable changes. Please refine the instruction or regenerate the code.');
+        }
+
+        return {
+            data: castResult,
+            meta: {
+                rowsBefore,
+                rowsAfter,
+                addedRows,
+                removedRows,
+                modifiedRows,
+            },
+        };
     } catch (error) {
         console.error("Error executing AI-generated JavaScript:", error);
         throw new Error(`AI-generated data transformation failed: ${error instanceof Error ? error.message : String(error)}`);

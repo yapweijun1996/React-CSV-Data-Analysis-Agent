@@ -69,11 +69,10 @@ export const createChatSlice = (
             }
             const memorySnapshot = selectedMemories;
             const memoryPayload = selectedMemories.map(mem => mem.text);
-            get().updateBusyStatus('Thinking through your question...');
-            const response = await generateChatResponse(
+            const requestAiResponse = (prompt: string) => generateChatResponse(
                 get().columnProfiles,
                 get().chatHistory,
-                message,
+                prompt,
                 cardContext,
                 get().settings,
                 get().aiCoreAnalysisSummary,
@@ -84,37 +83,47 @@ export const createChatSlice = (
                 { signal: deps.getRunSignal(runId) }
             );
 
+            get().updateBusyStatus('Thinking through your question...');
+            let response = await requestAiResponse(message);
+
             if (get().isRunCancellationRequested(runId)) {
                 get().addProgress('Stopped processing request.');
                 return;
             }
 
             let memoryTagAttached = false;
-            for (const action of response.actions) {
-                if (get().isRunCancellationRequested(runId)) {
-                    get().addProgress('Cancelled remaining actions.');
-                    return;
-                }
+            let retryAttempts = 0;
+            const MAX_AUTO_RETRIES = 1;
 
-                if (action.thought) get().addProgress(`AI Thought: ${action.thought}`);
-                switch (action.responseType) {
-                    case 'text_response':
-                        if (action.text) {
-                            const shouldAttachMemory = !memoryTagAttached && memorySnapshot.length > 0;
-                            const aiMessage: ChatMessage = {
-                                sender: 'ai',
-                                text: action.text,
-                                timestamp: new Date(),
-                                type: 'ai_message',
-                                cardId: action.cardId,
-                                usedMemories: shouldAttachMemory ? memorySnapshot : undefined,
-                            };
-                            if (shouldAttachMemory) {
-                                memoryTagAttached = true;
+            while (response) {
+                let retryRequest: { type: 'execute_js_code'; reason: string } | null = null;
+                let abortActionLoop = false;
+
+                for (const action of response.actions) {
+                    if (get().isRunCancellationRequested(runId)) {
+                        get().addProgress('Cancelled remaining actions.');
+                        return;
+                    }
+
+                    if (action.thought) get().addProgress(`AI Thought: ${action.thought}`);
+                    switch (action.responseType) {
+                        case 'text_response':
+                            if (action.text) {
+                                const shouldAttachMemory = !memoryTagAttached && memorySnapshot.length > 0;
+                                const aiMessage: ChatMessage = {
+                                    sender: 'ai',
+                                    text: action.text,
+                                    timestamp: new Date(),
+                                    type: 'ai_message',
+                                    cardId: action.cardId,
+                                    usedMemories: shouldAttachMemory ? memorySnapshot : undefined,
+                                };
+                                if (shouldAttachMemory) {
+                                    memoryTagAttached = true;
+                                }
+                                set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
                             }
-                            set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
-                        }
-                        break;
+                            break;
                     case 'plan_creation':
                         if (action.plan && get().csvData) {
                             await deps.runPlanWithChatLifecycle(action.plan, get().csvData!, runId);
@@ -125,10 +134,37 @@ export const createChatSlice = (
                         break;
                     case 'execute_js_code':
                         if (action.code?.jsFunctionBody && get().csvData) {
-                            const newDataArray = executeJavaScriptDataTransform(get().csvData!.data, action.code!.jsFunctionBody);
-                            const newData: CsvData = { ...get().csvData!, data: newDataArray };
-                            set({ csvData: newData, columnProfiles: profileData(newData.data) });
-                            await get().regenerateAnalyses(newData);
+                            try {
+                                const transformResult = executeJavaScriptDataTransform(get().csvData!.data, action.code!.jsFunctionBody);
+                                const newData: CsvData = { ...get().csvData!, data: transformResult.data };
+                                set({ csvData: newData, columnProfiles: profileData(newData.data) });
+                                const { rowsBefore, rowsAfter, removedRows, addedRows, modifiedRows } = transformResult.meta;
+                                const summaryParts = [
+                                    `${rowsBefore} → ${rowsAfter} rows`,
+                                    removedRows ? `${removedRows} removed` : null,
+                                    addedRows ? `${addedRows} added` : null,
+                                    modifiedRows ? `${modifiedRows} modified` : null,
+                                ].filter(Boolean);
+                                const summaryDescription = summaryParts.length > 0 ? summaryParts.join(', ') : 'changes detected';
+                                get().addProgress(`AI data transformation applied (${summaryDescription}).`);
+                                await get().regenerateAnalyses(newData);
+                            } catch (error) {
+                                const errorMessage = error instanceof Error ? error.message : String(error);
+                                get().addProgress(`AI data transformation failed: ${errorMessage}`, 'error');
+                                const failureMessage: ChatMessage = {
+                                    sender: 'ai',
+                                    text: `I couldn't apply that data transformation: ${errorMessage}`,
+                                    timestamp: new Date(),
+                                    type: 'ai_message',
+                                    isError: true,
+                                };
+                                set(prev => ({ chatHistory: [...prev.chatHistory, failureMessage] }));
+                                if (retryAttempts < MAX_AUTO_RETRIES) {
+                                    retryRequest = { type: 'execute_js_code', reason: errorMessage };
+                                }
+                                abortActionLoop = true;
+                                break;
+                            }
                         }
                         break;
                     case 'filter_spreadsheet':
@@ -193,7 +229,36 @@ export const createChatSlice = (
                             return;
                         }
                         break;
+                    }
+
+                    if (abortActionLoop) {
+                        break;
+                    }
                 }
+
+                if (retryRequest && retryRequest.type === 'execute_js_code' && retryAttempts < MAX_AUTO_RETRIES) {
+                    const nextAttemptNumber = retryAttempts + 2;
+                    retryAttempts++;
+                    const retryMessage: ChatMessage = {
+                        sender: 'ai',
+                        text: `The previous data transformation failed (${retryRequest.reason}). I'll try again automatically (attempt ${nextAttemptNumber}).`,
+                        timestamp: new Date(),
+                        type: 'ai_message',
+                        isError: true,
+                    };
+                    set(prev => ({ chatHistory: [...prev.chatHistory, retryMessage] }));
+                    get().addProgress(`Auto-retrying data transformation (attempt ${nextAttemptNumber})...`);
+                    get().updateBusyStatus('Retrying data transformation...');
+                    const retryPrompt = `${message}\n\nSYSTEM NOTE: Previous data transformation failed because ${retryRequest.reason}. Please adjust the code and try again.`;
+                    response = await requestAiResponse(retryPrompt);
+                    if (get().isRunCancellationRequested(runId)) {
+                        get().addProgress('Stopped processing request.');
+                        return;
+                    }
+                    continue;
+                }
+
+                break;
             }
         } catch (error) {
             if (!get().isRunCancellationRequested(runId)) {
