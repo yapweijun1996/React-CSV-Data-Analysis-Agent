@@ -1,6 +1,6 @@
 import { ColumnProfile, CsvRow, Settings, AiFilterResponse } from '../../types';
 import { callGemini, callOpenAI } from './apiClient';
-import { filterFunctionSchema } from './schemas';
+import { filterFunctionSchema, filterFunctionJsonSchema } from './schemas';
 import { createFilterFunctionPrompt } from '../promptTemplates';
 
 interface FilterFunctionOptions {
@@ -32,7 +32,12 @@ export const generateFilterFunction = async (
                     { role: 'system', content: systemPrompt },
                     { role: 'user', content: promptContent }
                 ];
-                jsonStr = await callOpenAI(settings, messages, true, options?.signal);
+                jsonStr = await callOpenAI(
+                    settings,
+                    messages,
+                    { name: 'FilterFunctionResponse', schema: filterFunctionJsonSchema, strict: true },
+                    options?.signal
+                );
 
             } else { // Google Gemini
                 jsonStr = await callGemini(settings, promptContent, filterFunctionSchema, options?.signal);

@@ -156,7 +156,7 @@ export const multiActionChatResponseSchema = {
                             toolName: { type: Type.STRING, enum: ['highlightCard', 'changeCardChartType', 'showCardData', 'filterCard', 'setTopN', 'toggleHideOthers', 'toggleLegendLabel', 'exportCard'] },
                             args: {
                                 type: Type.OBJECT,
-                                description: 'Arguments for the tool. e.g., { cardId: "..." }',
+                                description: 'Arguments for the tool. Provide values for all properties; set unused ones to null.',
                                 properties: {
                                     cardId: { type: Type.STRING, description: 'The ID of the target analysis card.' },
                                     newType: { type: Type.STRING, enum: ['bar', 'line', 'pie', 'doughnut', 'scatter', 'combo'], description: "For 'changeCardChartType'." },
@@ -168,10 +168,11 @@ export const multiActionChatResponseSchema = {
                                     label: { type: Type.STRING, description: "For 'toggleLegendLabel'. The exact legend label to toggle visibility for." },
                                     format: { type: Type.STRING, enum: ['png', 'csv', 'html'], description: "For 'exportCard'. Choose the export format." },
                                 },
-                                required: ['cardId'],
+                                required: ['cardId', 'newType', 'visible', 'column', 'values', 'topN', 'hide', 'label', 'format'],
+                                additionalProperties: false,
                             },
                         },
-                        required: ['toolName', 'args']
+                        required: ['toolName', 'args'],
                     },
                     code: {
                         type: Type.OBJECT,
@@ -204,3 +205,147 @@ export const multiActionChatResponseSchema = {
     },
     required: ['actions']
 };
+
+const typeMap = new Map<any, string>([
+    [Type.STRING, 'string'],
+    [Type.INTEGER, 'integer'],
+    [Type.BOOLEAN, 'boolean'],
+    [Type.ARRAY, 'array'],
+    [Type.OBJECT, 'object'],
+]);
+
+const strictAdditionalPropsPaths = new Set([
+    '',
+    'properties.actions.items',
+    'properties.actions.items.properties.plan',
+    'properties.actions.items.properties.domAction',
+    'properties.actions.items.properties.domAction.properties.args',
+    'properties.actions.items.properties.code',
+    'properties.actions.items.properties.args',
+    'properties.actions.items.properties.clarification',
+    'properties.actions.items.properties.clarification.properties.options.items',
+    'properties.actions.items.properties.clarification.properties.pendingPlan',
+]);
+
+const strictAllPropsRequiredPaths = new Set([
+    'properties.actions.items.properties.plan',
+    'properties.actions.items.properties.domAction.properties.args',
+    'properties.actions.items.properties.args',
+    'properties.actions.items.properties.clarification.properties.pendingPlan',
+    'properties.actions.items',
+]);
+
+const nullablePropertyPaths = new Set([
+    'properties.actions.items.properties.text',
+    'properties.actions.items.properties.cardId',
+    'properties.actions.items.properties.plan',
+    'properties.actions.items.properties.plan.properties.aggregation',
+    'properties.actions.items.properties.plan.properties.groupByColumn',
+    'properties.actions.items.properties.plan.properties.valueColumn',
+    'properties.actions.items.properties.plan.properties.xValueColumn',
+    'properties.actions.items.properties.plan.properties.yValueColumn',
+    'properties.actions.items.properties.plan.properties.secondaryValueColumn',
+    'properties.actions.items.properties.plan.properties.secondaryAggregation',
+    'properties.actions.items.properties.plan.properties.defaultTopN',
+    'properties.actions.items.properties.plan.properties.defaultHideOthers',
+    'properties.actions.items.properties.domAction',
+    'properties.actions.items.properties.domAction.properties.args',
+    'properties.actions.items.properties.domAction.properties.args.properties.newType',
+    'properties.actions.items.properties.domAction.properties.args.properties.visible',
+    'properties.actions.items.properties.domAction.properties.args.properties.column',
+    'properties.actions.items.properties.domAction.properties.args.properties.values',
+    'properties.actions.items.properties.domAction.properties.args.properties.topN',
+    'properties.actions.items.properties.domAction.properties.args.properties.hide',
+    'properties.actions.items.properties.domAction.properties.args.properties.label',
+    'properties.actions.items.properties.domAction.properties.args.properties.format',
+    'properties.actions.items.properties.code',
+    'properties.actions.items.properties.args',
+    'properties.actions.items.properties.clarification',
+    'properties.actions.items.properties.clarification.properties.pendingPlan',
+    'properties.actions.items.properties.clarification.properties.pendingPlan.properties.chartType',
+    'properties.actions.items.properties.clarification.properties.pendingPlan.properties.title',
+    'properties.actions.items.properties.clarification.properties.pendingPlan.properties.description',
+    'properties.actions.items.properties.clarification.properties.pendingPlan.properties.aggregation',
+    'properties.actions.items.properties.clarification.properties.pendingPlan.properties.groupByColumn',
+    'properties.actions.items.properties.clarification.properties.pendingPlan.properties.valueColumn',
+    'properties.actions.items.properties.clarification.properties.pendingPlan.properties.xValueColumn',
+    'properties.actions.items.properties.clarification.properties.pendingPlan.properties.yValueColumn',
+    'properties.actions.items.properties.clarification.properties.pendingPlan.properties.secondaryValueColumn',
+    'properties.actions.items.properties.clarification.properties.pendingPlan.properties.secondaryAggregation',
+    'properties.actions.items.properties.clarification.properties.pendingPlan.properties.defaultTopN',
+    'properties.actions.items.properties.clarification.properties.pendingPlan.properties.defaultHideOthers',
+]);
+
+const applyNullability = (schema: any) => {
+    if (!schema) return schema;
+    if (schema.enum) {
+        if (!schema.enum.includes(null)) {
+            schema.enum = [...schema.enum, null];
+        }
+        if (!schema.type) {
+            schema.type = ['null'];
+        }
+    }
+    if (schema.type) {
+        if (Array.isArray(schema.type)) {
+            if (!schema.type.includes('null')) {
+                schema.type = [...schema.type, 'null'];
+            }
+        } else if (schema.type !== 'null') {
+            schema.type = [schema.type, 'null'];
+        }
+    } else if (!schema.anyOf) {
+        schema.anyOf = [{ type: 'null' }];
+    }
+    return schema;
+};
+
+const convertGeminiSchemaToJsonSchema = (node: any, path = ''): any => {
+    if (Array.isArray(node)) {
+        return node.map(item => convertGeminiSchemaToJsonSchema(item, `${path}[]`));
+    }
+    if (node && typeof node === 'object') {
+        const converted: Record<string, any> = {};
+        for (const [key, value] of Object.entries(node)) {
+            if (key === 'type') {
+                converted.type = typeMap.get(value as number) ?? value;
+                continue;
+            }
+            if (key === 'properties' && value && typeof value === 'object') {
+                converted.properties = {};
+                for (const [propKey, propValue] of Object.entries(value as Record<string, any>)) {
+                    const nextPath = path ? `${path}.properties.${propKey}` : `properties.${propKey}`;
+                    converted.properties[propKey] = convertGeminiSchemaToJsonSchema(propValue, nextPath);
+                }
+                continue;
+            }
+            if (key === 'items') {
+                const nextPath = path ? `${path}.items` : 'items';
+                converted.items = convertGeminiSchemaToJsonSchema(value, nextPath);
+                continue;
+            }
+            converted[key] = convertGeminiSchemaToJsonSchema(value, path ? `${path}.${key}` : key);
+        }
+        if (converted.type === 'object' && typeof converted.additionalProperties === 'undefined' && strictAdditionalPropsPaths.has(path)) {
+            converted.additionalProperties = false;
+        }
+        if (converted.type === 'object' && strictAllPropsRequiredPaths.has(path)) {
+            const propertyKeys = converted.properties ? Object.keys(converted.properties) : [];
+            converted.required = propertyKeys;
+        }
+        if (nullablePropertyPaths.has(path)) {
+            return applyNullability(converted);
+        }
+        return converted;
+    }
+    if (nullablePropertyPaths.has(path)) {
+        return applyNullability(node);
+    }
+    return node;
+};
+
+export const planJsonSchema = convertGeminiSchemaToJsonSchema(planSchema);
+export const dataPreparationJsonSchema = convertGeminiSchemaToJsonSchema(dataPreparationSchema);
+export const filterFunctionJsonSchema = convertGeminiSchemaToJsonSchema(filterFunctionSchema);
+export const proactiveInsightJsonSchema = convertGeminiSchemaToJsonSchema(proactiveInsightSchema);
+export const multiActionChatResponseJsonSchema = convertGeminiSchemaToJsonSchema(multiActionChatResponseSchema);

@@ -1,7 +1,7 @@
 
 import { CsvData, ColumnProfile, Settings, AnalysisPlan, CsvRow, AggregationType } from '../../types';
 import { callGemini, callOpenAI, robustlyParseJsonArray } from './apiClient';
-import { planSchema } from './schemas';
+import { planSchema, planJsonSchema } from './schemas';
 import { createCandidatePlansPrompt, createRefinePlansPrompt } from '../promptTemplates';
 import { executePlan } from '../../utils/dataProcessor';
 
@@ -50,10 +50,15 @@ const generateCandidatePlans = async (
 
     if (settings.provider === 'openai') {
         const systemPrompt = `You are a senior business intelligence analyst specializing in ERP and financial data. Your task is to generate a diverse list of insightful analysis plan candidates for a given dataset by identifying common data patterns.
-You MUST respond with a single valid JSON object with a single key "plans" that contains an array of plan objects, and nothing else. The JSON object must adhere to the provided schema.`;
+You MUST respond with JSON that adheres exactly to the provided schema (an array of plan objects) and includes no extra commentary.`;
 
         const messages = [{ role: 'system', content: systemPrompt }, { role: 'user', content: promptContent }];
-        const content = await callOpenAI(settings, messages, true, signal);
+        const content = await callOpenAI(
+            settings,
+            messages,
+            { name: 'AnalysisPlanArray', schema: planJsonSchema, strict: true },
+            signal
+        );
         plans = robustlyParseJsonArray(content);
     
     } else { // Google Gemini
@@ -74,11 +79,16 @@ const refineAndConfigurePlans = async (
     const promptContent = createRefinePlansPrompt(plansWithData);
 
     if(settings.provider === 'openai') {
-        const systemPrompt = `You are a Quality Review Data Analyst. Your job is to review a list of proposed analysis plans and their data samples. Your goal is to select ONLY the most insightful and readable charts for the end-user, and configure them for the best default view.
-You MUST respond with a single valid JSON object with a single key "plans" that contains an array of ONLY the good, configured plan objects. Do not include the discarded plans. The JSON object must adhere to the provided schema.`;
+        const systemPrompt = `You are a Quality Review Data Analyst. Your job is to review a list of proposed analysis plans and their data samples. Select ONLY the most insightful and readable charts and configure them for the best default view.
+You MUST respond with JSON that strictly adheres to the provided schema (an array of plan objects) and contains no additional explanation.`;
         
         const messages = [{ role: 'system', content: systemPrompt }, { role: 'user', content: promptContent }];
-        const content = await callOpenAI(settings, messages, true, signal);
+        const content = await callOpenAI(
+            settings,
+            messages,
+            { name: 'RefinedAnalysisPlanArray', schema: planJsonSchema, strict: true },
+            signal
+        );
         rawPlans = robustlyParseJsonArray(content);
 
     } else { // Google Gemini

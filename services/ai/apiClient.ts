@@ -69,21 +69,51 @@ export const robustlyParseJsonArray = (responseText: string): any[] => {
 };
 
 
+type OpenAIJsonSchemaFormat = {
+    name: string;
+    schema: Record<string, any>;
+    strict?: boolean;
+};
+
+const resolveResponseFormat = (
+    format?: boolean | OpenAIJsonSchemaFormat
+): { type: 'json_object' } | { type: 'json_schema'; json_schema: { name: string; schema: Record<string, any>; strict?: boolean } } | undefined => {
+    if (typeof format === 'boolean') {
+        return format ? { type: 'json_object' } : undefined;
+    }
+    if (format) {
+        return {
+            type: 'json_schema',
+            json_schema: {
+                name: format.name,
+                schema: format.schema,
+                strict: format.strict ?? true,
+            },
+        };
+    }
+    return undefined;
+};
+
 export const callOpenAI = async (
     settings: Settings,
     messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
-    useJsonFormat: boolean,
+    jsonFormatOrSchema?: boolean | OpenAIJsonSchemaFormat,
     signal?: AbortSignal
 ): Promise<string> => {
     if (!settings.openAIApiKey) throw new Error("OpenAI API key is not set.");
     const openai = new OpenAI({ apiKey: settings.openAIApiKey, dangerouslyAllowBrowser: true });
+
+    const responseFormat = resolveResponseFormat(jsonFormatOrSchema);
+    const requestPayload = {
+        model: settings.model,
+        messages,
+    };
+    if (responseFormat) {
+        requestPayload.response_format = responseFormat;
+    }
     
     const response: OpenAI.Chat.ChatCompletion = await withRetry(() => openai.chat.completions.create(
-        {
-            model: settings.model,
-            messages: messages,
-            response_format: useJsonFormat ? { type: 'json_object' } : undefined,
-        },
+        requestPayload,
         signal ? { signal } : undefined
     ), 2, signal);
     

@@ -1,7 +1,7 @@
 
 import { CsvData, ColumnProfile, Settings, AnalysisCardData, CardContext, CsvRow } from '../../types';
 import { callGemini, callOpenAI } from './apiClient';
-import { proactiveInsightSchema } from './schemas';
+import { proactiveInsightSchema, proactiveInsightJsonSchema } from './schemas';
 import { createSummaryPrompt, createCoreAnalysisPrompt, createProactiveInsightPrompt, createFinalSummaryPrompt } from '../promptTemplates';
 
 interface SummaryOptions {
@@ -68,7 +68,12 @@ export const generateProactiveInsights = async (cardContext: CardContext[], sett
              const systemPrompt = `You are a proactive data analyst. Review the following summaries of data visualizations. Your task is to identify the single most commercially significant or surprising insight. This could be a major trend, a key outlier, or a dominant category that has clear business implications. Your response must be a single JSON object with 'insight' and 'cardId' keys.`;
             
             const messages = [{ role: 'system', content: systemPrompt }, { role: 'user', content: promptContent }];
-            jsonStr = await callOpenAI(settings, messages, true, options?.signal);
+            jsonStr = await callOpenAI(
+                settings,
+                messages,
+                { name: 'ProactiveInsight', schema: proactiveInsightJsonSchema, strict: true },
+                options?.signal
+            );
         
         } else { // Google Gemini
             jsonStr = await callGemini(settings, promptContent, proactiveInsightSchema, options?.signal);

@@ -1,7 +1,7 @@
 
 import { CsvData, ColumnProfile, Settings, DataPreparationPlan } from '../../types';
 import { callGemini, callOpenAI } from './apiClient';
-import { dataPreparationSchema } from './schemas';
+import { dataPreparationSchema, dataPreparationJsonSchema } from './schemas';
 import { createDataPreparationPrompt } from '../promptTemplates';
 
 interface DataPreparationPlanOptions {
@@ -33,7 +33,12 @@ export const generateDataPreparationPlan = async (
                     { role: 'system', content: systemPrompt },
                     { role: 'user', content: promptContent }
                 ];
-                jsonStr = await callOpenAI(settings, messages, true, options?.signal);
+                jsonStr = await callOpenAI(
+                    settings,
+                    messages,
+                    { name: 'DataPreparationPlan', schema: dataPreparationJsonSchema, strict: true },
+                    options?.signal
+                );
 
             } else { // Google Gemini
                 if (!settings.geminiApiKey) return { explanation: "No transformation needed as Gemini API key is not set.", jsFunctionBody: null, outputColumns: columns };
