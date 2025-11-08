@@ -104,6 +104,12 @@ const applyFriendlyPlanCopy = (plan: AnalysisPlan, columns: ColumnProfile[]): An
         '[group]': dimensionLabel,
     };
 
+    const hasRunawayRepetition = (text: string): boolean => {
+        if (!text) return false;
+        const compact = text.replace(/\s+/g, '');
+        return /(.{3,20})\1{3,}/i.test(compact);
+    };
+
     const rewrite = (text: string | undefined, fallback: string): string => {
         if (!text || text.trim() === '') return fallback;
         let rewritten = text;
@@ -114,7 +120,10 @@ const applyFriendlyPlanCopy = (plan: AnalysisPlan, columns: ColumnProfile[]): An
         if (/\[.*\]/.test(rewritten)) {
             return fallback;
         }
-        return rewritten;
+        if (rewritten.length > 150 || hasRunawayRepetition(rewritten)) {
+            return fallback;
+        }
+        return rewritten.trim();
     };
 
     const defaultTitle = `${metricLabel} by ${dimensionLabel}`;
@@ -240,27 +249,30 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         asideWidth: window.innerWidth / 4 > MIN_ASIDE_WIDTH ? window.innerWidth / 4 : MIN_ASIDE_WIDTH,
         isSpreadsheetVisible: true,
         isDataPrepDebugVisible: false,
-    isSettingsModalOpen: false,
-    isHistoryPanelOpen: false,
-    isMemoryPanelOpen: false,
-    isAiFiltering: false,
-    settings: getSettings(),
-    reportsList: [],
-    isResizing: false,
-    isApiKeySet: (() => {
-        const settings = getSettings();
-        if (settings.provider === 'google') {
-            return !!settings.geminiApiKey;
-        }
-        return !!settings.openAIApiKey;
-    })(),
+        isSettingsModalOpen: false,
+        isHistoryPanelOpen: false,
+        isMemoryPanelOpen: false,
+        isAiFiltering: false,
+        settings: getSettings(),
+        reportsList: [],
+        isResizing: false,
+        isApiKeySet: (() => {
+            const settings = getSettings();
+            if (settings.provider === 'google') {
+                return !!settings.geminiApiKey;
+            }
+            return !!settings.openAIApiKey;
+        })(),
 
     init: async () => {
         const currentSession = await getReport(CURRENT_SESSION_KEY);
         if (currentSession) {
             set({
+                ...initialAppState,
                 ...currentSession.appState,
                 currentView: currentSession.appState.csvData ? 'analysis_dashboard' : 'file_upload',
+                pendingClarifications: currentSession.appState.pendingClarifications ?? [],
+                activeClarificationId: currentSession.appState.activeClarificationId ?? null,
             });
             if (currentSession.appState.vectorStoreDocuments && vectorStore.getIsInitialized()) {
                 vectorStore.rehydrate(currentSession.appState.vectorStoreDocuments);
@@ -614,7 +626,28 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                         break;
                     case 'plan_creation':
                         if (action.plan && get().csvData) {
-                            await get().runAnalysisPipeline([action.plan], get().csvData!, true);
+                            const planTitle = action.plan.title ?? 'your requested chart';
+                            const startingMessage: ChatMessage = {
+                                sender: 'ai',
+                                text: `Okay, creating a chart for "${planTitle}".`,
+                                timestamp: new Date(),
+                                type: 'ai_plan_start',
+                            };
+                            set(prev => ({ chatHistory: [...prev.chatHistory, startingMessage] }));
+
+                            const createdCards = await get().runAnalysisPipeline([action.plan], get().csvData!, true);
+
+                            if (createdCards.length > 0) {
+                                const cardSummary = createdCards[0].summary.split('---')[0].trim();
+                                const doneMessage: ChatMessage = {
+                                    sender: 'ai',
+                                    text: `Created the chart for "${planTitle}". Here's what I observed:\n${cardSummary}`,
+                                    timestamp: new Date(),
+                                    type: 'ai_message',
+                                    cardId: createdCards[0].id,
+                                };
+                                set(prev => ({ chatHistory: [...prev.chatHistory, doneMessage] }));
+                            }
                         }
                         break;
                     case 'dom_action':
@@ -647,33 +680,44 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                             );
 
                             if (!filteredClarification) {
-                                const warning = 'Those clarification options have no usable data right now. Try asking about a different metric.';
+                                const warning = 'I could not find any usable columns for that question. Try inspecting the data preview to pick a different column.';
                                 get().addProgress(warning, 'error');
-                                const aiMessage: ChatMessage = { sender: 'ai', text: warning, timestamp: new Date(), type: 'ai_message', isError: true };
+                                const aiMessage: ChatMessage = { 
+                                    sender: 'ai', 
+                                    text: `${warning}\nYou can also open the Data Preview to double-check column names.`,
+                                    timestamp: new Date(), 
+                                    type: 'ai_message', 
+                                    isError: true,
+                                    cta: {
+                                        type: 'open_data_preview',
+                                        label: 'Open Data Preview',
+                                        helperText: 'Review the raw columns before asking again.',
+                                    },
+                                };
                                 set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
                                 break;
                             }
 
-                            if (filteredClarification.options.length === 1) {
-                                set({ pendingClarification: filteredClarification });
-                                const autoOption = filteredClarification.options[0];
+                            const enrichedClarification = registerClarification(filteredClarification);
+
+                            if (enrichedClarification.options.length === 1) {
+                                const autoOption = enrichedClarification.options[0];
                                 get().addProgress(`AI inferred you meant "${autoOption.label}" (${autoOption.value}).`);
-                                await get().handleClarificationResponse(autoOption);
+                                await get().handleClarificationResponse(enrichedClarification.id, autoOption);
                                 break;
                             }
 
                             const clarificationMessage: ChatMessage = {
                                 sender: 'ai',
-                                text: filteredClarification.question,
+                                text: enrichedClarification.question,
                                 timestamp: new Date(),
                                 type: 'ai_clarification',
-                                clarificationRequest: filteredClarification,
+                                clarificationRequest: enrichedClarification,
                             };
                             set(prev => ({
-                                pendingClarification: filteredClarification,
                                 chatHistory: [...prev.chatHistory, clarificationMessage]
                             }));
-                            set({ isBusy: false });
+                            set({ isBusy: false, activeClarificationId: enrichedClarification.id });
                             return; 
                         }
                         break;
@@ -685,15 +729,16 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             const aiMessage: ChatMessage = { sender: 'ai', text: `Sorry, an error occurred: ${errorMessage}`, timestamp: new Date(), type: 'ai_message', isError: true };
             set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
         } finally {
-            if (get().pendingClarification === null) {
+            if (!get().pendingClarifications.some(req => req.status === 'pending' || req.status === 'resolving')) {
                 set({ isBusy: false });
             }
         }
     },
 
-    handleClarificationResponse: async (userChoice) => {
-        const { pendingClarification, csvData, columnProfiles } = get();
-        if (!pendingClarification || !csvData) return;
+    handleClarificationResponse: async (clarificationId, userChoice) => {
+        const { csvData, columnProfiles } = get();
+        const targetClarification = get().pendingClarifications.find(req => req.id === clarificationId && req.status === 'pending');
+        if (!targetClarification || !csvData) return;
     
         const userResponseMessage: ChatMessage = {
             sender: 'user',
@@ -704,12 +749,11 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         set(prev => ({
             isBusy: true,
             chatHistory: [...prev.chatHistory, userResponseMessage],
-            pendingClarification: null, 
         }));
+        updateClarificationStatus(clarificationId, 'resolving');
     
         try {
-            const { pendingPlan, targetProperty } = pendingClarification;
-            const previousClarification = pendingClarification;
+            const { pendingPlan, targetProperty } = targetClarification;
 
             const availableColumns = columnProfiles.map(p => p.name);
             const resolvedValue = resolveColumnChoice(userChoice, targetProperty, availableColumns);
@@ -720,9 +764,9 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 const aiErrorMessage: ChatMessage = { sender: 'ai', text: friendlyError, timestamp: new Date(), type: 'ai_message', isError: true };
                 set(prev => ({
                     isBusy: false,
-                    pendingClarification: previousClarification,
                     chatHistory: [...prev.chatHistory, aiErrorMessage],
                 }));
+                updateClarificationStatus(clarificationId, 'pending');
                 return;
             }
             
@@ -739,9 +783,9 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 const aiErrorMessage: ChatMessage = { sender: 'ai', text: friendlyError, timestamp: new Date(), type: 'ai_message', isError: true };
                 set(prev => ({
                     isBusy: false,
-                    pendingClarification: previousClarification,
                     chatHistory: [...prev.chatHistory, aiErrorMessage],
                 }));
+                updateClarificationStatus(clarificationId, 'pending');
                 return;
             }
             
@@ -818,29 +862,62 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                  throw new Error(`The clarified plan is still missing required fields like ${missingFields.join(', ')}.`);
             }
     
+            const planStartMessage: ChatMessage = {
+                sender: 'ai',
+                text: `Okay, creating a chart for "${completedPlan.title}".`,
+                timestamp: new Date(),
+                type: 'ai_plan_start',
+            };
+            set(prev => ({ chatHistory: [...prev.chatHistory, planStartMessage] }));
+
             const createdCards = await get().runAnalysisPipeline([completedPlan], csvData, true);
 
             if (createdCards.length > 0) {
-                 const planMessage: ChatMessage = { sender: 'ai', text: `Okay, creating a chart for "${completedPlan.title}".`, timestamp: new Date(), type: 'ai_plan_start' };
-                 const cardSummary = createdCards[0].summary.split('---')[0].trim();
-                 const observationMessage: ChatMessage = {
+                const cardSummary = createdCards[0].summary.split('---')[0].trim();
+                const completionMessage: ChatMessage = {
                     sender: 'ai',
-                    text: `Here's what I observed:\n${cardSummary}`,
+                    text: `Created the chart for "${completedPlan.title}". Here's what I observed:\n${cardSummary}`,
                     timestamp: new Date(),
                     type: 'ai_message',
                     cardId: createdCards[0].id,
-                 };
-                 set(prev => ({ chatHistory: [...prev.chatHistory, planMessage, observationMessage] }));
+                };
+                set(prev => ({ chatHistory: [...prev.chatHistory, completionMessage] }));
             }
+            updateClarificationStatus(clarificationId, 'resolved');
     
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
             get().addProgress(`Error processing clarification: ${errorMessage}`, 'error');
             const aiMessage: ChatMessage = { sender: 'ai', text: `Sorry, an error occurred while creating the chart: ${errorMessage}`, timestamp: new Date(), type: 'ai_message', isError: true };
             set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
+            updateClarificationStatus(clarificationId, 'pending');
         } finally {
             set({ isBusy: false });
         }
+    },
+
+    skipClarification: (clarificationId) => {
+        const targetClarification = get().pendingClarifications.find(
+            req => req.id === clarificationId && req.status === 'pending'
+        );
+        if (!targetClarification) return;
+        const userResponseMessage: ChatMessage = {
+            sender: 'user',
+            text: `Skipped: ${targetClarification.question}`,
+            timestamp: new Date(),
+            type: 'user_message',
+        };
+        const aiMessage: ChatMessage = {
+            sender: 'ai',
+            text: 'No problem—I cancelled that request. Ask me something else whenever you are ready.',
+            timestamp: new Date(),
+            type: 'ai_message',
+        };
+        updateClarificationStatus(clarificationId, 'skipped');
+        set(prev => ({
+            chatHistory: [...prev.chatHistory, userResponseMessage, aiMessage],
+        }));
+        set({ isBusy: false });
     },
 
     handleNaturalLanguageQuery: async (query) => {

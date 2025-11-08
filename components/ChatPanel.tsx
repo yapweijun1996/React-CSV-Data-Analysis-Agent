@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ProgressMessage, ChatMessage, AppView, ClarificationRequest } from '../types';
+import { ProgressMessage, ChatMessage, AppView } from '../types';
 import { useAppStore } from '../store/useAppStore';
 
 const HideIcon: React.FC = () => (
@@ -48,8 +48,11 @@ export const ChatPanel: React.FC = () => {
         setIsMemoryPanelOpen,
         handleShowCardFromChat,
         currentView,
-        pendingClarification,
+        pendingClarifications,
+        activeClarificationId,
         handleClarificationResponse,
+        skipClarification,
+        focusDataPreview,
     } = useAppStore(state => ({
         progressMessages: state.progressMessages,
         chatHistory: state.chatHistory,
@@ -61,13 +64,18 @@ export const ChatPanel: React.FC = () => {
         setIsMemoryPanelOpen: state.setIsMemoryPanelOpen,
         handleShowCardFromChat: state.handleShowCardFromChat,
         currentView: state.currentView,
-        pendingClarification: state.pendingClarification,
+        pendingClarifications: state.pendingClarifications,
+        activeClarificationId: state.activeClarificationId,
         handleClarificationResponse: state.handleClarificationResponse,
+        skipClarification: state.skipClarification,
+        focusDataPreview: state.focusDataPreview,
     }));
 
     const [input, setInput] = useState('');
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+    const hasAwaitingClarification = pendingClarifications.some(req => req.status === 'pending');
 
     const timeline = [...progressMessages, ...chatHistory]
         .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
@@ -104,7 +112,7 @@ export const ChatPanel: React.FC = () => {
 
     const getPlaceholder = () => {
         if (!isApiKeySet) return "Set API Key in settings to chat";
-        if (pendingClarification) return "Please select an option above to continue";
+        if (hasAwaitingClarification) return "Please resolve or skip the clarification above";
         switch (currentView) {
             case 'analysis_dashboard':
                 return "Ask for a new analysis or data transformation...";
@@ -119,26 +127,63 @@ export const ChatPanel: React.FC = () => {
             const msg = item as ChatMessage;
 
             if (msg.type === 'ai_clarification' && msg.clarificationRequest) {
-                const isPending = pendingClarification?.question === msg.clarificationRequest.question;
+                const linkedClarification = pendingClarifications.find(req => req.id === msg.clarificationRequest.id);
+                const status = linkedClarification?.status ?? 'resolved';
+                const isAwaiting = status === 'pending';
+                const isProcessing = status === 'resolving';
+                const isActive = (isAwaiting || isProcessing) && linkedClarification?.id === activeClarificationId;
+                const canSkip = linkedClarification ? status === 'pending' : false;
+                const statusClassMap: Record<string, string> = {
+                    pending: isActive ? 'bg-blue-100 text-blue-800 border-blue-200' : 'bg-slate-100 text-slate-600 border-slate-200',
+                    resolving: 'bg-amber-100 text-amber-800 border-amber-200',
+                    resolved: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+                    skipped: 'bg-slate-200 text-slate-500 border-slate-300',
+                };
+                const statusLabel = (() => {
+                    if (status === 'pending') return isActive ? 'Active' : 'Queued';
+                    if (status === 'resolving') return 'Working';
+                    if (status === 'skipped') return 'Skipped';
+                    return 'Answered';
+                })();
+
                 return (
-                    <div key={`chat-${index}`} className="my-2 p-3 bg-white border border-blue-200 rounded-lg">
-                        <div className="flex items-center text-blue-700 mb-2">
-                            <span className="text-lg mr-2">🤔</span>
-                            <h4 className="font-semibold">Clarification Needed</h4>
+                    <div
+                        key={`chat-${index}`}
+                        className={`my-2 p-3 bg-white border rounded-lg transition-colors ${
+                            isActive ? 'border-blue-400 shadow shadow-blue-100' : 'border-blue-200'
+                        } ${status === 'resolved' ? 'opacity-90' : ''} ${status === 'skipped' ? 'opacity-60' : ''}`}
+                    >
+                        <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center text-blue-700">
+                                <span className="text-lg mr-2">🤔</span>
+                                <h4 className="font-semibold">Clarification Needed</h4>
+                            </div>
+                            <span className={`text-xs px-2 py-1 border rounded-full ${statusClassMap[status] ?? 'bg-slate-100 text-slate-600 border-slate-200'}`}>
+                                {statusLabel}
+                            </span>
                         </div>
                         <p className="text-sm text-slate-700 mb-3">{msg.clarificationRequest.question}</p>
                         <div className="flex flex-col space-y-2">
                             {msg.clarificationRequest.options.map(option => (
                                 <button
-                                    key={option.value}
-                                    onClick={() => handleClarificationResponse(option)}
-                                    disabled={!isPending || isBusy}
+                                    key={`${msg.clarificationRequest.id}-${option.value}`}
+                                    onClick={() => handleClarificationResponse(msg.clarificationRequest.id, option)}
+                                    disabled={!isAwaiting || isBusy}
                                     className="w-full text-left text-sm px-3 py-2 bg-slate-100 rounded-md hover:bg-blue-100 hover:border-blue-500 border border-slate-200 transition-colors disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:bg-slate-100"
                                 >
                                     <span className="font-medium text-slate-800">{option.label}</span>
                                     <span className="block text-xs text-slate-500">Column: {option.value}</span>
                                 </button>
                             ))}
+                        </div>
+                        <div className="flex justify-end mt-3">
+                            <button
+                                onClick={() => skipClarification(msg.clarificationRequest.id)}
+                                disabled={!canSkip}
+                                className="text-xs text-slate-500 hover:text-red-600 border border-slate-200 px-3 py-1 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                                Skip / Cancel
+                            </button>
                         </div>
                     </div>
                 );
@@ -211,6 +256,15 @@ export const ChatPanel: React.FC = () => {
                                 → Show Related Card
                             </button>
                          )}
+                         {msg.cta?.type === 'open_data_preview' && (
+                            <button
+                                onClick={focusDataPreview}
+                                className="mt-2 text-xs bg-white text-blue-700 border border-blue-200 px-2 py-1 rounded-md hover:bg-blue-50 transition-colors w-full text-left font-medium"
+                            >
+                                → {msg.cta.label}
+                                {msg.cta.helperText && <span className="block text-[11px] text-slate-500 mt-0.5">{msg.cta.helperText}</span>}
+                            </button>
+                         )}
                     </div>
                 </div>
             );
@@ -278,13 +332,13 @@ export const ChatPanel: React.FC = () => {
                         onChange={(e) => setInput(e.target.value)}
                         onKeyDown={handleKeyDown}
                         placeholder={getPlaceholder()}
-                        disabled={isBusy || !isApiKeySet || currentView === 'file_upload' || !!pendingClarification}
+                        disabled={isBusy || !isApiKeySet || currentView === 'file_upload' || hasAwaitingClarification}
                         className="flex-grow bg-white border border-slate-300 rounded-md py-2 px-3 text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 resize-none max-h-32"
                         style={{ overflowY: 'auto' }}
                     />
                      <button
                         type="submit"
-                        disabled={isBusy || !input.trim() || !isApiKeySet || currentView === 'file_upload' || !!pendingClarification}
+                        disabled={isBusy || !input.trim() || !isApiKeySet || currentView === 'file_upload' || hasAwaitingClarification}
                         className="flex-shrink-0 w-10 h-10 flex items-center justify-center bg-blue-600 text-white font-semibold rounded-md hover:bg-blue-700 transition-colors disabled:bg-blue-300 disabled:cursor-not-allowed"
                         aria-label={isBusy ? "Sending message" : "Send message"}
                     >
