@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 // Fix: Import MouseEvent from React and alias it to resolve the type error.
 import type { MouseEvent as ReactMouseEvent } from 'react';
-import { AnalysisCardData, ChatMessage, ProgressMessage, CsvData, AnalysisPlan, AppState, CardContext, ChartType, DomAction, Settings, Report, ReportListItem, ClarificationRequest, ClarificationRequestPayload, ClarificationStatus, ColumnProfile, AgentActionStatus } from '../types';
+import { AnalysisCardData, ChatMessage, ProgressMessage, CsvData, AnalysisPlan, AppState, CardContext, ChartType, DomAction, Settings, Report, ReportListItem, ClarificationRequest, ClarificationRequestPayload, ClarificationStatus, ColumnProfile, AgentActionStatus, AgentActionSource } from '../types';
 import { executePlan } from '../utils/dataProcessor';
 import { generateAnalysisPlans, generateSummary, generateFinalSummary, generateCoreAnalysisSummary, generateProactiveInsights } from '../services/aiService';
 import { getReportsList, saveReport, getReport, deleteReport, getSettings, saveSettings, CURRENT_SESSION_KEY } from '../storageService';
@@ -270,6 +270,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 chatMemoryExclusions: [],
                 chatMemoryPreviewQuery: '',
                 isMemoryPreviewLoading: false,
+                columnAliasMap: currentSession.appState.columnAliasMap ?? deriveAliasMap(currentSession.appState.columnProfiles ?? []),
             });
             if (currentSession.appState.vectorStoreDocuments && vectorStore.getIsInitialized()) {
                 vectorStore.rehydrate(currentSession.appState.vectorStoreDocuments);
@@ -327,8 +328,13 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         const shouldAbort = () => (runId ? get().isRunCancellationRequested(runId) : false);
         const requestSignal = () => getRunSignal(runId);
         let isFirstCardInPipeline = true;
+        const beginTrace = get().beginAgentActionTrace;
+        const completeTrace = get().updateAgentActionTrace;
 
         const processPlan = async (plan: AnalysisPlan) => {
+            const planTraceId = beginTrace('proceed_to_analysis', `Run analysis "${plan.title}"`, 'pipeline');
+            const finalizeTrace = (status: AgentActionStatus, details?: string) =>
+                completeTrace(planTraceId, status, details);
             if (shouldAbort()) return null;
             try {
                 addProgress(`Executing plan: ${plan.title}...`);
@@ -336,6 +342,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 const preparation = preparePlanForExecution(plan, get().columnProfiles, data.data);
                 if (!preparation.isValid) {
                     addProgress(`Skipping "${plan.title}" because ${preparation.errorMessage ?? 'the plan is invalid.'}`, 'error');
+                    finalizeTrace('failed', preparation.errorMessage ?? 'Plan invalid.');
                     return null;
                 }
                 preparation.warnings.forEach(warning => addProgress(`${plan.title}: ${warning}`));
@@ -344,6 +351,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 const aggregatedData = executePlan(data, preparedPlan);
                 if (aggregatedData.length === 0) {
                     addProgress(`Skipping "${plan.title}" due to empty result.`, 'error');
+                    finalizeTrace('failed', 'Aggregation returned 0 rows.');
                     return null;
                 }
 
@@ -379,15 +387,18 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
 
                 isFirstCardInPipeline = false;
                 addProgress(`Saved as View #${newCard.id.slice(-6)}`);
+                finalizeTrace('succeeded', `Created card with ${aggregatedData.length} rows.`);
                 return newCard;
             } catch (error) {
                 if (shouldAbort()) {
                     addProgress(`Cancelled "${plan.title}" before completion.`);
+                    completeTrace(planTraceId, 'failed', 'Cancelled before completion.');
                     return null;
                 }
                 console.error('Error executing plan:', plan.title, error);
                 const errorMessage = error instanceof Error ? error.message : String(error);
                 addProgress(`Error executing plan "${plan.title}": ${errorMessage}`, 'error');
+                finalizeTrace('failed', errorMessage);
                 return null;
             }
         };
@@ -640,6 +651,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 chatMemoryPreviewQuery: '',
                 isMemoryPreviewLoading: false,
                 agentActionTraces: report.appState.agentActionTraces ?? [],
+                columnAliasMap: report.appState.columnAliasMap ?? deriveAliasMap(report.appState.columnProfiles ?? []),
             });
             if (report.appState.vectorStoreDocuments) {
                 vectorStore.rehydrate(report.appState.vectorStoreDocuments);
@@ -673,7 +685,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
     setIsHistoryPanelOpen: (isOpen) => set({ isHistoryPanelOpen: isOpen }),
     setIsMemoryPanelOpen: (isOpen) => set({ isMemoryPanelOpen: isOpen }),
     setIsResizing: (isResizing) => set({ isResizing: isResizing }),
-    beginAgentActionTrace: (actionType, summary) => {
+    beginAgentActionTrace: (actionType, summary, source: AgentActionSource = 'chat') => {
         const traceId = `trace-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const newTrace = {
             id: traceId,
@@ -681,6 +693,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             status: 'observing' as AgentActionStatus,
             summary,
             timestamp: new Date(),
+            source,
         };
         set(state => {
             const updated = [...state.agentActionTraces, newTrace];

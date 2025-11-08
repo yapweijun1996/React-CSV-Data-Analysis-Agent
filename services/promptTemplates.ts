@@ -1,4 +1,4 @@
-import { ColumnProfile, CsvRow, CardContext, Settings, DataPreparationPlan, ChatMessage, AppView } from '../types';
+import { ColumnProfile, CsvRow, CardContext, Settings, DataPreparationPlan, ChatMessage, AppView, AgentActionTrace } from '../types';
 
 // Centralized rules to avoid repetition
 const commonRules = {
@@ -219,7 +219,7 @@ export const createChatPrompt = (
     const actionTraceSummary = recentActionTraces.length > 0
         ? recentActionTraces
             .slice(-5)
-            .map(trace => `- [${trace.status.toUpperCase()}] ${trace.actionType}: ${trace.summary}${trace.details ? ` (${trace.details})` : ''}`)
+            .map(trace => `- [${trace.source}/${trace.status.toUpperCase()}] ${trace.actionType}: ${trace.summary}${trace.details ? ` (${trace.details})` : ''}`)
             .join('\n')
         : 'No prior tool actions have been recorded yet. You are starting fresh. Always observe before acting.';
 

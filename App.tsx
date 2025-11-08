@@ -94,7 +94,9 @@ const App: React.FC = () => {
                         />
                     </div>
                     <aside className="w-full md:w-auto bg-white flex flex-col h-full border-l border-slate-200" style={{ width: asideWidth }}>
-                        <ChatPanel />
+                        <div className="flex-1 overflow-hidden flex flex-col">
+                            <ChatPanel />
+                        </div>
                     </aside>
                 </>
             )}

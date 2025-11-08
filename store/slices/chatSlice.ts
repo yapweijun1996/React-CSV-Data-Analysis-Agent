@@ -5,6 +5,7 @@ import { vectorStore } from '../../services/vectorStore';
 import { COLUMN_TARGET_PROPERTIES, columnHasUsableData, filterClarificationOptions, resolveColumnChoice } from '../../utils/clarification';
 import { applyFriendlyPlanCopy } from '../../utils/planCopy';
 import { runWithBusyState } from '../../utils/runWithBusy';
+import { buildColumnAliasMap, cloneRowsWithAliases, normalizeRowsFromAliases } from '../../utils/columnAliases';
 import type {
     AiAction,
     AnalysisCardData,
@@ -61,11 +62,11 @@ export const createChatSlice = (
         isMemoryPreviewLoading: false,
 
         handleChatMessage: async (message: string) => {
-        if (!get().isApiKeySet) {
-            get().addProgress('API Key not set.', 'error');
-            get().setIsSettingsModalOpen(true);
-            return;
-        }
+            if (!get().isApiKeySet) {
+                get().addProgress('API Key not set.', 'error');
+                get().setIsSettingsModalOpen(true);
+                return;
+            }
 
         const runId = get().beginBusy('Working on your request...', { cancellable: true });
         const newChatMessage: ChatMessage = { sender: 'user', text: message, timestamp: new Date(), type: 'user_message' };
@@ -119,6 +120,8 @@ export const createChatSlice = (
             let memoryTagAttached = false;
             let retryAttempts = 0;
             const MAX_AUTO_RETRIES = 1;
+            const beginTrace = get().beginAgentActionTrace;
+            const completeTrace = get().updateAgentActionTrace;
 
             while (response) {
                 let retryRequest: { type: 'execute_js_code'; reason: string } | null = null;
@@ -131,8 +134,8 @@ export const createChatSlice = (
                     }
 
                     const traceSummary = summarizeAction(action);
-                    const traceId = appendActionTrace(action.responseType, traceSummary);
-                    const markTrace = (status: AgentActionStatus, details?: string) => updateActionTrace(traceId, status, details);
+                    const traceId = beginTrace(action.responseType, traceSummary, 'chat');
+                    const markTrace = (status: AgentActionStatus, details?: string) => completeTrace(traceId, status, details);
                     markTrace('executing');
 
                     if (action.thought) get().addProgress(`AI Thought: ${action.thought}`);
@@ -176,9 +179,14 @@ export const createChatSlice = (
                     case 'execute_js_code':
                         if (action.code?.jsFunctionBody && get().csvData) {
                             try {
-                                const transformResult = executeJavaScriptDataTransform(get().csvData!.data, action.code!.jsFunctionBody);
-                                const newData: CsvData = { ...get().csvData!, data: transformResult.data };
-                                set({ csvData: newData, columnProfiles: profileData(newData.data) });
+                                const aliasMap = get().columnAliasMap;
+                                const dataForTransform = cloneRowsWithAliases(get().csvData!.data, aliasMap);
+                                const transformResult = executeJavaScriptDataTransform(dataForTransform, action.code!.jsFunctionBody);
+                                const normalizedRows = normalizeRowsFromAliases(transformResult.data, aliasMap);
+                                const newData: CsvData = { ...get().csvData!, data: normalizedRows };
+                                const updatedProfiles = profileData(newData.data);
+                                const updatedAliasMap = buildColumnAliasMap(updatedProfiles.map(p => p.name));
+                                set({ csvData: newData, columnProfiles: updatedProfiles, columnAliasMap: updatedAliasMap });
                                 const { rowsBefore, rowsAfter, removedRows, addedRows, modifiedRows } = transformResult.meta;
                                 const summaryParts = [
                                     `${rowsBefore} → ${rowsAfter} rows`,

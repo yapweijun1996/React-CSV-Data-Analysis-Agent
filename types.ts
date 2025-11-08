@@ -19,6 +19,7 @@ export type AggregationType = 'sum' | 'count' | 'avg';
 
 export type AgentActionType = 'plan_creation' | 'text_response' | 'dom_action' | 'execute_js_code' | 'proceed_to_analysis' | 'filter_spreadsheet' | 'clarification_request';
 export type AgentActionStatus = 'observing' | 'executing' | 'succeeded' | 'failed';
+export type AgentActionSource = 'chat' | 'pipeline' | 'system';
 
 export interface AgentActionTrace {
     id: string;
@@ -27,6 +28,7 @@ export interface AgentActionTrace {
     summary: string;
     details?: string;
     timestamp: Date;
+    source: AgentActionSource;
 }
 
 export interface AnalysisPlan {

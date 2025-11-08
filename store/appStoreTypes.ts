@@ -14,6 +14,7 @@ import type {
     Settings,
     AgentActionStatus,
     AgentActionType,
+    AgentActionSource,
 } from '../types';
 
 export interface StoreState extends AppState {
@@ -88,7 +89,7 @@ export interface StoreActions {
     setIsHistoryPanelOpen: (isOpen: boolean) => void;
     setIsMemoryPanelOpen: (isOpen: boolean) => void;
     setIsResizing: (isResizing: boolean) => void;
-    beginAgentActionTrace: (actionType: AgentActionType, summary: string) => string;
+    beginAgentActionTrace: (actionType: AgentActionType, summary: string, source?: AgentActionSource) => string;
     updateAgentActionTrace: (traceId: string, status: AgentActionStatus, details?: string) => void;
 }
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ProgressMessage, ChatMessage, AppView } from '../types';
+import { ProgressMessage, ChatMessage, AppView, AgentActionTrace } from '../types';
 import { useAppStore } from '../store/useAppStore';
 
 const HideIcon: React.FC = () => (
@@ -62,6 +62,7 @@ export const ChatPanel: React.FC = () => {
         previewChatMemories,
         toggleMemoryPreviewSelection,
         isMemoryPreviewLoading,
+        agentTraces,
     } = useAppStore(state => ({
         progressMessages: state.progressMessages,
         chatHistory: state.chatHistory,
@@ -84,6 +85,7 @@ export const ChatPanel: React.FC = () => {
         previewChatMemories: state.previewChatMemories,
         toggleMemoryPreviewSelection: state.toggleMemoryPreviewSelection,
         isMemoryPreviewLoading: state.isMemoryPreviewLoading,
+        agentTraces: state.agentActionTraces,
     }));
 
     const [input, setInput] = useState('');
@@ -91,6 +93,7 @@ export const ChatPanel: React.FC = () => {
     const textareaRef = useRef<HTMLTextAreaElement>(null);
 
     const hasAwaitingClarification = pendingClarifications.some(req => req.status === 'pending');
+    const recentAgentTraces = agentTraces.slice(-12).reverse();
 
     const timeline = [...progressMessages, ...chatHistory]
         .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
@@ -150,6 +153,59 @@ export const ChatPanel: React.FC = () => {
             default:
                 return "Upload a file to begin chatting";
         }
+    };
+
+    const renderActionLog = () => {
+        if (recentAgentTraces.length === 0) return null;
+        const statusColor: Record<AgentActionTrace['status'], string> = {
+            observing: 'bg-slate-400',
+            executing: 'bg-blue-500',
+            succeeded: 'bg-emerald-500',
+            failed: 'bg-red-500',
+        };
+        const sourceLabels: Record<AgentActionTrace['source'], string> = {
+            chat: 'Chat',
+            pipeline: 'Analysis Pipeline',
+            system: 'System',
+        };
+        const formatTimestamp = (timestamp: AgentActionTrace['timestamp']) => {
+            const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
+            return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        };
+        return (
+            <div className="mb-4">
+                <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-sm font-semibold text-slate-900">AI Action Log</h3>
+                    <span className="text-xs text-slate-500">Last {recentAgentTraces.length} events</span>
+                </div>
+                <div className="space-y-3 max-h-56 overflow-y-auto pr-1">
+                    {recentAgentTraces.map(trace => {
+                        const source = trace.source ?? 'chat';
+                        const status = trace.status ?? 'observing';
+                        return (
+                            <div key={trace.id} className="flex items-start space-x-3 text-sm">
+                                <div className="flex flex-col items-center mt-1">
+                                    <span className={`w-2 h-2 rounded-full ${statusColor[status]}`}></span>
+                                </div>
+                                <div className="flex-1">
+                                    <div className="flex items-center text-xs text-slate-500 gap-2">
+                                        <span className="font-medium">{formatTimestamp(trace.timestamp)}</span>
+                                        <span>·</span>
+                                        <span>{sourceLabels[source] ?? 'AI'}</span>
+                                        <span>·</span>
+                                        <span className="capitalize">{status}</span>
+                                    </div>
+                                    <p className="text-slate-800 mt-0.5 leading-snug whitespace-pre-line">{trace.summary}</p>
+                                    {trace.details && (
+                                        <p className="text-xs text-slate-500 mt-1 leading-snug whitespace-pre-line">{trace.details}</p>
+                                    )}
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+        );
     };
 
     const renderMessage = (item: ProgressMessage | ChatMessage, index: number) => {
@@ -358,6 +414,7 @@ export const ChatPanel: React.FC = () => {
                 </div>
             </div>
             <div className="flex-1 p-4 overflow-y-auto space-y-4">
+                {renderActionLog()}
                 {timeline.map(renderMessage)}
                 <div ref={messagesEndRef} />
             </div>
