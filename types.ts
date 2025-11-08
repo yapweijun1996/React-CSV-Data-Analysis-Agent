@@ -60,13 +60,20 @@ export interface ClarificationOption {
     value: string; // "Sales_USD"
 }
 
-export interface ClarificationRequest {
+export type ClarificationStatus = 'pending' | 'resolving' | 'resolved' | 'skipped';
+
+export interface ClarificationRequestPayload {
     question: string;
     options: ClarificationOption[];
     // The plan that is waiting for the user's input.
     pendingPlan: PendingPlan;
     // We need to know which property of the plan the user's choice will fill.
     targetProperty: keyof AnalysisPlan;
+}
+
+export interface ClarificationRequest extends ClarificationRequestPayload {
+    id: string;
+    status: ClarificationStatus;
 }
 
 export interface ChatMessage {
@@ -77,6 +84,11 @@ export interface ChatMessage {
     isError?: boolean; // To style error messages in the chat
     cardId?: string; // ID of the card this message refers to
     clarificationRequest?: ClarificationRequest; // Attach the request to the message
+    cta?: {
+        type: 'open_data_preview';
+        label: string;
+        helperText?: string;
+    };
 }
 
 export interface Settings {
@@ -104,7 +116,8 @@ export interface AppState {
     vectorStoreDocuments: VectorStoreDocument[]; // For persisting AI memory
     spreadsheetFilterFunction: string | null; // For AI-powered spreadsheet filtering
     aiFilterExplanation: string | null; // Explanation for the AI filter
-    pendingClarification: ClarificationRequest | null; // For the clarification loop
+    pendingClarifications: ClarificationRequest[]; // For the clarification loop
+    activeClarificationId: string | null;
 }
 
 export interface DomAction {
@@ -126,7 +139,7 @@ export interface AiAction {
   args?: { // For actions like filter_spreadsheet
     query: string;
   };
-  clarification?: ClarificationRequest;
+  clarification?: ClarificationRequestPayload;
 }
 
 export interface AiChatResponse {

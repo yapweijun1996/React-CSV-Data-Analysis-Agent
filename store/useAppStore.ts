@@ -1,11 +1,131 @@
 import { create } from 'zustand';
 // Fix: Import MouseEvent from React and alias it to resolve the type error.
 import type { MouseEvent as ReactMouseEvent } from 'react';
-import { AnalysisCardData, ChatMessage, ProgressMessage, CsvData, AnalysisPlan, AppState, ColumnProfile, AiAction, CardContext, ChartType, DomAction, Settings, Report, ReportListItem, AppView, CsvRow, DataPreparationPlan, AiFilterResponse, ClarificationRequest, ClarificationOption } from '../types';
+import { AnalysisCardData, ChatMessage, ProgressMessage, CsvData, AnalysisPlan, AppState, ColumnProfile, AiAction, CardContext, ChartType, DomAction, Settings, Report, ReportListItem, AppView, CsvRow, DataPreparationPlan, AiFilterResponse, ClarificationRequest, ClarificationOption, ClarificationRequestPayload, ClarificationStatus } from '../types';
 import { processCsv, profileData, executePlan, executeJavaScriptDataTransform } from '../utils/dataProcessor';
 import { generateAnalysisPlans, generateSummary, generateFinalSummary, generateChatResponse, generateDataPreparationPlan, generateCoreAnalysisSummary, generateProactiveInsights, generateFilterFunction } from '../services/aiService';
 import { getReportsList, saveReport, getReport, deleteReport, getSettings, saveSettings, CURRENT_SESSION_KEY } from '../storageService';
 import { vectorStore } from '../services/vectorStore';
+
+const COLUMN_TARGET_PROPERTIES: Array<keyof AnalysisPlan> = ['groupByColumn', 'valueColumn', 'xValueColumn', 'yValueColumn', 'secondaryValueColumn'];
+
+const normalizeText = (value: string) => value
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const columnHasUsableData = (columnName: string, data: CsvRow[], minDistinct = 1, maxDistinct = Infinity): boolean => {
+    if (!data || data.length === 0) return false;
+    const values = data
+        .map(row => row[columnName])
+        .filter(value => value !== null && value !== undefined && String(value).trim() !== '');
+    if (values.length === 0) return false;
+    const distinctCount = new Set(values.map(value => String(value))).size;
+    return distinctCount >= minDistinct && distinctCount <= maxDistinct;
+};
+
+const createClarificationId = () =>
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `clar-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+const getNextAwaitingClarificationId = (clarifications: ClarificationRequest[]): string | null =>
+    clarifications.find(c => c.status === 'pending')?.id ?? null;
+
+const resolveColumnChoice = (
+    option: ClarificationOption,
+    targetProperty: keyof AnalysisPlan,
+    availableColumns: string[],
+): string | undefined => {
+    if (!COLUMN_TARGET_PROPERTIES.includes(targetProperty)) {
+        return option.value;
+    }
+
+    const directMatch = availableColumns.find(col => col === option.value);
+    if (directMatch) return directMatch;
+
+    const caseInsensitiveMatch = availableColumns.find(col => col.toLowerCase() === option.value.toLowerCase());
+    if (caseInsensitiveMatch) return caseInsensitiveMatch;
+
+    const normalizedLabel = normalizeText(option.label);
+    return availableColumns.find(col => normalizedLabel.includes(normalizeText(col)));
+};
+
+const filterClarificationOptions = (
+    clarification: ClarificationRequestPayload,
+    data: CsvRow[] | undefined,
+    availableColumns: string[]
+): ClarificationRequestPayload | null => {
+    if (!COLUMN_TARGET_PROPERTIES.includes(clarification.targetProperty) || !data || data.length === 0) {
+        return clarification;
+    }
+
+    const filteredOptions = clarification.options
+        .map(option => {
+            const resolvedColumn = resolveColumnChoice(option, clarification.targetProperty, availableColumns);
+            if (!resolvedColumn) return null;
+            if (clarification.targetProperty === 'groupByColumn') {
+                if (!columnHasUsableData(resolvedColumn, data, 2, 50)) return null;
+            } else if (!columnHasUsableData(resolvedColumn, data)) {
+                return null;
+            }
+            return { ...option, value: resolvedColumn };
+        })
+        .filter((option): option is ClarificationOption => option !== null);
+
+    if (filteredOptions.length === 0) {
+        return null;
+    }
+
+    return {
+        ...clarification,
+        options: filteredOptions,
+    };
+};
+
+const getColumnFriendlyName = (columnName: string | undefined, columns: ColumnProfile[]): string | null => {
+    if (!columnName) return null;
+    const profile = columns.find(c => c.name === columnName);
+    return profile ? profile.name : columnName;
+};
+
+const applyFriendlyPlanCopy = (plan: AnalysisPlan, columns: ColumnProfile[]): AnalysisPlan => {
+    const metricLabel = getColumnFriendlyName(plan.valueColumn, columns)
+        || (plan.aggregation === 'count' ? 'Records' : 'Value');
+    const dimensionLabel = getColumnFriendlyName(plan.groupByColumn, columns)
+        || (plan.chartType === 'scatter' ? 'X Axis' : 'Category');
+
+    const replacements: Record<string, string> = {
+        '[metric]': metricLabel,
+        '[value]': metricLabel,
+        '[dimension]': dimensionLabel,
+        '[group]': dimensionLabel,
+    };
+
+    const rewrite = (text: string | undefined, fallback: string): string => {
+        if (!text || text.trim() === '') return fallback;
+        let rewritten = text;
+        for (const key of Object.keys(replacements)) {
+            const regex = new RegExp(key, 'gi');
+            rewritten = rewritten.replace(regex, replacements[key]);
+        }
+        if (/\[.*\]/.test(rewritten)) {
+            return fallback;
+        }
+        return rewritten;
+    };
+
+    const defaultTitle = `${metricLabel} by ${dimensionLabel}`;
+    const defaultDescription = `A chart showing ${metricLabel} grouped by ${dimensionLabel}.`;
+
+    return {
+        ...plan,
+        title: rewrite(plan.title, defaultTitle),
+        description: rewrite(plan.description, defaultDescription),
+    };
+};
 
 const MIN_ASIDE_WIDTH = 320;
 const MAX_ASIDE_WIDTH = 800;
@@ -26,7 +146,8 @@ const initialAppState: AppState = {
     vectorStoreDocuments: [],
     spreadsheetFilterFunction: null,
     aiFilterExplanation: null,
-    pendingClarification: null,
+    pendingClarifications: [],
+    activeClarificationId: null,
 };
 
 interface StoreState extends AppState {
@@ -42,7 +163,6 @@ interface StoreState extends AppState {
     reportsList: ReportListItem[];
     isResizing: boolean;
     isApiKeySet: boolean;
-    pendingClarification: ClarificationRequest | null;
 }
 
 interface StoreActions {
@@ -57,7 +177,8 @@ interface StoreActions {
     regenerateAnalyses: (newData: CsvData) => Promise<void>;
     executeDomAction: (action: DomAction) => void;
     handleChatMessage: (message: string) => Promise<void>;
-    handleClarificationResponse: (userChoice: ClarificationOption) => Promise<void>;
+    handleClarificationResponse: (clarificationId: string, userChoice: ClarificationOption) => Promise<void>;
+    skipClarification: (clarificationId: string) => void;
     handleNaturalLanguageQuery: (query: string) => Promise<void>;
     clearAiFilter: () => void;
     handleChartTypeChange: (cardId: string, newType: ChartType) => void;
@@ -69,6 +190,7 @@ interface StoreActions {
     handleDeleteReport: (id: string) => Promise<void>;
     handleShowCardFromChat: (cardId: string) => void;
     handleNewSession: () => Promise<void>;
+    focusDataPreview: () => void;
     // Simple setters
     setIsAsideVisible: (isVisible: boolean) => void;
     setAsideWidth: (width: number) => void;
@@ -80,12 +202,44 @@ interface StoreActions {
     setIsResizing: (isResizing: boolean) => void;
 }
 
-export const useAppStore = create<StoreState & StoreActions>((set, get) => ({
-    ...initialAppState,
-    isAsideVisible: true,
-    asideWidth: window.innerWidth / 4 > MIN_ASIDE_WIDTH ? window.innerWidth / 4 : MIN_ASIDE_WIDTH,
-    isSpreadsheetVisible: true,
-    isDataPrepDebugVisible: false,
+export const useAppStore = create<StoreState & StoreActions>((set, get) => {
+    const registerClarification = (clarificationPayload: ClarificationRequestPayload): ClarificationRequest => {
+        const newClarification: ClarificationRequest = {
+            ...clarificationPayload,
+            id: createClarificationId(),
+            status: 'pending',
+        };
+        set(state => ({
+            pendingClarifications: [...state.pendingClarifications, newClarification],
+            activeClarificationId: newClarification.id,
+        }));
+        return newClarification;
+    };
+
+    const updateClarificationStatus = (clarificationId: string, status: ClarificationStatus) => {
+        const existingClarifications = get().pendingClarifications;
+        if (!existingClarifications.some(req => req.id === clarificationId)) return;
+        set(state => {
+            const updatedClarifications = state.pendingClarifications.map(req =>
+                req.id === clarificationId ? { ...req, status } : req
+            );
+            const nextActive =
+                status === 'pending' || status === 'resolving'
+                    ? clarificationId
+                    : getNextAwaitingClarificationId(updatedClarifications);
+            return {
+                pendingClarifications: updatedClarifications,
+                activeClarificationId: nextActive,
+            };
+        });
+    };
+
+    return {
+        ...initialAppState,
+        isAsideVisible: true,
+        asideWidth: window.innerWidth / 4 > MIN_ASIDE_WIDTH ? window.innerWidth / 4 : MIN_ASIDE_WIDTH,
+        isSpreadsheetVisible: true,
+        isDataPrepDebugVisible: false,
     isSettingsModalOpen: false,
     isHistoryPanelOpen: false,
     isMemoryPanelOpen: false,
@@ -100,7 +254,6 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => ({
         }
         return !!settings.openAIApiKey;
     })(),
-    pendingClarification: null,
 
     init: async () => {
         const currentSession = await getReport(CURRENT_SESSION_KEY);
@@ -431,7 +584,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => ({
         }
 
         const newChatMessage: ChatMessage = { sender: 'user', text: message, timestamp: new Date(), type: 'user_message' };
-        set(prev => ({ isBusy: true, chatHistory: [...prev.chatHistory, newChatMessage], pendingClarification: null }));
+        set(prev => ({ isBusy: true, chatHistory: [...prev.chatHistory, newChatMessage] }));
 
         try {
             const cardContext: CardContext[] = get().analysisCards.map(c => ({
@@ -487,15 +640,37 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => ({
                         break;
                     case 'clarification_request':
                         if (action.clarification) {
+                            const filteredClarification = filterClarificationOptions(
+                                action.clarification,
+                                get().csvData?.data,
+                                get().columnProfiles.map(p => p.name)
+                            );
+
+                            if (!filteredClarification) {
+                                const warning = 'Those clarification options have no usable data right now. Try asking about a different metric.';
+                                get().addProgress(warning, 'error');
+                                const aiMessage: ChatMessage = { sender: 'ai', text: warning, timestamp: new Date(), type: 'ai_message', isError: true };
+                                set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
+                                break;
+                            }
+
+                            if (filteredClarification.options.length === 1) {
+                                set({ pendingClarification: filteredClarification });
+                                const autoOption = filteredClarification.options[0];
+                                get().addProgress(`AI inferred you meant "${autoOption.label}" (${autoOption.value}).`);
+                                await get().handleClarificationResponse(autoOption);
+                                break;
+                            }
+
                             const clarificationMessage: ChatMessage = {
                                 sender: 'ai',
-                                text: action.clarification.question,
+                                text: filteredClarification.question,
                                 timestamp: new Date(),
                                 type: 'ai_clarification',
-                                clarificationRequest: action.clarification,
+                                clarificationRequest: filteredClarification,
                             };
                             set(prev => ({
-                                pendingClarification: action.clarification,
+                                pendingClarification: filteredClarification,
                                 chatHistory: [...prev.chatHistory, clarificationMessage]
                             }));
                             set({ isBusy: false });
@@ -536,33 +711,10 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => ({
             const { pendingPlan, targetProperty } = pendingClarification;
             const previousClarification = pendingClarification;
 
-            const columnTargets: Array<keyof AnalysisPlan> = ['groupByColumn', 'valueColumn', 'xValueColumn', 'yValueColumn', 'secondaryValueColumn'];
             const availableColumns = columnProfiles.map(p => p.name);
-            const normalize = (value: string) => value
-                .toLowerCase()
-                .replace(/[_-]+/g, ' ')
-                .replace(/[^a-z0-9 ]/g, ' ')
-                .replace(/\s+/g, ' ')
-                .trim();
+            const resolvedValue = resolveColumnChoice(userChoice, targetProperty, availableColumns);
 
-            const ensureColumnChoice = (): string | undefined => {
-                if (!columnTargets.includes(targetProperty)) {
-                    return userChoice.value;
-                }
-
-                const directMatch = availableColumns.find(col => col === userChoice.value);
-                if (directMatch) return directMatch;
-
-                const caseInsensitiveMatch = availableColumns.find(col => col.toLowerCase() === userChoice.value.toLowerCase());
-                if (caseInsensitiveMatch) return caseInsensitiveMatch;
-
-                const normalizedLabel = normalize(userChoice.label);
-                const inferred = availableColumns.find(col => normalizedLabel.includes(normalize(col)));
-                return inferred;
-            };
-
-            const resolvedValue = ensureColumnChoice();
-            if (columnTargets.includes(targetProperty) && (!resolvedValue || !availableColumns.includes(resolvedValue))) {
+            if (COLUMN_TARGET_PROPERTIES.includes(targetProperty) && (!resolvedValue || !availableColumns.includes(resolvedValue))) {
                 const friendlyError = `I couldn't find a column matching "${userChoice.label}". Please pick another option so I know which column to use.`;
                 get().addProgress(friendlyError, 'error');
                 const aiErrorMessage: ChatMessage = { sender: 'ai', text: friendlyError, timestamp: new Date(), type: 'ai_message', isError: true };
@@ -574,10 +726,30 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => ({
                 return;
             }
             
-            const completedPlan = {
+            const requiresCategorical = targetProperty === 'groupByColumn';
+            const hasUsableData = requiresCategorical
+                ? columnHasUsableData(resolvedValue!, csvData.data, 2, 50)
+                : columnHasUsableData(resolvedValue!, csvData.data);
+
+            if (COLUMN_TARGET_PROPERTIES.includes(targetProperty) && resolvedValue && !hasUsableData) {
+                const friendlyError = requiresCategorical
+                    ? `The column "${resolvedValue}" doesn't look like a good grouping (not enough distinct categories). Please pick another option.`
+                    : `Looks like "${resolvedValue}" does not contain data right now. Please pick another option or ask about a different metric.`;
+                get().addProgress(friendlyError, 'error');
+                const aiErrorMessage: ChatMessage = { sender: 'ai', text: friendlyError, timestamp: new Date(), type: 'ai_message', isError: true };
+                set(prev => ({
+                    isBusy: false,
+                    pendingClarification: previousClarification,
+                    chatHistory: [...prev.chatHistory, aiErrorMessage],
+                }));
+                return;
+            }
+            
+            const basePlan = {
                 ...pendingPlan,
                 [targetProperty]: resolvedValue ?? userChoice.value,
             } as AnalysisPlan;
+            const completedPlan = applyFriendlyPlanCopy(basePlan, columnProfiles);
             
             // Make the plan more robust by adding defaults if the AI omits them.
             if (!completedPlan.aggregation) {
@@ -598,10 +770,10 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => ({
             }
 
             // If groupByColumn is still missing for a non-scatter chart, try to infer it.
-            if (!completedPlan.groupByColumn && completedPlan.chartType !== 'scatter') {
-                const { columnProfiles } = get();
-                const allColumnNames = columnProfiles.map(p => p.name);
-                let inferredGroupBy: string | null = null;
+           if (!completedPlan.groupByColumn && completedPlan.chartType !== 'scatter') {
+               const { columnProfiles } = get();
+               const allColumnNames = columnProfiles.map(p => p.name);
+               let inferredGroupBy: string | null = null;
     
                 // New, smarter inference: Try to find a column name mentioned in the user's selected label.
                 // e.g., label "Best Product Category by Revenue" contains column "Product Category"
@@ -648,11 +820,17 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => ({
     
             const createdCards = await get().runAnalysisPipeline([completedPlan], csvData, true);
 
-            // Only add the "Okay, creating..." message if a card was actually created.
-            // The "Skipping..." message will be added inside runAnalysisPipeline if no cards are made.
             if (createdCards.length > 0) {
                  const planMessage: ChatMessage = { sender: 'ai', text: `Okay, creating a chart for "${completedPlan.title}".`, timestamp: new Date(), type: 'ai_plan_start' };
-                 set(prev => ({ chatHistory: [...prev.chatHistory, planMessage] }));
+                 const cardSummary = createdCards[0].summary.split('---')[0].trim();
+                 const observationMessage: ChatMessage = {
+                    sender: 'ai',
+                    text: `Here's what I observed:\n${cardSummary}`,
+                    timestamp: new Date(),
+                    type: 'ai_message',
+                    cardId: createdCards[0].id,
+                 };
+                 set(prev => ({ chatHistory: [...prev.chatHistory, planMessage, observationMessage] }));
             }
     
         } catch (error) {
@@ -789,7 +967,14 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => ({
     setIsHistoryPanelOpen: (isOpen) => set({ isHistoryPanelOpen: isOpen }),
     setIsMemoryPanelOpen: (isOpen) => set({ isMemoryPanelOpen: isOpen }),
     setIsResizing: (isResizing) => set({ isResizing: isResizing }),
-}));
+    focusDataPreview: () => {
+        set({ isSpreadsheetVisible: true });
+        setTimeout(() => {
+            document.getElementById('raw-data-explorer')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, 100);
+    },
+};
+});
 
 // Auto-save current session to IndexedDB periodically
 setInterval(async () => {
@@ -812,7 +997,8 @@ setInterval(async () => {
             vectorStoreDocuments: vectorStore.getDocuments(),
             spreadsheetFilterFunction: state.spreadsheetFilterFunction,
             aiFilterExplanation: state.aiFilterExplanation,
-            pendingClarification: state.pendingClarification,
+            pendingClarifications: state.pendingClarifications,
+            activeClarificationId: state.activeClarificationId,
         };
 
         const currentReport: Report = {

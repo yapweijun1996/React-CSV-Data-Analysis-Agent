@@ -135,7 +135,8 @@ export const ChatPanel: React.FC = () => {
                                     disabled={!isPending || isBusy}
                                     className="w-full text-left text-sm px-3 py-2 bg-slate-100 rounded-md hover:bg-blue-100 hover:border-blue-500 border border-slate-200 transition-colors disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:bg-slate-100"
                                 >
-                                    {option.label}
+                                    <span className="font-medium text-slate-800">{option.label}</span>
+                                    <span className="block text-xs text-slate-500">Column: {option.value}</span>
                                 </button>
                             ))}
                         </div>

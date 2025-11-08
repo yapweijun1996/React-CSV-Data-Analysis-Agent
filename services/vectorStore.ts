@@ -1,7 +1,26 @@
 import { VectorStoreDocument } from '../types';
-// Import transformers.js as an ES Module directly from the CDN.
-// This is more robust than relying on a global variable from a script tag.
-import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.1';
+
+type TransformersModule = {
+    pipeline: any;
+    env: any;
+};
+
+let transformersPromise: Promise<TransformersModule> | null = null;
+
+const loadTransformers = async (): Promise<TransformersModule> => {
+    if (!transformersPromise) {
+        transformersPromise = (async () => {
+            const cdnSpecifier = 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.1/dist/transformers.min.js';
+            try {
+                return await import(/* @vite-ignore */ cdnSpecifier);
+            } catch (error) {
+                console.error('Failed to load @xenova/transformers from CDN.', error);
+                throw error;
+            }
+        })();
+    }
+    return transformersPromise;
+};
 
 
 class VectorStore {
@@ -28,9 +47,12 @@ class VectorStore {
 
         try {
             this.isInitializing = true; 
+            const { pipeline, env } = await loadTransformers();
 
-            // Allow the library to use an existing proxy for remote models.
+            // Force CDN usage: skip local model lookup and rely on remote downloads only.
             env.allowRemoteModels = true;
+            env.allowLocalModels = false;
+            env.localModelPath = ''; // leave as empty string so downstream .replace calls stay safe
             
             progressCallback?.("Downloading AI memory model (~34MB)...");
             this.embedder = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', {
