@@ -1,13 +1,14 @@
 import { create } from 'zustand';
 // Fix: Import MouseEvent from React and alias it to resolve the type error.
 import type { MouseEvent as ReactMouseEvent } from 'react';
-import { AnalysisCardData, ChatMessage, ProgressMessage, CsvData, AnalysisPlan, AppState, CardContext, ChartType, DomAction, Settings, Report, ReportListItem, ClarificationRequest, ClarificationRequestPayload, ClarificationStatus } from '../types';
+import { AnalysisCardData, ChatMessage, ProgressMessage, CsvData, AnalysisPlan, AppState, CardContext, ChartType, DomAction, Settings, Report, ReportListItem, ClarificationRequest, ClarificationRequestPayload, ClarificationStatus, ColumnProfile, AgentActionStatus } from '../types';
 import { executePlan } from '../utils/dataProcessor';
 import { generateAnalysisPlans, generateSummary, generateFinalSummary, generateCoreAnalysisSummary, generateProactiveInsights } from '../services/aiService';
 import { getReportsList, saveReport, getReport, deleteReport, getSettings, saveSettings, CURRENT_SESSION_KEY } from '../storageService';
 import { vectorStore } from '../services/vectorStore';
 import { runWithBusyState } from '../utils/runWithBusy';
 import { preparePlanForExecution } from '../utils/planValidation';
+import { buildColumnAliasMap } from '../utils/columnAliases';
 import type { StoreActions, StoreState } from './appStoreTypes';
 import { createChatSlice } from './slices/chatSlice';
 import { createFileUploadSlice } from './slices/fileUploadSlice';
@@ -27,6 +28,10 @@ const getNextAwaitingClarificationId = (clarifications: ClarificationRequest[]):
 const MIN_ASIDE_WIDTH = 320;
 const MAX_ASIDE_WIDTH = 800;
 const MIN_MAIN_WIDTH = 600;
+
+const MAX_AGENT_TRACE_HISTORY = 40;
+
+const deriveAliasMap = (profiles: ColumnProfile[] = []) => buildColumnAliasMap(profiles.map(p => p.name));
 
 const initialAppState: AppState = {
     currentView: 'file_upload',
@@ -48,6 +53,8 @@ const initialAppState: AppState = {
     pendingClarifications: [],
     activeClarificationId: null,
     toasts: [],
+    agentActionTraces: [],
+    columnAliasMap: {},
 };
 
 export const useAppStore = create<StoreState & StoreActions>((set, get) => {
@@ -258,6 +265,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 currentView: currentSession.appState.csvData ? 'analysis_dashboard' : 'file_upload',
                 pendingClarifications: currentSession.appState.pendingClarifications ?? [],
                 activeClarificationId: currentSession.appState.activeClarificationId ?? null,
+                agentActionTraces: currentSession.appState.agentActionTraces ?? [],
                 chatMemoryPreview: [],
                 chatMemoryExclusions: [],
                 chatMemoryPreviewQuery: '',
@@ -631,6 +639,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 chatMemoryExclusions: [],
                 chatMemoryPreviewQuery: '',
                 isMemoryPreviewLoading: false,
+                agentActionTraces: report.appState.agentActionTraces ?? [],
             });
             if (report.appState.vectorStoreDocuments) {
                 vectorStore.rehydrate(report.appState.vectorStoreDocuments);
@@ -664,6 +673,28 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
     setIsHistoryPanelOpen: (isOpen) => set({ isHistoryPanelOpen: isOpen }),
     setIsMemoryPanelOpen: (isOpen) => set({ isMemoryPanelOpen: isOpen }),
     setIsResizing: (isResizing) => set({ isResizing: isResizing }),
+    beginAgentActionTrace: (actionType, summary) => {
+        const traceId = `trace-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const newTrace = {
+            id: traceId,
+            actionType,
+            status: 'observing' as AgentActionStatus,
+            summary,
+            timestamp: new Date(),
+        };
+        set(state => {
+            const updated = [...state.agentActionTraces, newTrace];
+            return { agentActionTraces: updated.slice(-MAX_AGENT_TRACE_HISTORY) };
+        });
+        return traceId;
+    },
+    updateAgentActionTrace: (traceId, status, details) => {
+        set(state => ({
+            agentActionTraces: state.agentActionTraces.map(trace =>
+                trace.id === traceId ? { ...trace, status, details, timestamp: new Date() } : trace
+            ),
+        }));
+    },
     focusDataPreview: () => {
         set({ isSpreadsheetVisible: true });
         setTimeout(() => {
@@ -699,6 +730,8 @@ setInterval(async () => {
             pendingClarifications: state.pendingClarifications,
             activeClarificationId: state.activeClarificationId,
             toasts: [],
+            agentActionTraces: state.agentActionTraces,
+            columnAliasMap: state.columnAliasMap,
         };
 
         const currentReport: Report = {

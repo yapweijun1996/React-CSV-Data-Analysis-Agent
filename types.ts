@@ -17,6 +17,18 @@ export interface ColumnProfile {
 export type ChartType = 'bar' | 'line' | 'pie' | 'doughnut' | 'scatter' | 'combo';
 export type AggregationType = 'sum' | 'count' | 'avg';
 
+export type AgentActionType = 'plan_creation' | 'text_response' | 'dom_action' | 'execute_js_code' | 'proceed_to_analysis' | 'filter_spreadsheet' | 'clarification_request';
+export type AgentActionStatus = 'observing' | 'executing' | 'succeeded' | 'failed';
+
+export interface AgentActionTrace {
+    id: string;
+    actionType: AgentActionType;
+    status: AgentActionStatus;
+    summary: string;
+    details?: string;
+    timestamp: Date;
+}
+
 export interface AnalysisPlan {
     chartType: ChartType;
     title: string;
@@ -128,6 +140,8 @@ export interface AppState {
     pendingClarifications: ClarificationRequest[]; // For the clarification loop
     activeClarificationId: string | null;
     toasts: AppToast[];
+    agentActionTraces: AgentActionTrace[];
+    columnAliasMap: Record<string, string>;
 }
 
 export interface DomAction {
@@ -137,7 +151,7 @@ export interface DomAction {
 
 export interface AiAction {
   thought?: string; // The AI's reasoning for this action (ReAct pattern).
-  responseType: 'plan_creation' | 'text_response' | 'dom_action' | 'execute_js_code' | 'proceed_to_analysis' | 'filter_spreadsheet' | 'clarification_request';
+  responseType: AgentActionType;
   plan?: AnalysisPlan;
   text?: string;
   cardId?: string; // For text_response, the ID of the card being discussed

@@ -1,5 +1,5 @@
 
-import { ColumnProfile, ChatMessage, CardContext, Settings, AppView, CsvRow, DataPreparationPlan, AiChatResponse } from '../../types';
+import { ColumnProfile, ChatMessage, CardContext, Settings, AppView, CsvRow, DataPreparationPlan, AiChatResponse, AgentActionTrace } from '../../types';
 import { callGemini, callOpenAI } from './apiClient';
 import { multiActionChatResponseSchema } from './schemas';
 import { createChatPrompt } from '../promptTemplates';
@@ -19,6 +19,7 @@ export const generateChatResponse = async (
     rawDataSample: CsvRow[],
     longTermMemory: string[],
     dataPreparationPlan: DataPreparationPlan | null,
+    recentActionTraces: AgentActionTrace[],
     options?: ChatResponseOptions
 ): Promise<AiChatResponse> => {
     const isApiKeySet = (settings.provider === 'google' && !!settings.geminiApiKey) || (settings.provider === 'openai' && !!settings.openAIApiKey);
@@ -30,7 +31,7 @@ export const generateChatResponse = async (
         let jsonStr: string;
         const promptContent = createChatPrompt(
             columns, chatHistory, userPrompt, cardContext, settings.language, 
-            aiCoreAnalysisSummary, rawDataSample, longTermMemory, dataPreparationPlan
+            aiCoreAnalysisSummary, rawDataSample, longTermMemory, dataPreparationPlan, recentActionTraces
         );
 
         if (settings.provider === 'openai') {

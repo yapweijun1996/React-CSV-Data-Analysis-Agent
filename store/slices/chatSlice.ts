@@ -6,6 +6,7 @@ import { COLUMN_TARGET_PROPERTIES, columnHasUsableData, filterClarificationOptio
 import { applyFriendlyPlanCopy } from '../../utils/planCopy';
 import { runWithBusyState } from '../../utils/runWithBusy';
 import type {
+    AiAction,
     AnalysisCardData,
     AnalysisPlan,
     CardContext,
@@ -16,6 +17,7 @@ import type {
     ClarificationStatus,
     CsvData,
     MemoryReference,
+    AgentActionStatus,
 } from '../../types';
 import type { AppStore, ChatSlice } from '../appStoreTypes';
 
@@ -30,13 +32,35 @@ export const createChatSlice = (
     set: SetState<AppStore>,
     get: GetState<AppStore>,
     deps: ChatSliceDependencies,
-): ChatSlice => ({
-    chatMemoryPreview: [],
-    chatMemoryExclusions: [],
-    chatMemoryPreviewQuery: '',
-    isMemoryPreviewLoading: false,
+): ChatSlice => {
+    const summarizeAction = (action: AiAction): string => {
+        switch (action.responseType) {
+            case 'text_response':
+                return action.text ? action.text.slice(0, 120) : 'AI text response';
+            case 'plan_creation':
+                return action.plan?.title ? `Create analysis "${action.plan.title}"` : 'Create new analysis card';
+            case 'dom_action':
+                return action.domAction ? `DOM action: ${action.domAction.toolName}` : 'DOM action';
+            case 'execute_js_code':
+                return action.code?.explanation || 'Execute data transformation';
+            case 'filter_spreadsheet':
+                return action.args?.query ? `Filter spreadsheet by "${action.args.query}"` : 'Filter spreadsheet';
+            case 'clarification_request':
+                return action.clarification?.question || 'Ask user for clarification';
+            case 'proceed_to_analysis':
+                return 'Proceed to analysis pipeline';
+            default:
+                return 'Agent action';
+        }
+    };
 
-    handleChatMessage: async (message: string) => {
+    return {
+        chatMemoryPreview: [],
+        chatMemoryExclusions: [],
+        chatMemoryPreviewQuery: '',
+        isMemoryPreviewLoading: false,
+
+        handleChatMessage: async (message: string) => {
         if (!get().isApiKeySet) {
             get().addProgress('API Key not set.', 'error');
             get().setIsSettingsModalOpen(true);
@@ -80,6 +104,7 @@ export const createChatSlice = (
                 (get().csvData?.data || []).slice(0, 20),
                 memoryPayload,
                 get().dataPreparationPlan,
+                get().agentActionTraces.slice(-10),
                 { signal: deps.getRunSignal(runId) }
             );
 
@@ -105,6 +130,11 @@ export const createChatSlice = (
                         return;
                     }
 
+                    const traceSummary = summarizeAction(action);
+                    const traceId = appendActionTrace(action.responseType, traceSummary);
+                    const markTrace = (status: AgentActionStatus, details?: string) => updateActionTrace(traceId, status, details);
+                    markTrace('executing');
+
                     if (action.thought) get().addProgress(`AI Thought: ${action.thought}`);
                     switch (action.responseType) {
                         case 'text_response':
@@ -122,15 +152,26 @@ export const createChatSlice = (
                                     memoryTagAttached = true;
                                 }
                                 set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
+                                markTrace('succeeded', 'Shared response with user.');
+                            } else {
+                                markTrace('failed', 'No AI text response provided.');
                             }
                             break;
                     case 'plan_creation':
                         if (action.plan && get().csvData) {
                             await deps.runPlanWithChatLifecycle(action.plan, get().csvData!, runId);
+                            markTrace('succeeded', `Executed plan for "${action.plan.title ?? 'analysis'}".`);
+                        } else {
+                            markTrace('failed', 'Missing plan payload or dataset.');
                         }
                         break;
                     case 'dom_action':
-                        if (action.domAction) get().executeDomAction(action.domAction);
+                        if (action.domAction) {
+                            get().executeDomAction(action.domAction);
+                            markTrace('succeeded', `DOM action ${action.domAction.toolName} completed.`);
+                        } else {
+                            markTrace('failed', 'Missing DOM action payload.');
+                        }
                         break;
                     case 'execute_js_code':
                         if (action.code?.jsFunctionBody && get().csvData) {
@@ -148,6 +189,7 @@ export const createChatSlice = (
                                 const summaryDescription = summaryParts.length > 0 ? summaryParts.join(', ') : 'changes detected';
                                 get().addProgress(`AI data transformation applied (${summaryDescription}).`);
                                 await get().regenerateAnalyses(newData);
+                                markTrace('succeeded', summaryDescription);
                             } catch (error) {
                                 const errorMessage = error instanceof Error ? error.message : String(error);
                                 get().addProgress(`AI data transformation failed: ${errorMessage}`, 'error');
@@ -162,9 +204,12 @@ export const createChatSlice = (
                                 if (retryAttempts < MAX_AUTO_RETRIES) {
                                     retryRequest = { type: 'execute_js_code', reason: errorMessage };
                                 }
+                                markTrace('failed', errorMessage);
                                 abortActionLoop = true;
                                 break;
                             }
+                        } else {
+                            markTrace('failed', 'Dataset unavailable for transformation.');
                         }
                         break;
                     case 'filter_spreadsheet':
@@ -175,6 +220,9 @@ export const createChatSlice = (
                             setTimeout(() => {
                                 document.getElementById('raw-data-explorer')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
                             }, 100);
+                            markTrace('succeeded', `Filter query: ${action.args.query}`);
+                        } else {
+                            markTrace('failed', 'Missing filter query.');
                         }
                         break;
                     case 'clarification_request':
@@ -211,6 +259,7 @@ export const createChatSlice = (
                                 const autoOption = enrichedClarification.options[0];
                                 get().addProgress(`AI inferred you meant "${autoOption.label}" (${autoOption.value}).`);
                                 await get().handleClarificationResponse(enrichedClarification.id, autoOption);
+                                markTrace('succeeded', 'Auto-resolved clarification based on single option.');
                                 break;
                             }
 
@@ -226,8 +275,16 @@ export const createChatSlice = (
                             }));
                             set({ activeClarificationId: enrichedClarification.id });
                             get().endBusy(runId);
+                            markTrace('succeeded', 'Requested user clarification.');
                             return;
                         }
+                        markTrace('failed', 'Clarification payload missing.');
+                        break;
+                    case 'proceed_to_analysis':
+                        markTrace('succeeded', 'Proceed to analysis acknowledged.');
+                        break;
+                    default:
+                        markTrace('failed', 'Unsupported action type.');
                         break;
                     }
 
@@ -515,4 +572,5 @@ export const createChatSlice = (
         }));
         get().endBusy();
     },
-});
+    };
+};

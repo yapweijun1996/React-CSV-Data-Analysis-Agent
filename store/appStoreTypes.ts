@@ -12,6 +12,8 @@ import type {
     Report,
     ReportListItem,
     Settings,
+    AgentActionStatus,
+    AgentActionType,
 } from '../types';
 
 export interface StoreState extends AppState {
@@ -86,6 +88,8 @@ export interface StoreActions {
     setIsHistoryPanelOpen: (isOpen: boolean) => void;
     setIsMemoryPanelOpen: (isOpen: boolean) => void;
     setIsResizing: (isResizing: boolean) => void;
+    beginAgentActionTrace: (actionType: AgentActionType, summary: string) => string;
+    updateAgentActionTrace: (traceId: string, status: AgentActionStatus, details?: string) => void;
 }
 
 export type AppStore = StoreState & StoreActions;

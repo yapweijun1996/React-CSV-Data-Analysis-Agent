@@ -199,6 +199,8 @@ export const createFinalSummaryPrompt = (summaries: string, language: Settings['
 `;
 
 
+import type { AgentActionTrace } from '../types';
+
 export const createChatPrompt = (
     columns: ColumnProfile[],
     chatHistory: ChatMessage[],
@@ -208,11 +210,18 @@ export const createChatPrompt = (
     aiCoreAnalysisSummary: string | null,
     rawDataSample: CsvRow[],
     longTermMemory: string[],
-    dataPreparationPlan: DataPreparationPlan | null
+    dataPreparationPlan: DataPreparationPlan | null,
+    recentActionTraces: AgentActionTrace[]
 ): string => {
     const categoricalCols = columns.filter(c => c.type === 'categorical' || c.type === 'date' || c.type === 'time').map(c => c.name);
     const numericalCols = columns.filter(c => c.type === 'numerical' || c.type === 'currency' || c.type === 'percentage').map(c => c.name);
     const recentHistory = chatHistory.slice(-10).map(m => `${m.sender === 'ai' ? 'You' : 'User'}: ${m.text}`).join('\n');
+    const actionTraceSummary = recentActionTraces.length > 0
+        ? recentActionTraces
+            .slice(-5)
+            .map(trace => `- [${trace.status.toUpperCase()}] ${trace.actionType}: ${trace.summary}${trace.details ? ` (${trace.details})` : ''}`)
+            .join('\n')
+        : 'No prior tool actions have been recorded yet. You are starting fresh. Always observe before acting.';
 
     return `
         You are an expert data analyst and business strategist, required to operate using a Reason-Act (ReAct) framework. For every action you take, you must first explain your reasoning in the 'thought' field, and then define the action itself. Your goal is to respond to the user by providing insightful analysis and breaking down your response into a sequence of these thought-action pairs. Your final conversational responses should be in ${language}.
@@ -240,6 +249,9 @@ export const createChatPrompt = (
 
         **Recent Conversation (for flow):**
         ${recentHistory}
+
+        **Your Recent Tool Actions (Observe → Check → Act log):**
+        ${actionTraceSummary}
 
         **The user's latest message is:** "${userPrompt}"
 
