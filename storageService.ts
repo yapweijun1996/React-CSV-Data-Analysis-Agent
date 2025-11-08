@@ -2,6 +2,7 @@ import { openDB, DBSchema, IDBPDatabase } from 'idb';
 import { AppState, Settings, Report, ReportListItem } from './types';
 
 const DB_NAME = 'csv-ai-assistant-db';
+const DB_VERSION = 3;
 const REPORTS_STORE_NAME = 'reports';
 const SETTINGS_KEY = 'csv-ai-assistant-settings';
 export const CURRENT_SESSION_KEY = 'current_session';
@@ -14,19 +15,43 @@ interface MyDB extends DBSchema {
   };
 }
 
-let dbPromise: Promise<IDBPDatabase<MyDB>>;
+let dbPromise: Promise<IDBPDatabase<MyDB>> | null = null;
+
+const deleteDatabase = (): Promise<void> => {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.deleteDatabase(DB_NAME);
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+        request.onblocked = () => {
+            console.warn('IndexedDB delete is blocked. Close other tabs to complete reset.');
+        };
+    });
+};
+
+const openDatabase = () => openDB<MyDB>(DB_NAME, DB_VERSION, {
+    upgrade(db, oldVersion) {
+        if (!db.objectStoreNames.contains(REPORTS_STORE_NAME)) {
+            const store = db.createObjectStore(REPORTS_STORE_NAME, { keyPath: 'id' });
+            store.createIndex('updatedAt', 'updatedAt');
+            return;
+        }
+
+        const store = db.transaction.objectStore(REPORTS_STORE_NAME);
+        if (oldVersion < 2 && !store.indexNames.contains('updatedAt')) {
+            store.createIndex('updatedAt', 'updatedAt');
+        }
+    },
+});
 
 const getDb = (): Promise<IDBPDatabase<MyDB>> => {
   if (!dbPromise) {
-    dbPromise = openDB<MyDB>(DB_NAME, 2, {
-      upgrade(db, oldVersion) {
-        if (oldVersion < 2) {
-            if (!db.objectStoreNames.contains(REPORTS_STORE_NAME)) {
-                const store = db.createObjectStore(REPORTS_STORE_NAME, { keyPath: 'id' });
-                store.createIndex('updatedAt', 'updatedAt');
-            }
+    dbPromise = openDatabase().catch(async (error) => {
+        if (error instanceof DOMException && error.name === 'VersionError') {
+            console.warn('IndexedDB version mismatch detected. Resetting local database...', error);
+            await deleteDatabase();
+            return openDatabase();
         }
-      },
+        throw error;
     });
   }
   return dbPromise;
