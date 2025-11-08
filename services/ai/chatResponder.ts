@@ -4,6 +4,10 @@ import { callGemini, callOpenAI } from './apiClient';
 import { multiActionChatResponseSchema } from './schemas';
 import { createChatPrompt } from '../promptTemplates';
 
+interface ChatResponseOptions {
+    signal?: AbortSignal;
+}
+
 export const generateChatResponse = async (
     columns: ColumnProfile[],
     chatHistory: ChatMessage[],
@@ -14,7 +18,8 @@ export const generateChatResponse = async (
     currentView: AppView,
     rawDataSample: CsvRow[],
     longTermMemory: string[],
-    dataPreparationPlan: DataPreparationPlan | null
+    dataPreparationPlan: DataPreparationPlan | null,
+    options?: ChatResponseOptions
 ): Promise<AiChatResponse> => {
     const isApiKeySet = (settings.provider === 'google' && !!settings.geminiApiKey) || (settings.provider === 'openai' && !!settings.openAIApiKey);
     if (!isApiKeySet) {
@@ -33,10 +38,10 @@ export const generateChatResponse = async (
 Your output MUST be a single JSON object with an "actions" key containing an array of action objects.`;
             
             const messages = [{ role: 'system', content: systemPrompt }, { role: 'user', content: promptContent }];
-            jsonStr = await callOpenAI(settings, messages, true);
+            jsonStr = await callOpenAI(settings, messages, true, options?.signal);
 
         } else { // Google Gemini
-            jsonStr = await callGemini(settings, promptContent, multiActionChatResponseSchema);
+            jsonStr = await callGemini(settings, promptContent, multiActionChatResponseSchema, options?.signal);
         }
 
         const chatResponse = JSON.parse(jsonStr) as AiChatResponse;

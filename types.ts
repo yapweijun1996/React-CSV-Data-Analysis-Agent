@@ -104,6 +104,8 @@ export type AppView = 'file_upload' | 'analysis_dashboard';
 export interface AppState {
     currentView: AppView;
     isBusy: boolean;
+    busyMessage: string | null;
+    canCancelBusy: boolean;
     progressMessages: ProgressMessage[];
     csvData: CsvData | null;
     columnProfiles: ColumnProfile[];
@@ -118,6 +120,7 @@ export interface AppState {
     aiFilterExplanation: string | null; // Explanation for the AI filter
     pendingClarifications: ClarificationRequest[]; // For the clarification loop
     activeClarificationId: string | null;
+    toasts: AppToast[];
 }
 
 export interface DomAction {
@@ -194,4 +197,10 @@ export interface SortConfig {
 export interface AiFilterResponse {
     explanation: string;
     jsFunctionBody: string;
+}
+
+export interface AppToast {
+    id: string;
+    type: 'info' | 'success' | 'error';
+    message: string;
 }

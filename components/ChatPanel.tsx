@@ -53,6 +53,7 @@ export const ChatPanel: React.FC = () => {
         handleClarificationResponse,
         skipClarification,
         focusDataPreview,
+        isCancellationRequested,
     } = useAppStore(state => ({
         progressMessages: state.progressMessages,
         chatHistory: state.chatHistory,
@@ -69,6 +70,7 @@ export const ChatPanel: React.FC = () => {
         handleClarificationResponse: state.handleClarificationResponse,
         skipClarification: state.skipClarification,
         focusDataPreview: state.focusDataPreview,
+        isCancellationRequested: state.isCancellationRequested,
     }));
 
     const [input, setInput] = useState('');
@@ -309,15 +311,6 @@ export const ChatPanel: React.FC = () => {
                         <HideIcon />
                     </button>
                 </div>
-                {isBusy && (
-                    <div
-                        className="absolute bottom-0 left-0 right-0 h-0.5 animate-loading-shimmer"
-                        style={{
-                            backgroundImage: 'linear-gradient(to right, #bfdbfe 25%, #3b82f6 50%, #bfdbfe 75%)',
-                            backgroundSize: '200% 100%',
-                        }}
-                    ></div>
-                )}
             </div>
             <div className="flex-1 p-4 overflow-y-auto space-y-4">
                 {timeline.map(renderMessage)}
@@ -339,10 +332,13 @@ export const ChatPanel: React.FC = () => {
                      <button
                         type="submit"
                         disabled={isBusy || !input.trim() || !isApiKeySet || currentView === 'file_upload' || hasAwaitingClarification}
-                        className="flex-shrink-0 w-10 h-10 flex items-center justify-center bg-blue-600 text-white font-semibold rounded-md hover:bg-blue-700 transition-colors disabled:bg-blue-300 disabled:cursor-not-allowed"
-                        aria-label={isBusy ? "Sending message" : "Send message"}
+                        className="flex-shrink-0 px-4 h-10 flex items-center justify-center gap-2 bg-blue-600 text-white font-semibold rounded-md hover:bg-blue-700 transition-colors disabled:bg-blue-300 disabled:cursor-not-allowed"
+                        aria-label={isBusy ? (isCancellationRequested ? "Cancelling request" : "Sending message") : "Send message"}
                     >
                         {isBusy ? <LoadingIcon /> : <SendIcon />}
+                        <span className="text-sm">
+                            {isBusy ? (isCancellationRequested ? 'Cancelling…' : 'Sending…') : 'Send'}
+                        </span>
                     </button>
                 </form>
                  <div className="text-xs text-slate-400 mt-2">

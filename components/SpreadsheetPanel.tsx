@@ -48,6 +48,7 @@ export const SpreadsheetPanel: React.FC<SpreadsheetPanelProps> = ({ isVisible })
         isAiFiltering,
         handleNaturalLanguageQuery,
         clearAiFilter,
+        cancelAiFilterRequest,
     } = useAppStore(state => ({
         csvData: state.csvData,
         spreadsheetFilterFunction: state.spreadsheetFilterFunction,
@@ -55,6 +56,7 @@ export const SpreadsheetPanel: React.FC<SpreadsheetPanelProps> = ({ isVisible })
         isAiFiltering: state.isAiFiltering,
         handleNaturalLanguageQuery: state.handleNaturalLanguageQuery,
         clearAiFilter: state.clearAiFilter,
+        cancelAiFilterRequest: state.cancelAiFilterRequest,
     }));
     const onToggleVisibility = () => useAppStore.getState().setIsSpreadsheetVisible(!isVisible);
 
@@ -203,15 +205,26 @@ export const SpreadsheetPanel: React.FC<SpreadsheetPanelProps> = ({ isVisible })
                                 className="bg-white border border-slate-300 rounded-md py-1.5 pl-10 pr-4 text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500 w-full"
                             />
                         </div>
-                        <button 
-                            onClick={handleQuerySubmit}
-                            disabled={isAiFiltering || !filterText.trim()}
-                            className="flex items-center space-x-2 px-3 py-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors disabled:bg-blue-300 disabled:cursor-not-allowed"
-                            title="Use AI to filter data based on your query"
-                        >
-                            {isAiFiltering ? <LoadingSpinner /> : <AiIcon />}
-                            <span>Ask AI</span>
-                        </button>
+                        <div className="flex items-center space-x-2">
+                            <button 
+                                onClick={handleQuerySubmit}
+                                disabled={isAiFiltering || !filterText.trim()}
+                                className="flex items-center space-x-2 px-3 py-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors disabled:bg-blue-300 disabled:cursor-not-allowed"
+                                title="Use AI to filter data based on your query"
+                            >
+                                {isAiFiltering ? <LoadingSpinner /> : <AiIcon />}
+                                <span>{isAiFiltering ? 'Working…' : 'Ask AI'}</span>
+                            </button>
+                            {isAiFiltering && (
+                                <button
+                                    type="button"
+                                    onClick={cancelAiFilterRequest}
+                                    className="px-3 py-1.5 border border-slate-300 rounded-md text-slate-600 hover:bg-slate-100 transition-colors"
+                                >
+                                    Cancel
+                                </button>
+                            )}
+                        </div>
                     </div>
 
                     {aiFilterExplanation && (

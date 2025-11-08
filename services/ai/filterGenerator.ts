@@ -3,16 +3,24 @@ import { callGemini, callOpenAI } from './apiClient';
 import { filterFunctionSchema } from './schemas';
 import { createFilterFunctionPrompt } from '../promptTemplates';
 
+interface FilterFunctionOptions {
+    signal?: AbortSignal;
+}
+
 export const generateFilterFunction = async (
     query: string,
     columns: ColumnProfile[],
     sampleData: CsvRow[],
-    settings: Settings
+    settings: Settings,
+    options?: FilterFunctionOptions
 ): Promise<AiFilterResponse> => {
     
     let lastError: Error | undefined;
 
     for(let i=0; i < 2; i++) { // Self-correction loop: 1 initial attempt + 1 retry
+        if (options?.signal?.aborted) {
+            throw new DOMException('Aborted', 'AbortError');
+        }
         try {
             let jsonStr: string;
             const promptContent = createFilterFunctionPrompt(query, columns, sampleData);
@@ -24,10 +32,10 @@ export const generateFilterFunction = async (
                     { role: 'system', content: systemPrompt },
                     { role: 'user', content: promptContent }
                 ];
-                jsonStr = await callOpenAI(settings, messages, true);
+                jsonStr = await callOpenAI(settings, messages, true, options?.signal);
 
             } else { // Google Gemini
-                jsonStr = await callGemini(settings, promptContent, filterFunctionSchema);
+                jsonStr = await callGemini(settings, promptContent, filterFunctionSchema, options?.signal);
             }
             
             const response = JSON.parse(jsonStr) as AiFilterResponse;
@@ -39,6 +47,9 @@ export const generateFilterFunction = async (
             throw new Error("AI response was missing required fields 'jsFunctionBody' or 'explanation'.");
         
         } catch (error) {
+            if (options?.signal?.aborted) {
+                throw error;
+            }
             console.error(`Error in filter function generation (Attempt ${i+1}):`, error);
             lastError = error as Error;
         }

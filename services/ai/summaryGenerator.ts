@@ -4,7 +4,11 @@ import { callGemini, callOpenAI } from './apiClient';
 import { proactiveInsightSchema } from './schemas';
 import { createSummaryPrompt, createCoreAnalysisPrompt, createProactiveInsightPrompt, createFinalSummaryPrompt } from '../promptTemplates';
 
-export const generateSummary = async (title: string, data: CsvRow[], settings: Settings): Promise<string> => {
+interface SummaryOptions {
+    signal?: AbortSignal;
+}
+
+export const generateSummary = async (title: string, data: CsvRow[], settings: Settings, options?: SummaryOptions): Promise<string> => {
     const isApiKeySet = (settings.provider === 'google' && !!settings.geminiApiKey) || (settings.provider === 'openai' && !!settings.openAIApiKey);
     if (!isApiKeySet) return 'AI Summaries are disabled. No API Key provided.';
     
@@ -14,10 +18,10 @@ export const generateSummary = async (title: string, data: CsvRow[], settings: S
             const systemPrompt = `You are a business intelligence analyst. Your response must be only the summary text in the specified format. The summary should highlight key trends, outliers, or business implications. Do not just describe the data; interpret its meaning. For example, instead of "Region A has 500 sales", say "Region A is the top performer, contributing the majority of sales, which suggests a strong market presence there."`;
             
             const messages = [{ role: 'system', content: systemPrompt }, { role: 'user', content: promptContent }];
-            return await callOpenAI(settings, messages, false) || 'No summary generated.';
+            return await callOpenAI(settings, messages, false, options?.signal) || 'No summary generated.';
 
         } else { // Google Gemini
-            return await callGemini(settings, promptContent);
+            return await callGemini(settings, promptContent, undefined, options?.signal);
         }
     } catch (error) {
         console.error("Error generating summary:", error);
@@ -25,7 +29,7 @@ export const generateSummary = async (title: string, data: CsvRow[], settings: S
     }
 };
 
-export const generateCoreAnalysisSummary = async (cardContext: CardContext[], columns: ColumnProfile[], settings: Settings): Promise<string> => {
+export const generateCoreAnalysisSummary = async (cardContext: CardContext[], columns: ColumnProfile[], settings: Settings, options?: SummaryOptions): Promise<string> => {
     const isApiKeySet = (settings.provider === 'google' && !!settings.geminiApiKey) || (settings.provider === 'openai' && !!settings.openAIApiKey);
     if (!isApiKeySet || cardContext.length === 0) return "Could not generate an initial analysis summary.";
 
@@ -41,10 +45,10 @@ Your briefing should cover:
 Produce a single, concise paragraph in ${settings.language}. This is your initial assessment that you will share with your human counterpart.`;
             
             const messages = [{ role: 'system', content: systemPrompt }, { role: 'user', content: promptContent }];
-            return await callOpenAI(settings, messages, false) || 'No summary generated.';
+            return await callOpenAI(settings, messages, false, options?.signal) || 'No summary generated.';
 
         } else { // Google Gemini
-            return await callGemini(settings, promptContent);
+            return await callGemini(settings, promptContent, undefined, options?.signal);
         }
     } catch (error) {
         console.error("Error generating core analysis summary:", error);
@@ -52,7 +56,7 @@ Produce a single, concise paragraph in ${settings.language}. This is your initia
     }
 };
 
-export const generateProactiveInsights = async (cardContext: CardContext[], settings: Settings): Promise<{ insight: string; cardId: string; } | null> => {
+export const generateProactiveInsights = async (cardContext: CardContext[], settings: Settings, options?: SummaryOptions): Promise<{ insight: string; cardId: string; } | null> => {
     const isApiKeySet = (settings.provider === 'google' && !!settings.geminiApiKey) || (settings.provider === 'openai' && !!settings.openAIApiKey);
     if (!isApiKeySet || cardContext.length === 0) return null;
 
@@ -64,10 +68,10 @@ export const generateProactiveInsights = async (cardContext: CardContext[], sett
              const systemPrompt = `You are a proactive data analyst. Review the following summaries of data visualizations. Your task is to identify the single most commercially significant or surprising insight. This could be a major trend, a key outlier, or a dominant category that has clear business implications. Your response must be a single JSON object with 'insight' and 'cardId' keys.`;
             
             const messages = [{ role: 'system', content: systemPrompt }, { role: 'user', content: promptContent }];
-            jsonStr = await callOpenAI(settings, messages, true);
+            jsonStr = await callOpenAI(settings, messages, true, options?.signal);
         
         } else { // Google Gemini
-            jsonStr = await callGemini(settings, promptContent, proactiveInsightSchema);
+            jsonStr = await callGemini(settings, promptContent, proactiveInsightSchema, options?.signal);
         }
         return JSON.parse(jsonStr);
 
@@ -77,7 +81,7 @@ export const generateProactiveInsights = async (cardContext: CardContext[], sett
     }
 };
 
-export const generateFinalSummary = async (cards: AnalysisCardData[], settings: Settings): Promise<string> => {
+export const generateFinalSummary = async (cards: AnalysisCardData[], settings: Settings, options?: SummaryOptions): Promise<string> => {
     const isApiKeySet = (settings.provider === 'google' && !!settings.geminiApiKey) || (settings.provider === 'openai' && !!settings.openAIApiKey);
     if (!isApiKeySet) return 'AI Summaries are disabled. No API Key provided.';
 
@@ -97,10 +101,10 @@ Do not just repeat the individual summaries. Create a new, synthesized narrative
 Your response should be a single paragraph of insightful business analysis.`;
             
             const messages = [{ role: 'system', content: systemPrompt }, { role: 'user', content: promptContent }];
-            return await callOpenAI(settings, messages, false) || 'No final summary generated.';
+            return await callOpenAI(settings, messages, false, options?.signal) || 'No final summary generated.';
 
         } else { // Google Gemini
-            return await callGemini(settings, promptContent);
+            return await callGemini(settings, promptContent, undefined, options?.signal);
         }
     } catch (error) {
         console.error("Error generating final summary:", error);

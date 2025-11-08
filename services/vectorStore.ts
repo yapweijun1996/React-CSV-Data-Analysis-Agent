@@ -129,13 +129,40 @@ class VectorStore {
         this.documents = [];
     }
 
-    public async search(queryText: string, k: number = 5): Promise<{ text: string; score: number }[]> {
+    private async withAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+        if (!signal) return promise;
+        if (signal.aborted) {
+            throw new DOMException('Aborted', 'AbortError');
+        }
+        return new Promise<T>((resolve, reject) => {
+            const onAbort = () => {
+                signal.removeEventListener('abort', onAbort);
+                reject(new DOMException('Aborted', 'AbortError'));
+            };
+            signal.addEventListener('abort', onAbort);
+            promise.then(
+                value => {
+                    signal.removeEventListener('abort', onAbort);
+                    resolve(value);
+                },
+                err => {
+                    signal.removeEventListener('abort', onAbort);
+                    reject(err);
+                }
+            );
+        });
+    }
+
+    public async search(queryText: string, k: number = 5, options?: { signal?: AbortSignal }): Promise<{ text: string; score: number }[]> {
         if (!this.embedder || this.documents.length === 0) {
             return [];
         }
 
         try {
-            const queryEmbedding = await this.embedder(queryText, { pooling: 'mean', normalize: true });
+            const queryEmbedding = await this.withAbort(
+                this.embedder(queryText, { pooling: 'mean', normalize: true }),
+                options?.signal
+            );
             // Fix: Cast the result of Array.from to number[] to satisfy TypeScript.
             const queryVector = Array.from(queryEmbedding.data) as number[];
             

@@ -39,7 +39,8 @@ const generateCandidatePlans = async (
     columns: ColumnProfile[],
     sampleData: CsvRow[],
     settings: Settings,
-    numPlans: number
+    numPlans: number,
+    signal?: AbortSignal
 ): Promise<AnalysisPlan[]> => {
     const categoricalCols = columns.filter(c => c.type === 'categorical' || c.type === 'date' || c.type === 'time').map(c => c.name);
     const numericalCols = columns.filter(c => c.type === 'numerical' || c.type === 'currency' || c.type === 'percentage').map(c => c.name);
@@ -52,11 +53,11 @@ const generateCandidatePlans = async (
 You MUST respond with a single valid JSON object with a single key "plans" that contains an array of plan objects, and nothing else. The JSON object must adhere to the provided schema.`;
 
         const messages = [{ role: 'system', content: systemPrompt }, { role: 'user', content: promptContent }];
-        const content = await callOpenAI(settings, messages, true);
+        const content = await callOpenAI(settings, messages, true, signal);
         plans = robustlyParseJsonArray(content);
     
     } else { // Google Gemini
-        const content = await callGemini(settings, promptContent, planSchema);
+        const content = await callGemini(settings, promptContent, planSchema, signal);
         plans = robustlyParseJsonArray(content);
     }
 
@@ -66,7 +67,8 @@ You MUST respond with a single valid JSON object with a single key "plans" that 
 // Helper function for the second step: the AI Quality Gate
 const refineAndConfigurePlans = async (
     plansWithData: { plan: AnalysisPlan; aggregatedSample: CsvRow[] }[],
-    settings: Settings
+    settings: Settings,
+    signal?: AbortSignal
 ): Promise<AnalysisPlan[]> => {
     let rawPlans: any[];
     const promptContent = createRefinePlansPrompt(plansWithData);
@@ -76,11 +78,11 @@ const refineAndConfigurePlans = async (
 You MUST respond with a single valid JSON object with a single key "plans" that contains an array of ONLY the good, configured plan objects. Do not include the discarded plans. The JSON object must adhere to the provided schema.`;
         
         const messages = [{ role: 'system', content: systemPrompt }, { role: 'user', content: promptContent }];
-        const content = await callOpenAI(settings, messages, true);
+        const content = await callOpenAI(settings, messages, true, signal);
         rawPlans = robustlyParseJsonArray(content);
 
     } else { // Google Gemini
-        const content = await callGemini(settings, promptContent, planSchema);
+        const content = await callGemini(settings, promptContent, planSchema, signal);
         rawPlans = robustlyParseJsonArray(content);
     }
     
@@ -97,17 +99,22 @@ You MUST respond with a single valid JSON object with a single key "plans" that 
 };
 
 
+interface AnalysisPlanOptions {
+    signal?: AbortSignal;
+}
+
 export const generateAnalysisPlans = async (
     columns: ColumnProfile[], 
     sampleData: CsvData['data'],
-    settings: Settings
+    settings: Settings,
+    options?: AnalysisPlanOptions
 ): Promise<AnalysisPlan[]> => {
     const isApiKeySet = (settings.provider === 'google' && !!settings.geminiApiKey) || (settings.provider === 'openai' && !!settings.openAIApiKey);
     if (!isApiKeySet) throw new Error("API Key not provided.");
 
     try {
         // Step 1: Generate a broad list of candidate plans (already validated inside the function)
-        const candidatePlans = await generateCandidatePlans(columns, sampleData, settings, 12);
+        const candidatePlans = await generateCandidatePlans(columns, sampleData, settings, 12, options?.signal);
         if (candidatePlans.length === 0) return [];
 
         // Step 2: Execute plans on sample data to get data for the AI to review
@@ -133,7 +140,7 @@ export const generateAnalysisPlans = async (
         }
         
         // Step 3: AI Quality Gate - Ask AI to review and refine the plans (already validated inside the function)
-        const refinedPlans = await refineAndConfigurePlans(plansWithDataForReview, settings);
+        const refinedPlans = await refineAndConfigurePlans(plansWithDataForReview, settings, options?.signal);
 
         // Ensure we have a minimum number of plans
         let finalPlans = refinedPlans;
@@ -150,7 +157,7 @@ export const generateAnalysisPlans = async (
         console.error("Error during two-step analysis plan generation:", error);
         // Fallback to simpler generation if the complex one fails
         try {
-            return await generateCandidatePlans(columns, sampleData, settings, 8);
+            return await generateCandidatePlans(columns, sampleData, settings, 8, options?.signal);
         } catch (fallbackError) {
              console.error("Fallback plan generation also failed:", fallbackError);
              throw new Error("Failed to generate any analysis plans from AI.");

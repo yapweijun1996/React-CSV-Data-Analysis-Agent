@@ -4,17 +4,21 @@ import OpenAI from 'openai';
 import { Settings } from '../../types';
 
 // Helper for retrying API calls
-export const withRetry = async <T>(fn: () => Promise<T>, retries = 2): Promise<T> => {
+export const withRetry = async <T>(fn: () => Promise<T>, retries = 2, signal?: AbortSignal): Promise<T> => {
     let lastError: Error | undefined;
     for (let i = 0; i < retries; i++) {
+        if (signal?.aborted) {
+            throw new DOMException('Aborted', 'AbortError');
+        }
         try {
             return await fn();
         } catch (error) {
             lastError = error as Error;
-            console.warn(`API call failed, retrying... (${i + 1}/${retries})`, error);
-            if (i < retries - 1) {
-                await new Promise(res => setTimeout(res, 500));
+            if (signal?.aborted || i === retries - 1) {
+                throw lastError;
             }
+            console.warn(`API call failed, retrying... (${i + 1}/${retries})`, error);
+            await new Promise(res => setTimeout(res, 500));
         }
     }
     throw lastError;
@@ -65,35 +69,46 @@ export const robustlyParseJsonArray = (responseText: string): any[] => {
 };
 
 
-export const callOpenAI = async (settings: Settings, messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[], useJsonFormat: boolean): Promise<string> => {
+export const callOpenAI = async (
+    settings: Settings,
+    messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+    useJsonFormat: boolean,
+    signal?: AbortSignal
+): Promise<string> => {
     if (!settings.openAIApiKey) throw new Error("OpenAI API key is not set.");
     const openai = new OpenAI({ apiKey: settings.openAIApiKey, dangerouslyAllowBrowser: true });
     
-    const response: OpenAI.Chat.ChatCompletion = await withRetry(() => openai.chat.completions.create({
-        model: settings.model,
-        messages: messages,
-        response_format: useJsonFormat ? { type: 'json_object' } : undefined,
-    }));
+    const response: OpenAI.Chat.ChatCompletion = await withRetry(() => openai.chat.completions.create(
+        {
+            model: settings.model,
+            messages: messages,
+            response_format: useJsonFormat ? { type: 'json_object' } : undefined,
+        },
+        signal ? { signal } : undefined
+    ), 2, signal);
     
     const content = response.choices[0].message.content;
     if (!content) throw new Error("OpenAI returned an empty response.");
     return content;
 }
 
-export const callGemini = async (settings: Settings, prompt: string, schema?: any): Promise<string> => {
+export const callGemini = async (settings: Settings, prompt: string, schema?: any, signal?: AbortSignal): Promise<string> => {
     if (!settings.geminiApiKey) throw new Error("Gemini API key is not set.");
     const ai = new GoogleGenAI({ apiKey: settings.geminiApiKey });
     
     // The Gemini API works better if the schema instruction is part of the main prompt text, not just in config.
     const finalPrompt = `${prompt}\n${schema ? 'Your response must be a valid JSON object adhering to the provided schema.' : ''}`;
 
-    const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
-        model: settings.model,
-        contents: finalPrompt,
-        config: schema ? {
-            responseMimeType: 'application/json',
-            responseSchema: schema,
-        } : undefined,
-    }));
+    const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent(
+        {
+            model: settings.model,
+            contents: finalPrompt,
+            config: schema ? {
+                responseMimeType: 'application/json',
+                responseSchema: schema,
+            } : undefined,
+        },
+        signal ? { signal } : undefined
+    ), 2, signal);
     return response.text.trim();
 }

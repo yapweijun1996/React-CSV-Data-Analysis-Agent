@@ -31,6 +31,9 @@ const createClarificationId = () =>
         ? crypto.randomUUID()
         : `clar-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+const createRunId = () => `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const createToastId = () => `toast-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
 const getNextAwaitingClarificationId = (clarifications: ClarificationRequest[]): string | null =>
     clarifications.find(c => c.status === 'pending')?.id ?? null;
 
@@ -143,6 +146,8 @@ const MIN_MAIN_WIDTH = 600;
 const initialAppState: AppState = {
     currentView: 'file_upload',
     isBusy: false,
+    busyMessage: null,
+    canCancelBusy: false,
     progressMessages: [],
     csvData: null,
     columnProfiles: [],
@@ -157,9 +162,14 @@ const initialAppState: AppState = {
     aiFilterExplanation: null,
     pendingClarifications: [],
     activeClarificationId: null,
+    toasts: [],
 };
 
 interface StoreState extends AppState {
+    busyRunId: string | null;
+    isCancellationRequested: boolean;
+    aiFilterRunId: string | null;
+    abortControllers: Record<string, AbortController[]>;
     isAsideVisible: boolean;
     asideWidth: number;
     isSpreadsheetVisible: boolean;
@@ -175,13 +185,22 @@ interface StoreState extends AppState {
 }
 
 interface StoreActions {
+    beginBusy: (message: string, options?: { cancellable?: boolean }) => string;
+    updateBusyStatus: (message: string) => void;
+    endBusy: (runId?: string) => void;
+    requestBusyCancel: () => void;
+    isBusyRunActive: (runId: string) => boolean;
+    isRunCancellationRequested: (runId: string) => boolean;
+    createAbortController: (runId?: string) => AbortController | null;
+    abortRunControllers: (runId: string) => void;
+    clearRunControllers: (runId: string) => void;
     init: () => void;
     addProgress: (message: string, type?: 'system' | 'error') => void;
     loadReportsList: () => Promise<void>;
     handleSaveSettings: (newSettings: Settings) => void;
     handleAsideMouseDown: (e: ReactMouseEvent) => void;
-    runAnalysisPipeline: (plans: AnalysisPlan[], data: CsvData, isChatRequest?: boolean) => Promise<AnalysisCardData[]>;
-    handleInitialAnalysis: (dataForAnalysis: CsvData) => Promise<void>;
+    runAnalysisPipeline: (plans: AnalysisPlan[], data: CsvData, options?: { isChatRequest?: boolean; runId?: string }) => Promise<AnalysisCardData[]>;
+    handleInitialAnalysis: (dataForAnalysis: CsvData, options?: { runId?: string }) => Promise<void>;
     handleFileUpload: (file: File) => Promise<void>;
     regenerateAnalyses: (newData: CsvData) => Promise<void>;
     executeDomAction: (action: DomAction) => void;
@@ -190,6 +209,9 @@ interface StoreActions {
     skipClarification: (clarificationId: string) => void;
     handleNaturalLanguageQuery: (query: string) => Promise<void>;
     clearAiFilter: () => void;
+    cancelAiFilterRequest: () => void;
+    addToast: (message: string, type?: 'info' | 'success' | 'error', duration?: number) => string;
+    dismissToast: (toastId: string) => void;
     handleChartTypeChange: (cardId: string, newType: ChartType) => void;
     handleToggleDataVisibility: (cardId: string) => void;
     handleTopNChange: (cardId: string, topN: number | null) => void;
@@ -243,8 +265,42 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         });
     };
 
+    const getRunSignal = (runId?: string) => (runId ? get().createAbortController(runId)?.signal : undefined);
+
+    const runPlanWithChatLifecycle = async (plan: AnalysisPlan, data: CsvData, runId?: string): Promise<AnalysisCardData[]> => {
+        if (runId && get().isRunCancellationRequested(runId)) return [];
+        const planTitle = plan.title ?? 'your requested chart';
+        const planStartMessage: ChatMessage = {
+            sender: 'ai',
+            text: `Okay, creating a chart for "${planTitle}".`,
+            timestamp: new Date(),
+            type: 'ai_plan_start',
+        };
+        set(prev => ({ chatHistory: [...prev.chatHistory, planStartMessage] }));
+
+        const createdCards = await get().runAnalysisPipeline([plan], data, { isChatRequest: true, runId });
+
+        if (createdCards.length > 0) {
+            const cardSummary = createdCards[0].summary.split('---')[0].trim();
+            const completionMessage: ChatMessage = {
+                sender: 'ai',
+                text: `Created the chart for "${planTitle}". Here's what I observed:\n${cardSummary}`,
+                timestamp: new Date(),
+                type: 'ai_message',
+                cardId: createdCards[0].id,
+            };
+            set(prev => ({ chatHistory: [...prev.chatHistory, completionMessage] }));
+        }
+
+        return createdCards;
+    };
+
     return {
         ...initialAppState,
+        busyRunId: null,
+        isCancellationRequested: false,
+        aiFilterRunId: null,
+        abortControllers: {},
         isAsideVisible: true,
         asideWidth: window.innerWidth / 4 > MIN_ASIDE_WIDTH ? window.innerWidth / 4 : MIN_ASIDE_WIDTH,
         isSpreadsheetVisible: true,
@@ -263,6 +319,98 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             }
             return !!settings.openAIApiKey;
         })(),
+        beginBusy: (message, options) => {
+            const runId = createRunId();
+            set({
+                isBusy: true,
+                busyMessage: message,
+                canCancelBusy: !!options?.cancellable,
+                busyRunId: runId,
+                isCancellationRequested: false,
+            });
+            return runId;
+        },
+        updateBusyStatus: (message) => {
+            if (!get().isBusy) return;
+            set({ busyMessage: message });
+        },
+        endBusy: (runId) => {
+            const activeRunId = get().busyRunId;
+            if (runId && activeRunId && activeRunId !== runId) return;
+            set({
+                isBusy: false,
+                busyMessage: null,
+                canCancelBusy: false,
+                busyRunId: null,
+                isCancellationRequested: false,
+            });
+            const targetRunId = runId ?? activeRunId;
+            if (targetRunId) {
+                get().clearRunControllers(targetRunId);
+            }
+        },
+        requestBusyCancel: () => {
+            if (!get().busyRunId || get().isCancellationRequested) return;
+            set({ isCancellationRequested: true, canCancelBusy: false });
+            get().addProgress('Cancelling current request...');
+            const activeRunId = get().busyRunId;
+            if (activeRunId) {
+                get().abortRunControllers(activeRunId);
+            }
+        },
+        isBusyRunActive: (runId) => get().busyRunId === runId,
+        isRunCancellationRequested: (runId) =>
+            get().isCancellationRequested && get().busyRunId === runId,
+        createAbortController: (runId) => {
+            if (!runId) return null;
+            const controller = new AbortController();
+            set(state => ({
+                abortControllers: {
+                    ...state.abortControllers,
+                    [runId]: [...(state.abortControllers[runId] ?? []), controller],
+                },
+            }));
+            return controller;
+        },
+        abortRunControllers: (runId) => {
+            set(state => {
+                const controllers = state.abortControllers[runId];
+                controllers?.forEach(controller => {
+                    if (!controller.signal.aborted) {
+                        controller.abort();
+                    }
+                });
+                if (!controllers) return {};
+                const next = { ...state.abortControllers };
+                delete next[runId];
+                return { abortControllers: next };
+            });
+        },
+        clearRunControllers: (runId) => {
+            set(state => {
+                if (!state.abortControllers[runId]) return {};
+                const next = { ...state.abortControllers };
+                delete next[runId];
+                return { abortControllers: next };
+            });
+        },
+        addToast: (message, type = 'info', duration = 4000) => {
+            const id = createToastId();
+            set(state => ({
+                toasts: [...state.toasts, { id, message, type }],
+            }));
+            if (duration > 0) {
+                setTimeout(() => {
+                    get().dismissToast(id);
+                }, duration);
+            }
+            return id;
+        },
+        dismissToast: (toastId) => {
+            set(state => ({
+                toasts: state.toasts.filter(t => t.id !== toastId),
+            }));
+        },
 
     init: async () => {
         const currentSession = await getReport(CURRENT_SESSION_KEY);
@@ -270,6 +418,14 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             set({
                 ...initialAppState,
                 ...currentSession.appState,
+                isBusy: false,
+                busyMessage: null,
+                canCancelBusy: false,
+                busyRunId: null,
+                isCancellationRequested: false,
+                aiFilterRunId: null,
+                abortControllers: {},
+                toasts: [],
                 currentView: currentSession.appState.csvData ? 'analysis_dashboard' : 'file_upload',
                 pendingClarifications: currentSession.appState.pendingClarifications ?? [],
                 activeClarificationId: currentSession.appState.activeClarificationId ?? null,
@@ -323,32 +479,42 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         document.addEventListener('mouseup', handleMouseUp);
     },
     
-    runAnalysisPipeline: async (plans, data, isChatRequest = false) => {
-        // Implementation moved from useApp hook
-        let isFirstCardInPipeline = true;
+    runAnalysisPipeline: async (plans, data, options = {}) => {
+        const { isChatRequest = false, runId } = options;
         const addProgress = get().addProgress;
         const settings = get().settings;
+        const shouldAbort = () => (runId ? get().isRunCancellationRequested(runId) : false);
+        const requestSignal = () => getRunSignal(runId);
+        let isFirstCardInPipeline = true;
 
         const processPlan = async (plan: AnalysisPlan) => {
-             try {
+            if (shouldAbort()) return null;
+            try {
                 addProgress(`Executing plan: ${plan.title}...`);
+                if (runId) get().updateBusyStatus(`Executing "${plan.title}"...`);
+
                 const aggregatedData = executePlan(data, plan);
                 if (aggregatedData.length === 0) {
                     addProgress(`Skipping "${plan.title}" due to empty result.`, 'error');
                     return null;
                 }
-                
+
+                if (shouldAbort()) return null;
+
                 addProgress(`AI is summarizing: ${plan.title}...`);
-                const summary = await generateSummary(plan.title, aggregatedData, settings);
+                if (runId) get().updateBusyStatus(`Summarizing "${plan.title}"...`);
+                const summary = await generateSummary(plan.title, aggregatedData, settings, { signal: requestSignal() });
+
+                if (shouldAbort()) return null;
 
                 const categoryCount = aggregatedData.length;
                 const shouldApplyDefaultTop8 = plan.chartType !== 'scatter' && categoryCount > 15;
 
                 const newCard: AnalysisCardData = {
                     id: `card-${Date.now()}-${Math.random()}`,
-                    plan: plan,
-                    aggregatedData: aggregatedData,
-                    summary: summary,
+                    plan,
+                    aggregatedData,
+                    summary,
                     displayChartType: plan.chartType,
                     isDataVisible: false,
                     topN: shouldApplyDefaultTop8 ? 8 : (plan.defaultTopN || null),
@@ -356,28 +522,33 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                     disableAnimation: isChatRequest || !isFirstCardInPipeline || get().analysisCards.length > 0,
                     hiddenLabels: [],
                 };
-                
+
                 set(prev => ({ analysisCards: [...prev.analysisCards, newCard] }));
 
                 const cardMemoryText = `[Chart: ${plan.title}] Description: ${plan.description}. AI Summary: ${summary.split('---')[0]}`;
                 await vectorStore.addDocument({ id: newCard.id, text: cardMemoryText });
                 addProgress(`View #${newCard.id.slice(-6)} indexed for long-term memory.`);
 
-                isFirstCardInPipeline = false; 
+                isFirstCardInPipeline = false;
                 addProgress(`Saved as View #${newCard.id.slice(-6)}`);
                 return newCard;
             } catch (error) {
+                if (shouldAbort()) {
+                    addProgress(`Cancelled "${plan.title}" before completion.`);
+                    return null;
+                }
                 console.error('Error executing plan:', plan.title, error);
                 const errorMessage = error instanceof Error ? error.message : String(error);
                 addProgress(`Error executing plan "${plan.title}": ${errorMessage}`, 'error');
                 return null;
             }
         };
-        
+
         const createdCards = (await Promise.all(plans.map(processPlan))).filter((c): c is AnalysisCardData => c !== null);
 
-        if (!isChatRequest && createdCards.length > 0) {
+        if (!isChatRequest && createdCards.length > 0 && !shouldAbort()) {
             addProgress('AI is forming its core understanding of the data...');
+            if (runId) get().updateBusyStatus('Forming core understanding...');
 
             const cardContext: CardContext[] = createdCards.map(c => ({
                 id: c.id,
@@ -385,21 +556,27 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 aggregatedDataSample: c.aggregatedData.slice(0, 10),
             }));
 
-            const coreSummary = await generateCoreAnalysisSummary(cardContext, get().columnProfiles, settings);
-            
+            const coreSummary = await generateCoreAnalysisSummary(cardContext, get().columnProfiles, settings, { signal: requestSignal() });
+            if (shouldAbort()) return createdCards;
+
             const thinkingMessage: ChatMessage = { sender: 'ai', text: coreSummary, timestamp: new Date(), type: 'ai_thinking' };
             set(prev => ({
                 aiCoreAnalysisSummary: coreSummary,
                 chatHistory: [...prev.chatHistory, thinkingMessage],
             }));
-                
+
             addProgress("Indexing core analysis for long-term memory...");
             await vectorStore.addDocument({ id: 'core-summary', text: `Core Analysis Summary: ${coreSummary}` });
             addProgress("Core analysis indexed.");
-            
+
+            if (shouldAbort()) return createdCards;
+
             addProgress('AI is looking for key insights...');
-            const proactiveInsight = await generateProactiveInsights(cardContext, settings);
-            
+            if (runId) get().updateBusyStatus('Looking for key insights...');
+            const proactiveInsight = await generateProactiveInsights(cardContext, settings, { signal: requestSignal() });
+
+            if (shouldAbort()) return createdCards;
+
             if (proactiveInsight) {
                 const insightMessage: ChatMessage = {
                     sender: 'ai',
@@ -412,35 +589,60 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 addProgress(`AI proactively identified an insight in View #${proactiveInsight.cardId.slice(-6)}.`);
             }
 
-            const finalSummaryText = await generateFinalSummary(createdCards, settings);
+            if (shouldAbort()) return createdCards;
+
+            const finalSummaryText = await generateFinalSummary(createdCards, settings, { signal: requestSignal() });
+            if (shouldAbort()) return createdCards;
+
             set({ finalSummary: finalSummaryText });
             addProgress('Overall summary generated.');
         }
         return createdCards;
     },
     
-    handleInitialAnalysis: async (dataForAnalysis) => {
+    handleInitialAnalysis: async (dataForAnalysis, options = {}) => {
         if (!dataForAnalysis) return;
-        set({ isBusy: true });
+        const { runId: providedRunId } = options;
+        const runId = providedRunId ?? get().beginBusy('Running analysis...', { cancellable: true });
         get().addProgress('Starting main analysis...');
 
         try {
             get().addProgress('AI is generating analysis plans...');
-            const plans = await generateAnalysisPlans(get().columnProfiles, dataForAnalysis.data.slice(0, 5), get().settings);
+            get().updateBusyStatus('Drafting analysis plans...');
+            const plans = await generateAnalysisPlans(
+                get().columnProfiles,
+                dataForAnalysis.data.slice(0, 5),
+                get().settings,
+                { signal: getRunSignal(runId) }
+            );
+
+            if (runId && get().isRunCancellationRequested(runId)) {
+                get().addProgress('Analysis cancelled before execution.');
+                return;
+            }
+
             get().addProgress(`AI proposed ${plans.length} plans.`);
             
             if (plans.length > 0) {
-                await get().runAnalysisPipeline(plans, dataForAnalysis, false);
+                await get().runAnalysisPipeline(plans, dataForAnalysis, { runId });
             } else {
                 get().addProgress('AI did not propose any analysis plans.', 'error');
             }
         } catch (error) {
-            console.error('Analysis pipeline error:', error);
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            get().addProgress(`Error during analysis: ${errorMessage}`, 'error');
+            if (!(runId && get().isRunCancellationRequested(runId))) {
+                console.error('Analysis pipeline error:', error);
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                get().addProgress(`Error during analysis: ${errorMessage}`, 'error');
+            }
         } finally {
-            set({ isBusy: false });
-            get().addProgress('Analysis complete. Ready for chat.');
+            if (!providedRunId) {
+                get().endBusy(runId);
+            }
+            if (runId && get().isRunCancellationRequested(runId)) {
+                get().addProgress('Stopped current analysis.');
+            } else {
+                get().addProgress('Analysis complete. Ready for chat.');
+            }
         }
     },
 
@@ -460,12 +662,26 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         await deleteReport(CURRENT_SESSION_KEY);
         await get().loadReportsList();
 
-        set({ ...initialAppState, isBusy: true, csvData: { fileName: file.name, data: [] } });
+        set({
+            ...initialAppState,
+            csvData: { fileName: file.name, data: [] },
+            busyRunId: null,
+            isCancellationRequested: false,
+            aiFilterRunId: null,
+            abortControllers: {},
+            toasts: [],
+        });
+        const runId = get().beginBusy(`Processing ${file.name}...`, { cancellable: true });
         
         try {
-            get().addProgress('Parsing CSV file...');
+            get().updateBusyStatus('Parsing CSV file...');
             const parsedData = await processCsv(file);
             get().addProgress(`Parsed ${parsedData.data.length} rows.`);
+
+            if (get().isRunCancellationRequested(runId)) {
+                get().addProgress('Upload cancelled before analysis.');
+                return;
+            }
 
             set({ initialDataSample: parsedData.data.slice(0, 20) });
             
@@ -474,10 +690,22 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             let prepPlan: DataPreparationPlan | null = null;
 
             if (get().isApiKeySet) {
+                get().updateBusyStatus('Initializing AI memory...');
                 await vectorStore.init(get().addProgress);
                 get().addProgress('AI is analyzing data for cleaning and reshaping...');
                 const initialProfiles = profileData(dataForAnalysis.data);
-                prepPlan = await generateDataPreparationPlan(initialProfiles, dataForAnalysis.data.slice(0, 20), get().settings);
+                get().updateBusyStatus('Drafting data preparation plan...');
+                prepPlan = await generateDataPreparationPlan(
+                    initialProfiles,
+                    dataForAnalysis.data.slice(0, 20),
+                    get().settings,
+                    { signal: getRunSignal(runId) }
+                );
+                
+                if (get().isRunCancellationRequested(runId)) {
+                    get().addProgress('Upload cancelled during preparation.');
+                    return;
+                }
                 
                 if (prepPlan && prepPlan.jsFunctionBody) {
                     get().addProgress(`AI Plan: ${prepPlan.explanation}`);
@@ -497,42 +725,52 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                     dataPreparationPlan: prepPlan,
                     currentView: 'analysis_dashboard'
                 });
-                await get().handleInitialAnalysis(dataForAnalysis);
+                await get().handleInitialAnalysis(dataForAnalysis, { runId });
             } else {
                  get().addProgress(`API Key not set. Please add it in the settings.`, 'error');
                  get().setIsSettingsModalOpen(true);
                  profiles = profileData(dataForAnalysis.data);
-                 set({ csvData: dataForAnalysis, columnProfiles: profiles, isBusy: false, currentView: 'analysis_dashboard' });
+                 set({ csvData: dataForAnalysis, columnProfiles: profiles, currentView: 'analysis_dashboard' });
             }
         } catch (error) {
-            console.error('File processing error:', error);
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            get().addProgress(`File Processing Error: ${errorMessage}`, 'error');
-            set({ isBusy: false, currentView: 'file_upload' });
+            if (!get().isRunCancellationRequested(runId)) {
+                console.error('File processing error:', error);
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                get().addProgress(`File Processing Error: ${errorMessage}`, 'error');
+                set({ currentView: 'file_upload' });
+            }
+        } finally {
+            get().endBusy(runId);
         }
     },
 
     regenerateAnalyses: async (newData) => {
-        // Implementation moved from useApp hook
         get().addProgress('Data has changed. Regenerating all analysis cards...');
-        set({ isBusy: true, analysisCards: [], finalSummary: null });
+        set({ analysisCards: [], finalSummary: null });
+        const runId = get().beginBusy('Regenerating insight cards...', { cancellable: true });
         
         try {
             const existingPlans = get().analysisCards.map(card => card.plan);
             if (existingPlans.length > 0) {
-                const newCards = await get().runAnalysisPipeline(existingPlans, newData, true);
-                if (newCards.length > 0) {
-                    const newFinalSummary = await generateFinalSummary(newCards, get().settings);
-                    set({ finalSummary: newFinalSummary });
-                    get().addProgress('All analysis cards have been updated.');
+                const newCards = await get().runAnalysisPipeline(existingPlans, newData, { isChatRequest: true, runId });
+                if (newCards.length > 0 && !(runId && get().isRunCancellationRequested(runId))) {
+                    const newFinalSummary = await generateFinalSummary(newCards, get().settings, { signal: getRunSignal(runId) });
+                    if (!(runId && get().isRunCancellationRequested(runId))) {
+                        set({ finalSummary: newFinalSummary });
+                        get().addProgress('All analysis cards have been updated.');
+                    }
                 }
+            } else {
+                get().addProgress('No existing plans found to regenerate.', 'error');
             }
         } catch (error) {
-             console.error("Error regenerating analyses:", error);
-             const errorMessage = error instanceof Error ? error.message : String(error);
-             get().addProgress(`Error updating analyses: ${errorMessage}`, 'error');
+             if (!(runId && get().isRunCancellationRequested(runId))) {
+                 console.error("Error regenerating analyses:", error);
+                 const errorMessage = error instanceof Error ? error.message : String(error);
+                 get().addProgress(`Error updating analyses: ${errorMessage}`, 'error');
+             }
         } finally {
-             set({ isBusy: false });
+             get().endBusy(runId);
         }
     },
     
@@ -595,13 +833,15 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             return;
         }
 
+        const runId = get().beginBusy('Working on your request...', { cancellable: true });
         const newChatMessage: ChatMessage = { sender: 'user', text: message, timestamp: new Date(), type: 'user_message' };
-        set(prev => ({ isBusy: true, chatHistory: [...prev.chatHistory, newChatMessage] }));
+        set(prev => ({ chatHistory: [...prev.chatHistory, newChatMessage] }));
 
         try {
             const cardContext: CardContext[] = get().analysisCards.map(c => ({
                 id: c.id, title: c.plan.title, aggregatedDataSample: c.aggregatedData.slice(0, 100),
             }));
+            get().updateBusyStatus('Thinking through your question...');
             const response = await generateChatResponse(
                 get().columnProfiles, 
                 get().chatHistory, 
@@ -612,10 +852,21 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 get().currentView,
                 (get().csvData?.data || []).slice(0, 20), 
                 [], 
-                get().dataPreparationPlan
+                get().dataPreparationPlan,
+                { signal: getRunSignal(runId) }
             );
+
+            if (get().isRunCancellationRequested(runId)) {
+                get().addProgress('Stopped processing request.');
+                return;
+            }
             
             for (const action of response.actions) {
+                if (get().isRunCancellationRequested(runId)) {
+                    get().addProgress('Cancelled remaining actions.');
+                    return;
+                }
+
                 if (action.thought) get().addProgress(`AI Thought: ${action.thought}`);
                 switch (action.responseType) {
                     case 'text_response':
@@ -626,28 +877,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                         break;
                     case 'plan_creation':
                         if (action.plan && get().csvData) {
-                            const planTitle = action.plan.title ?? 'your requested chart';
-                            const startingMessage: ChatMessage = {
-                                sender: 'ai',
-                                text: `Okay, creating a chart for "${planTitle}".`,
-                                timestamp: new Date(),
-                                type: 'ai_plan_start',
-                            };
-                            set(prev => ({ chatHistory: [...prev.chatHistory, startingMessage] }));
-
-                            const createdCards = await get().runAnalysisPipeline([action.plan], get().csvData!, true);
-
-                            if (createdCards.length > 0) {
-                                const cardSummary = createdCards[0].summary.split('---')[0].trim();
-                                const doneMessage: ChatMessage = {
-                                    sender: 'ai',
-                                    text: `Created the chart for "${planTitle}". Here's what I observed:\n${cardSummary}`,
-                                    timestamp: new Date(),
-                                    type: 'ai_message',
-                                    cardId: createdCards[0].id,
-                                };
-                                set(prev => ({ chatHistory: [...prev.chatHistory, doneMessage] }));
-                            }
+                            await runPlanWithChatLifecycle(action.plan, get().csvData!, runId);
                         }
                         break;
                     case 'dom_action':
@@ -717,20 +947,23 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                             set(prev => ({
                                 chatHistory: [...prev.chatHistory, clarificationMessage]
                             }));
-                            set({ isBusy: false, activeClarificationId: enrichedClarification.id });
+                            set({ activeClarificationId: enrichedClarification.id });
+                            get().endBusy(runId);
                             return; 
                         }
                         break;
                 }
             }
         } catch(error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            get().addProgress(`Error: ${errorMessage}`, 'error');
-            const aiMessage: ChatMessage = { sender: 'ai', text: `Sorry, an error occurred: ${errorMessage}`, timestamp: new Date(), type: 'ai_message', isError: true };
-            set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
+            if (!get().isRunCancellationRequested(runId)) {
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                get().addProgress(`Error: ${errorMessage}`, 'error');
+                const aiMessage: ChatMessage = { sender: 'ai', text: `Sorry, an error occurred: ${errorMessage}`, timestamp: new Date(), type: 'ai_message', isError: true };
+                set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
+            }
         } finally {
             if (!get().pendingClarifications.some(req => req.status === 'pending' || req.status === 'resolving')) {
-                set({ isBusy: false });
+                get().endBusy(runId);
             }
         }
     },
@@ -747,9 +980,9 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             type: 'user_message',
         };
         set(prev => ({
-            isBusy: true,
             chatHistory: [...prev.chatHistory, userResponseMessage],
         }));
+        const runId = get().beginBusy('Applying clarification...', { cancellable: true });
         updateClarificationStatus(clarificationId, 'resolving');
     
         try {
@@ -763,10 +996,10 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 get().addProgress(friendlyError, 'error');
                 const aiErrorMessage: ChatMessage = { sender: 'ai', text: friendlyError, timestamp: new Date(), type: 'ai_message', isError: true };
                 set(prev => ({
-                    isBusy: false,
                     chatHistory: [...prev.chatHistory, aiErrorMessage],
                 }));
                 updateClarificationStatus(clarificationId, 'pending');
+                get().endBusy(runId);
                 return;
             }
             
@@ -782,10 +1015,10 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 get().addProgress(friendlyError, 'error');
                 const aiErrorMessage: ChatMessage = { sender: 'ai', text: friendlyError, timestamp: new Date(), type: 'ai_message', isError: true };
                 set(prev => ({
-                    isBusy: false,
                     chatHistory: [...prev.chatHistory, aiErrorMessage],
                 }));
                 updateClarificationStatus(clarificationId, 'pending');
+                get().endBusy(runId);
                 return;
             }
             
@@ -862,37 +1095,19 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                  throw new Error(`The clarified plan is still missing required fields like ${missingFields.join(', ')}.`);
             }
     
-            const planStartMessage: ChatMessage = {
-                sender: 'ai',
-                text: `Okay, creating a chart for "${completedPlan.title}".`,
-                timestamp: new Date(),
-                type: 'ai_plan_start',
-            };
-            set(prev => ({ chatHistory: [...prev.chatHistory, planStartMessage] }));
-
-            const createdCards = await get().runAnalysisPipeline([completedPlan], csvData, true);
-
-            if (createdCards.length > 0) {
-                const cardSummary = createdCards[0].summary.split('---')[0].trim();
-                const completionMessage: ChatMessage = {
-                    sender: 'ai',
-                    text: `Created the chart for "${completedPlan.title}". Here's what I observed:\n${cardSummary}`,
-                    timestamp: new Date(),
-                    type: 'ai_message',
-                    cardId: createdCards[0].id,
-                };
-                set(prev => ({ chatHistory: [...prev.chatHistory, completionMessage] }));
-            }
+            await runPlanWithChatLifecycle(completedPlan, csvData, runId);
             updateClarificationStatus(clarificationId, 'resolved');
     
         } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            get().addProgress(`Error processing clarification: ${errorMessage}`, 'error');
-            const aiMessage: ChatMessage = { sender: 'ai', text: `Sorry, an error occurred while creating the chart: ${errorMessage}`, timestamp: new Date(), type: 'ai_message', isError: true };
-            set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
-            updateClarificationStatus(clarificationId, 'pending');
+            if (!get().isRunCancellationRequested(runId)) {
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                get().addProgress(`Error processing clarification: ${errorMessage}`, 'error');
+                const aiMessage: ChatMessage = { sender: 'ai', text: `Sorry, an error occurred while creating the chart: ${errorMessage}`, timestamp: new Date(), type: 'ai_message', isError: true };
+                set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
+                updateClarificationStatus(clarificationId, 'pending');
+            }
         } finally {
-            set({ isBusy: false });
+            get().endBusy(runId);
         }
     },
 
@@ -917,7 +1132,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         set(prev => ({
             chatHistory: [...prev.chatHistory, userResponseMessage, aiMessage],
         }));
-        set({ isBusy: false });
+        get().endBusy();
     },
 
     handleNaturalLanguageQuery: async (query) => {
@@ -926,15 +1141,28 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             return;
         }
 
-        set({ isAiFiltering: true, spreadsheetFilterFunction: null, aiFilterExplanation: null });
+        const existingRunId = get().aiFilterRunId;
+        if (existingRunId) {
+            get().abortRunControllers(existingRunId);
+        }
+
+        const runId = createRunId();
+        set({
+            isAiFiltering: true,
+            aiFilterRunId: runId,
+            spreadsheetFilterFunction: null,
+            aiFilterExplanation: null
+        });
         get().addProgress(`AI is processing your data query: "${query}"...`);
+        const signal = get().createAbortController(runId)?.signal;
 
         try {
             const response: AiFilterResponse = await generateFilterFunction(
                 query,
                 get().columnProfiles,
                 get().csvData!.data.slice(0, 5),
-                get().settings
+                get().settings,
+                { signal }
             );
 
             set({
@@ -942,17 +1170,41 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 aiFilterExplanation: response.explanation,
             });
             get().addProgress(`AI filter applied: ${response.explanation}`);
+            get().addToast('AI filter applied successfully.', 'success');
         } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            get().addProgress(`AI query failed: ${errorMessage}`, 'error');
+            if (error instanceof DOMException && error.name === 'AbortError') {
+                get().addProgress('AI filter request cancelled.');
+                get().addToast('AI filter cancelled.', 'info');
+            } else {
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                get().addProgress(`AI query failed: ${errorMessage}`, 'error');
+                get().addToast(`AI filter failed: ${errorMessage}`, 'error');
+            }
         } finally {
-            set({ isAiFiltering: false });
+            get().clearRunControllers(runId);
+            set(state => state.aiFilterRunId === runId
+                ? { isAiFiltering: false, aiFilterRunId: null }
+                : {});
         }
     },
 
     clearAiFilter: () => {
-        set({ spreadsheetFilterFunction: null, aiFilterExplanation: null });
+        const activeRunId = get().aiFilterRunId;
+        if (activeRunId) {
+            get().abortRunControllers(activeRunId);
+        }
+        set({ spreadsheetFilterFunction: null, aiFilterExplanation: null, aiFilterRunId: null, isAiFiltering: false });
         get().addProgress('AI data filter cleared.');
+        get().addToast('AI filter cleared.', 'info');
+    },
+    
+    cancelAiFilterRequest: () => {
+        const { aiFilterRunId, isAiFiltering } = get();
+        if (!aiFilterRunId || !isAiFiltering) return;
+        get().abortRunControllers(aiFilterRunId);
+        set({ isAiFiltering: false, aiFilterRunId: null });
+        get().addProgress('AI data filter cancelled.');
+        get().addToast('AI filter cancelled.', 'info');
     },
     
     handleChartTypeChange: (cardId, newType) => {
@@ -1031,7 +1283,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         }
         vectorStore.clear();
         await deleteReport(CURRENT_SESSION_KEY);
-        set(initialAppState);
+        set({ ...initialAppState, busyRunId: null, isCancellationRequested: false, aiFilterRunId: null, abortControllers: {}, toasts: [] });
         await get().loadReportsList();
     },
 
@@ -1062,6 +1314,8 @@ setInterval(async () => {
         const stateToSave: AppState = {
             currentView: state.currentView,
             isBusy: state.isBusy,
+            busyMessage: state.busyMessage,
+            canCancelBusy: state.canCancelBusy,
             progressMessages: state.progressMessages,
             csvData: state.csvData,
             columnProfiles: state.columnProfiles,
@@ -1076,6 +1330,7 @@ setInterval(async () => {
             aiFilterExplanation: state.aiFilterExplanation,
             pendingClarifications: state.pendingClarifications,
             activeClarificationId: state.activeClarificationId,
+            toasts: [],
         };
 
         const currentReport: Report = {

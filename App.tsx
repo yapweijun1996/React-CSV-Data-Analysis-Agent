@@ -8,6 +8,8 @@ import { MemoryPanel } from './components/MemoryPanel';
 import { SpreadsheetPanel } from './components/SpreadsheetPanel';
 import { DataPrepDebugPanel } from './components/DataPrepDebugPanel';
 import { AppHeader } from './components/AppHeader';
+import { BusyStatusBar } from './components/BusyStatusBar';
+import { ToastStack } from './components/ToastStack';
 import { useAppStore } from './store/useAppStore';
 
 
@@ -72,8 +74,10 @@ const App: React.FC = () => {
             <SettingsModal />
             <HistoryPanel />
             <MemoryPanel />
+            <ToastStack />
             <main className="flex-1 overflow-hidden p-4 flex flex-col">
                 <AppHeader />
+                <BusyStatusBar />
                 {renderMainContent()}
             </main>
             

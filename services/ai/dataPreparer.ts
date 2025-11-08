@@ -4,15 +4,23 @@ import { callGemini, callOpenAI } from './apiClient';
 import { dataPreparationSchema } from './schemas';
 import { createDataPreparationPrompt } from '../promptTemplates';
 
+interface DataPreparationPlanOptions {
+    signal?: AbortSignal;
+}
+
 export const generateDataPreparationPlan = async (
     columns: ColumnProfile[],
     sampleData: CsvData['data'],
-    settings: Settings
+    settings: Settings,
+    options?: DataPreparationPlanOptions
 ): Promise<DataPreparationPlan> => {
     
     let lastError: Error | undefined;
 
     for(let i=0; i < 3; i++) { // Self-correction loop: 1 initial attempt + 2 retries
+        if (options?.signal?.aborted) {
+            throw new DOMException('Aborted', 'AbortError');
+        }
         try {
             let jsonStr: string;
             const promptContent = createDataPreparationPrompt(columns, sampleData, lastError);
@@ -25,11 +33,11 @@ export const generateDataPreparationPlan = async (
                     { role: 'system', content: systemPrompt },
                     { role: 'user', content: promptContent }
                 ];
-                jsonStr = await callOpenAI(settings, messages, true);
+                jsonStr = await callOpenAI(settings, messages, true, options?.signal);
 
             } else { // Google Gemini
                 if (!settings.geminiApiKey) return { explanation: "No transformation needed as Gemini API key is not set.", jsFunctionBody: null, outputColumns: columns };
-                jsonStr = await callGemini(settings, promptContent, dataPreparationSchema);
+                jsonStr = await callGemini(settings, promptContent, dataPreparationSchema, options?.signal);
             }
             
             const plan = JSON.parse(jsonStr) as DataPreparationPlan;
@@ -61,6 +69,9 @@ export const generateDataPreparationPlan = async (
             return plan; // No function body, success.
         
         } catch (error) {
+            if (options?.signal?.aborted) {
+                throw error;
+            }
             console.error(`Error in data preparation plan generation (Attempt ${i+1}):`, error);
             lastError = error as Error;
         }

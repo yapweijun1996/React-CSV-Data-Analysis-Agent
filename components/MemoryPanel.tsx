@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { vectorStore } from '../services/vectorStore';
 import { VectorStoreDocument } from '../types';
 import { useAppStore } from '../store/useAppStore';
@@ -22,6 +22,7 @@ const MEMORY_CAPACITY_KB = 5 * 1024; // 5 MB
 
 export const MemoryPanel: React.FC = () => {
     const isOpen = useAppStore(state => state.isMemoryPanelOpen);
+    const addToast = useAppStore(state => state.addToast);
     const onClose = () => useAppStore.getState().setIsMemoryPanelOpen(false);
 
     const [documents, setDocuments] = useState<VectorStoreDocument[]>([]);
@@ -29,6 +30,7 @@ export const MemoryPanel: React.FC = () => {
     const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
     const [isSearching, setIsSearching] = useState(false);
     const [highlightedDocText, setHighlightedDocText] = useState<string | null>(null);
+    const searchAbortRef = useRef<AbortController | null>(null);
 
     const isModelReady = vectorStore.getIsInitialized();
 
@@ -57,14 +59,43 @@ export const MemoryPanel: React.FC = () => {
         }
     }, [isOpen, refreshDocuments]);
     
+    useEffect(() => {
+        return () => {
+            searchAbortRef.current?.abort();
+        };
+    }, []);
+
     const handleSearch = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!searchQuery.trim() || !isModelReady) return;
+        searchAbortRef.current?.abort();
+        const controller = new AbortController();
+        searchAbortRef.current = controller;
         setIsSearching(true);
         setHighlightedDocText(null);
-        const results = await vectorStore.search(searchQuery, 5);
-        setSearchResults(results);
+        try {
+            const results = await vectorStore.search(searchQuery, 5, { signal: controller.signal });
+            if (!controller.signal.aborted) {
+                setSearchResults(results);
+            }
+        } catch (error) {
+            if (!(error instanceof DOMException && error.name === 'AbortError')) {
+                console.error('Memory search failed:', error);
+            }
+        } finally {
+            if (searchAbortRef.current === controller) {
+                searchAbortRef.current = null;
+            }
+            setIsSearching(false);
+        }
+    };
+
+    const handleCancelSearch = () => {
+        if (!searchAbortRef.current) return;
+        searchAbortRef.current.abort();
+        searchAbortRef.current = null;
         setIsSearching(false);
+        addToast('Memory search cancelled.', 'info');
     };
 
     const handleDelete = (id: string) => {
@@ -141,9 +172,20 @@ export const MemoryPanel: React.FC = () => {
                                     disabled={!isModelReady || isSearching}
                                     className="flex-grow bg-white border border-slate-300 rounded-md py-1.5 px-3 text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
                                 />
-                                <button type="submit" disabled={!isModelReady || isSearching || !searchQuery.trim()} className="px-4 py-1.5 bg-blue-600 text-white font-semibold rounded-md hover:bg-blue-700 transition-colors disabled:bg-blue-300 disabled:cursor-not-allowed">
-                                    {isSearching ? '...' : 'Search'}
-                                </button>
+                                <div className="flex items-center space-x-2">
+                                    <button type="submit" disabled={!isModelReady || isSearching || !searchQuery.trim()} className="px-4 py-1.5 bg-blue-600 text-white font-semibold rounded-md hover:bg-blue-700 transition-colors disabled:bg-blue-300 disabled:cursor-not-allowed">
+                                        {isSearching ? 'Searching…' : 'Search'}
+                                    </button>
+                                    {isSearching && (
+                                        <button
+                                            type="button"
+                                            onClick={handleCancelSearch}
+                                            className="px-3 py-1.5 border border-slate-300 rounded-md text-slate-600 hover:bg-slate-100 transition-colors"
+                                        >
+                                            Cancel
+                                        </button>
+                                    )}
+                                </div>
                             </form>
                         </div>
                         <div className="flex-grow overflow-y-auto pr-2">
