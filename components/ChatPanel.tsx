@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ProgressMessage, ChatMessage, AppView, AgentActionTrace, AgentObservation, AgentObservationStatus } from '../types';
 import { useAppStore } from '../store/useAppStore';
+import { useAutosizeTextArea } from '../hooks/useAutosizeTextArea';
 
 const HideIcon: React.FC = () => (
     <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -67,6 +68,8 @@ const helperToneIcon: Record<HelperTone, string> = {
     neutral: '💬',
 };
 
+const MAX_CHAT_INPUT_HEIGHT = 240;
+
 
 export const ChatPanel: React.FC = () => {
     const {
@@ -124,6 +127,7 @@ export const ChatPanel: React.FC = () => {
     const [input, setInput] = useState('');
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+    useAutosizeTextArea(textareaRef, input, { maxHeight: MAX_CHAT_INPUT_HEIGHT });
 
     const hasAwaitingClarification = pendingClarifications.some(req => req.status === 'pending');
     const recentAgentTraces = agentTraces.slice(-12).reverse();
@@ -242,16 +246,6 @@ export const ChatPanel: React.FC = () => {
     })();
 
     useEffect(scrollToBottom, [timeline]);
-
-    // Auto-resize textarea based on content
-    useEffect(() => {
-        const textarea = textareaRef.current;
-        if (textarea) {
-            textarea.style.height = 'auto'; // Reset height
-            const scrollHeight = textarea.scrollHeight;
-            textarea.style.height = `${scrollHeight}px`;
-        }
-    }, [input]);
 
     useEffect(() => {
         const trimmed = input.trim();
@@ -722,17 +716,26 @@ export const ChatPanel: React.FC = () => {
                     </div>
                 )}
                 <form onSubmit={handleSend} className="flex items-start space-x-2">
-                    <textarea
-                        ref={textareaRef}
-                        rows={1}
-                        value={input}
-                        onChange={(e) => setInput(e.target.value)}
-                        onKeyDown={handleKeyDown}
-                        placeholder={getPlaceholder()}
-                        disabled={isBusy || !isApiKeySet || currentView === 'file_upload' || hasAwaitingClarification}
-                        className="flex-grow bg-white border border-slate-300 rounded-md py-2 px-3 text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 resize-none max-h-32"
-                        style={{ overflowY: 'auto' }}
-                    />
+                    <div className="relative flex-grow">
+                        <textarea
+                            ref={textareaRef}
+                            rows={1}
+                            value={input}
+                            onChange={(e) => setInput(e.target.value)}
+                            onKeyDown={handleKeyDown}
+                            placeholder={getPlaceholder()}
+                            disabled={isBusy || !isApiKeySet || currentView === 'file_upload' || hasAwaitingClarification}
+                            aria-describedby="chat-input-char-count"
+                            className="w-full bg-white border border-slate-300 rounded-md py-2 pl-3 pr-14 text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 resize-none"
+                            style={{ maxHeight: `${MAX_CHAT_INPUT_HEIGHT}px`, overflowY: 'hidden' }}
+                        />
+                        <span
+                            id="chat-input-char-count"
+                            className="pointer-events-none absolute bottom-2 right-3 text-[11px] text-slate-400"
+                        >
+                            {input.length} chars
+                        </span>
+                    </div>
                      <button
                         type="submit"
                         disabled={isBusy || !input.trim() || !isApiKeySet || currentView === 'file_upload' || hasAwaitingClarification}
