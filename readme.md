@@ -23,6 +23,8 @@ This advanced tool allows users to have a conversation with their data, asking f
     *   **Explicit Planning**: Before starting a multi-step task, the AI will state its plan in its "thought" process (e.g., "My plan is to: 1. Filter the data. 2. Create a chart. 3. Summarize the results."). This makes its strategy clear from the outset.
     *   **Sequential Execution**: The agent executes the plan by chaining multiple tools together in a sequence. It can perform a data transformation, then create several analysis cards from the new data, and finally provide a text summary that synthesizes the results, all in response to a single prompt.
     *   **Full Self-Explanation**: The agent remembers every action it takes, including the initial data preparation script. You can ask it, "Where did the 'Software Product 10' value come from?", and it will consult its logs to explain exactly how it cleaned and standardized the raw data, building trust and ensuring reproducibility.
+    *   **Strict Schema Validation**: Every AI action is validated against a Gemini-compatible JSON schema that requires a full plan payload. If the AI omits required fields, the planner automatically requests a corrected response before anything touches your data.
+    *   **Automation Safeguards**: The DOM action handler inspects the current card state before applying changes. Redundant requests (e.g., switching to a chart type that is already active or re-showing data that is visible) are skipped with a friendly explanation so the UI never “thrashes”.
 
 ### 🧩 Agent Architecture Notes
 
@@ -85,6 +87,7 @@ Your settings are saved securely in your browser's local storage and are never t
     *   Ask a question about the data (e.g., "What's the average order value in the sales performance chart?").
     *   Ask the AI to guide you (e.g., "Highlight the most important chart and explain it to me"). Click the "Show Related Card" button on the AI's response to navigate directly to the chart it is discussing.
     *   Ask the AI to perform complex actions (e.g., "Create a new column called 'Efficiency' by dividing 'Output' by 'Hours'").
+    *   If the agent responds that an action was skipped, it means the automation guard detected the UI is already in the requested state—just issue a different instruction or request a new analysis.
 7.  **Manage History & Memory**:
     *   Click the "History" button in the main header to see all your past reports. You can load a previous session to continue your work or delete old reports.
     *   Click the "Memory" icon (🧠) in the Assistant panel to see what the AI has learned from your data and conversations.
@@ -98,3 +101,4 @@ Your settings are saved securely in your browser's local storage and are never t
 *   **Charting**: Chart.js with `chartjs-plugin-zoom`
 *   **CSV Parsing**: PapaParse
 *   **Local Storage**: IndexedDB (for session reports & AI memory) & LocalStorage (for settings) via the `idb` library.
+*   **Automation Runtime**: A custom `AgentWorker` orchestrator that enforces schema validation, handles retries, and short-circuits redundant DOM operations for a smoother “hands-free” experience.
