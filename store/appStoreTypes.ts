@@ -93,6 +93,7 @@ export interface StoreActions {
     handleTopNChange: (cardId: string, topN: number | null) => void;
     handleHideOthersChange: (cardId: string, hide: boolean) => void;
     handleToggleLegendLabel: (cardId: string, label: string) => void;
+    clearCardFilter: (cardId: string) => void;
     handleLoadReport: (id: string) => Promise<void>;
     handleDeleteReport: (id: string) => Promise<void>;
     handleShowCardFromChat: (cardId: string) => void;
@@ -107,6 +108,16 @@ export interface StoreActions {
     setIsHistoryPanelOpen: (isOpen: boolean) => void;
     setIsMemoryPanelOpen: (isOpen: boolean) => void;
     setIsResizing: (isResizing: boolean) => void;
+    recordAgentValidationEvent: (event: {
+        actionType: AgentActionType;
+        reason: string;
+        actionIndex: number;
+        runId?: string | null;
+        retryInstruction?: string;
+        timestamp?: string;
+    }) => void;
+    dismissAgentValidationEvent: (eventId: string) => void;
+    clearAgentValidationEvents: () => void;
     beginAgentActionTrace: (actionType: AgentActionType, summary: string, source?: AgentActionSource) => string;
     updateAgentActionTrace: (
         traceId: string,

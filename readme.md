@@ -24,6 +24,10 @@ This advanced tool allows users to have a conversation with their data, asking f
     *   **Sequential Execution**: The agent executes the plan by chaining multiple tools together in a sequence. It can perform a data transformation, then create several analysis cards from the new data, and finally provide a text summary that synthesizes the results, all in response to a single prompt.
     *   **Full Self-Explanation**: The agent remembers every action it takes, including the initial data preparation script. You can ask it, "Where did the 'Software Product 10' value come from?", and it will consult its logs to explain exactly how it cleaned and standardized the raw data, building trust and ensuring reproducibility.
 
+### 🧩 Agent Architecture Notes
+
+Curious how the planner loop, action registry, and middleware stack interact? See [`docs/agent-worker.md`](docs/agent-worker.md) for a deeper dive into the `AgentWorker` orchestration layer, how it validates AI responses, and where to hook in new tools.
+
 *   **AI-Powered Data Preparation**: The assistant acts as a data engineer. It intelligently analyzes your raw CSV for complex structures, summary rows, or other anomalies. It then writes and executes a custom JavaScript function on-the-fly to clean and reshape your data into a tidy, analysis-ready format.
 
 *   **AI Quality Gate & Smart Defaults**: The agent doesn't just blindly generate charts. It uses a two-step "quality gate" process. After generating initial ideas, it acts as its own quality reviewer, analyzing the aggregated data for each potential chart. It automatically discards uninteresting or "rubbish" charts (like those with no data variation) and for charts with many categories, it intelligently sets a default "Top 8" view with "Others" hidden, ensuring you start with clean, insightful, and readable visualizations.

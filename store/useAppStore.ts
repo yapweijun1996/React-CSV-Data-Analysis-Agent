@@ -24,6 +24,8 @@ import {
     AgentObservation,
     AgentPlanState,
     PlannerSessionState,
+    AgentValidationEvent,
+    VectorStoreDocument,
 } from '../types';
 import { executePlan, applyTopNWithOthers } from '../utils/dataProcessor';
 import { generateAnalysisPlans, generateSummary, generateFinalSummary, generateCoreAnalysisSummary, generateProactiveInsights } from '../services/aiService';
@@ -46,6 +48,7 @@ const createClarificationId = () =>
 
 const createRunId = () => `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const createToastId = () => `toast-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const createValidationEventId = () => `val-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 let autoSaveManager: AutoSaveManager | null = null;
 let latestAutoSaveConfig: AutoSaveConfig | null = null;
@@ -105,6 +108,7 @@ const buildSerializableAppState = (state: AppStore): AppState => ({
     activeClarificationId: state.activeClarificationId,
     toasts: [],
     agentActionTraces: state.agentActionTraces,
+    agentValidationEvents: state.agentValidationEvents,
     columnAliasMap: state.columnAliasMap,
     pendingDataTransform: state.pendingDataTransform,
     lastAppliedDataTransform: state.lastAppliedDataTransform,
@@ -119,12 +123,45 @@ const buildFileNameFromHeader = (header?: string | null) => {
     return `${stem}-${timestamp}.csv`;
 };
 
+const restoreVectorMemoryFromSnapshot = async (
+    documents: VectorStoreDocument[] | undefined | null,
+    addProgress: AppStore['addProgress'],
+    addToast: AppStore['addToast'],
+    dismissToast: AppStore['dismissToast'],
+    successMessage: string,
+) => {
+    if (!documents || documents.length === 0) return;
+    let loadingToastId: string | null = null;
+    try {
+        const requiresInit = !vectorStore.getIsInitialized();
+        if (requiresInit) {
+            loadingToastId = addToast('Preparing AI memory from history...', 'info', 0);
+            await vectorStore.init(addProgress);
+        }
+        if (!vectorStore.getIsInitialized()) {
+            addProgress('AI memory model failed to load; saved chat context is unavailable right now.', 'error');
+            if (loadingToastId) dismissToast(loadingToastId);
+            return;
+        }
+        if (loadingToastId) dismissToast(loadingToastId);
+        vectorStore.rehydrate(documents);
+        addProgress(successMessage);
+        addToast('AI memory ready for this report.', 'success');
+    } catch (error) {
+        if (loadingToastId) dismissToast(loadingToastId);
+        console.error('Failed to restore AI memory from saved session:', error);
+        addProgress('Restoring AI memory failed; chat recall may be incomplete this session.', 'error');
+        addToast('AI memory failed to load. Try reloading or re-importing the file.', 'error', 6000);
+    }
+};
+
 const MIN_ASIDE_WIDTH = 320;
 const MAX_ASIDE_WIDTH = 800;
 const MIN_MAIN_WIDTH = 600;
 
 const MAX_AGENT_TRACE_HISTORY = 40;
 const MAX_PLANNER_OBSERVATIONS = 12;
+const MAX_AGENT_VALIDATION_EVENTS = 25;
 
 const deriveAliasMap = (profiles: ColumnProfile[] = []) => buildColumnAliasMap(profiles.map(p => p.name));
 
@@ -159,6 +196,7 @@ const initialAppState: AppState = {
     activeClarificationId: null,
     toasts: [],
     agentActionTraces: [],
+    agentValidationEvents: [],
     columnAliasMap: {},
     pendingDataTransform: null,
     lastAppliedDataTransform: null,
@@ -495,6 +533,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 pendingClarifications: currentSession.appState.pendingClarifications ?? [],
                 activeClarificationId: currentSession.appState.activeClarificationId ?? null,
                 agentActionTraces: currentSession.appState.agentActionTraces ?? [],
+                agentValidationEvents: currentSession.appState.agentValidationEvents ?? [],
                 chatMemoryPreview: [],
                 chatMemoryExclusions: [],
                 chatMemoryPreviewQuery: '',
@@ -505,10 +544,13 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 interactiveSelectionFilter: null,
                 plannerSession: normalizePlannerSession(currentSession.appState.plannerSession),
             });
-            if (currentSession.appState.vectorStoreDocuments && vectorStore.getIsInitialized()) {
-                vectorStore.rehydrate(currentSession.appState.vectorStoreDocuments);
-                get().addProgress('Restored AI long-term memory from last session.');
-            }
+            await restoreVectorMemoryFromSnapshot(
+                currentSession.appState.vectorStoreDocuments,
+                get().addProgress,
+                get().addToast,
+                get().dismissToast,
+                'Restored AI long-term memory from last session.',
+            );
             seedAutoSaveCreatedAt(currentSession.createdAt);
         }
         await get().loadReportsList();
@@ -981,6 +1023,14 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         }));
     },
 
+    clearCardFilter: (cardId) => {
+        set(state => ({
+            analysisCards: state.analysisCards.map(card =>
+                card.id === cardId ? { ...card, filter: undefined } : card
+            ),
+        }));
+    },
+
     triggerAutoSaveNow: () => {
         triggerAutoSaveImmediately();
     },
@@ -999,12 +1049,17 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 chatMemoryPreviewQuery: '',
                 isMemoryPreviewLoading: false,
                 agentActionTraces: report.appState.agentActionTraces ?? [],
+                agentValidationEvents: report.appState.agentValidationEvents ?? [],
                 columnAliasMap: report.appState.columnAliasMap ?? deriveAliasMap(report.appState.columnProfiles ?? []),
                 plannerSession: normalizePlannerSession(report.appState.plannerSession),
             });
-            if (report.appState.vectorStoreDocuments) {
-                vectorStore.rehydrate(report.appState.vectorStoreDocuments);
-            }
+            await restoreVectorMemoryFromSnapshot(
+                report.appState.vectorStoreDocuments,
+                get().addProgress,
+                get().addToast,
+                get().dismissToast,
+                'Restored AI long-term memory from loaded report.',
+            );
             get().addProgress(`Report "${report.filename}" loaded.`);
             seedAutoSaveCreatedAt(report.createdAt);
         } else {
@@ -1035,6 +1090,32 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
     setIsHistoryPanelOpen: (isOpen) => set({ isHistoryPanelOpen: isOpen }),
     setIsMemoryPanelOpen: (isOpen) => set({ isMemoryPanelOpen: isOpen }),
     setIsResizing: (isResizing) => set({ isResizing: isResizing }),
+    recordAgentValidationEvent: ({ actionType, reason, actionIndex, runId, retryInstruction, timestamp }) => {
+        const event: AgentValidationEvent = {
+            id: createValidationEventId(),
+            actionType,
+            reason,
+            actionIndex,
+            runId: runId ?? null,
+            retryInstruction,
+            timestamp: timestamp ?? new Date().toISOString(),
+        };
+        set(state => {
+            const updated = [...state.agentValidationEvents, event];
+            return {
+                agentValidationEvents: updated.slice(-MAX_AGENT_VALIDATION_EVENTS),
+            };
+        });
+        if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+            window.dispatchEvent(new CustomEvent('agent-validation-event', { detail: event }));
+        }
+    },
+    dismissAgentValidationEvent: (eventId) => {
+        set(state => ({
+            agentValidationEvents: state.agentValidationEvents.filter(event => event.id !== eventId),
+        }));
+    },
+    clearAgentValidationEvents: () => set({ agentValidationEvents: [] }),
     beginAgentActionTrace: (actionType, summary, source: AgentActionSource = 'chat') => {
         const traceId = `trace-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const newTrace = {

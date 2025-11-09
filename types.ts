@@ -113,6 +113,16 @@ export interface AgentObservation {
     uiDelta?: string | null;
 }
 
+export interface AgentValidationEvent {
+    id: string;
+    actionType: AgentActionType;
+    reason: string;
+    actionIndex: number;
+    timestamp: string;
+    runId?: string | null;
+    retryInstruction?: string;
+}
+
 export interface AgentPlanState {
     goal: string;
     contextSummary?: string | null;
@@ -181,6 +191,7 @@ export interface ClarificationRequestPayload {
     pendingPlan: PendingPlan;
     // We need to know which property of the plan the user's choice will fill.
     targetProperty: keyof AnalysisPlan;
+    columnHints?: string[];
 }
 
 export interface ClarificationRequest extends ClarificationRequestPayload {
@@ -243,6 +254,7 @@ export interface AppState {
     activeClarificationId: string | null;
     toasts: AppToast[];
     agentActionTraces: AgentActionTrace[];
+    agentValidationEvents: AgentValidationEvent[];
     columnAliasMap: Record<string, string>;
     pendingDataTransform: PendingDataTransform | null;
     lastAppliedDataTransform: AppliedDataTransformRecord | null;

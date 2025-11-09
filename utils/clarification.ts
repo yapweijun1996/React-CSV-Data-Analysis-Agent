@@ -55,21 +55,39 @@ export const resolveColumnChoice = (
     return availableColumns.find(col => normalizedLabel.includes(normalizeText(col)));
 };
 
+interface ClarificationFilterOptions {
+    /**
+     * Columns that should be treated as valid even if they do not show up
+     * in the current column profile list (e.g., alias/group-by fields from cards).
+     */
+    preferredColumns?: string[];
+}
+
 export const filterClarificationOptions = (
     clarification: ClarificationRequestPayload,
     data: CsvRow[] | undefined,
     availableColumns: string[],
+    options?: ClarificationFilterOptions,
 ): ClarificationRequestPayload | null => {
     if (!COLUMN_TARGET_PROPERTIES.includes(clarification.targetProperty) || !data || data.length === 0) {
         return clarification;
     }
 
+    const preferredColumns = options?.preferredColumns?.filter(
+        (value): value is string => typeof value === 'string' && value.trim().length > 0,
+    ) ?? [];
+    const expandedColumns = Array.from(new Set([...availableColumns, ...preferredColumns]));
+
+    const columnHintSet = new Set<string>(clarification.columnHints ?? []);
+
     const filteredOptions = clarification.options
         .map(option => {
-            const resolvedColumn = resolveColumnChoice(option, clarification.targetProperty, availableColumns);
+            const resolvedColumn = resolveColumnChoice(option, clarification.targetProperty, expandedColumns);
             if (!resolvedColumn) return null;
+            columnHintSet.add(resolvedColumn);
+            const isPreferredColumn = preferredColumns.includes(resolvedColumn);
             if (clarification.targetProperty === 'groupByColumn') {
-                if (!columnHasUsableData(resolvedColumn, data, 2, 50)) return null;
+                if (!columnHasUsableData(resolvedColumn, data, 2, isPreferredColumn ? Infinity : 50)) return null;
             } else if (!columnHasUsableData(resolvedColumn, data)) {
                 return null;
             }
@@ -84,5 +102,6 @@ export const filterClarificationOptions = (
     return {
         ...clarification,
         options: filteredOptions,
+        columnHints: Array.from(columnHintSet),
     };
 };

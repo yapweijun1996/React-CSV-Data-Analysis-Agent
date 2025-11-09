@@ -41,6 +41,7 @@ export const AnalysisCard: React.FC<AnalysisCardProps> = ({ cardId }) => {
         handleHideOthersChange, 
         handleToggleLegendLabel,
         linkChartSelectionToRawData,
+        clearCardFilter,
     } = useAppStore(state => ({
         handleChartTypeChange: state.handleChartTypeChange,
         handleToggleDataVisibility: state.handleToggleDataVisibility,
@@ -48,6 +49,7 @@ export const AnalysisCard: React.FC<AnalysisCardProps> = ({ cardId }) => {
         handleHideOthersChange: state.handleHideOthersChange,
         handleToggleLegendLabel: state.handleToggleLegendLabel,
         linkChartSelectionToRawData: state.linkChartSelectionToRawData,
+        clearCardFilter: state.clearCardFilter,
     }));
 
     const cardRef = useRef<HTMLDivElement>(null);
@@ -227,8 +229,19 @@ export const AnalysisCard: React.FC<AnalysisCardProps> = ({ cardId }) => {
             </div>
             
             {filter && (
-                 <div className="text-xs text-yellow-800 bg-yellow-100 p-2 rounded-md my-3 border border-yellow-200">
-                    <b>AI Filter Active:</b> Showing where '{filter.column}' is '{filter.values.join(', ')}'. Ask AI to "clear filter" to remove.
+                 <div className="text-xs text-yellow-800 bg-yellow-100 p-3 rounded-md my-3 border border-yellow-200">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span>
+                            <b>AI Filter Active:</b> Showing where '{filter.column}' is '{filter.values.join(', ')}'. Ask AI to "clear filter" or use the button to remove.
+                        </span>
+                        <button
+                            type="button"
+                            onClick={() => clearCardFilter(id)}
+                            className="px-3 py-1 text-xs font-semibold text-yellow-900 bg-white/70 border border-yellow-300 rounded-md hover:bg-white hover:border-yellow-400 transition"
+                        >
+                            Clear filter
+                        </button>
+                    </div>
                 </div>
             )}
 

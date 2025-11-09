@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict';
 import { runPlannerWorkflow } from '../store/slices/chatSlice';
-import type { AiChatResponse, ChatMessage, ColumnProfile, CsvData } from '../types';
+import type { AiChatResponse, ChatMessage, ColumnProfile, CsvData, DomAction, AgentValidationEvent } from '../types';
+
+if (typeof globalThis.document === 'undefined') {
+    const noop = () => undefined;
+    (globalThis as any).document = {
+        getElementById: () => ({
+            scrollIntoView: noop,
+        }),
+    };
+}
 
 type PlannerTrace = { id: string; actionType: string; status: string };
 
@@ -16,6 +25,9 @@ type PlannerStore = {
     executedPlans: string[];
     columnAliasMap: Record<string, string>;
     pendingDataTransform: any;
+    domActions: DomAction[];
+    lastFilterQuery: string | null;
+    validationEvents: AgentValidationEvent[];
 };
 
 const defaultStore = (): PlannerStore => ({
@@ -40,6 +52,9 @@ const defaultStore = (): PlannerStore => ({
     executedPlans: [],
     columnAliasMap: {},
     pendingDataTransform: null,
+    domActions: [],
+    lastFilterQuery: null,
+    validationEvents: [],
 });
 
 const createPlannerHarness = (overrides: Partial<PlannerStore> = {}) => {
@@ -106,6 +121,27 @@ const createPlannerHarness = (overrides: Partial<PlannerStore> = {}) => {
         pendingDataTransform: store.pendingDataTransform,
         handleClarificationResponse,
         endBusy: () => store.progressLog.push('busy:end'),
+        executeDomAction: (domAction: DomAction) => {
+            store.domActions.push(domAction);
+        },
+        handleNaturalLanguageQuery: async (query: string) => {
+            store.lastFilterQuery = query;
+            store.progressLog.push(`filter:${query}`);
+        },
+        recordAgentValidationEvent: (event: any) => {
+            const enriched: AgentValidationEvent = {
+                id: `val-${store.validationEvents.length + 1}`,
+                timestamp: event.timestamp ?? new Date().toISOString(),
+                ...event,
+            };
+            store.validationEvents.push(enriched);
+        },
+        dismissAgentValidationEvent: (eventId: string) => {
+            store.validationEvents = store.validationEvents.filter(ev => ev.id !== eventId);
+        },
+        clearAgentValidationEvents: () => {
+            store.validationEvents = [];
+        },
     });
 
     const runtime = {
@@ -148,15 +184,20 @@ const buildPlannerContext = (response: AiChatResponse) => ({
 
 const buildMultiResponseContext = (responses: AiChatResponse[]) => {
     const queue = [...responses];
+    let requestCount = 0;
+    let exhausted = false;
     return {
         memorySnapshot: [],
         requestAiResponse: async () => {
-            const next = queue.shift();
-            if (!next) {
-                throw new Error('No stubbed response remaining');
+            requestCount++;
+            if (queue.length === 0) {
+                exhausted = true;
+                return responses[responses.length - 1];
             }
-            return next;
+            return queue.shift()!;
         },
+        getRequestCount: () => requestCount,
+        wasExhausted: () => exhausted,
     };
 };
 
@@ -210,6 +251,157 @@ await test('runPlannerWorkflow executes plan_state then reply', async () => {
     const lastMessage = store.chatHistory.at(-1);
     assert.strictEqual(lastMessage?.text, 'Plan noted. Starting with cohort analysis.');
     assert.ok(store.progressLog.some(msg => msg.includes('busy:Thinking through your question...')));
+});
+
+await test('missing plan_state_update triggers validation retry', async () => {
+    const textResponseAction = {
+        responseType: 'text_response' as const,
+        thought: 'Jump straight to reply',
+        text: 'On it.',
+    };
+    const correctedResponse: AiChatResponse = {
+        actions: [planStateAction, textResponseAction],
+    };
+    const invalidResponse: AiChatResponse = {
+        actions: [textResponseAction],
+    };
+
+    const { runtime, store } = createPlannerHarness();
+    await runPlannerWorkflow(
+        'Outline the plan',
+        buildMultiResponseContext([invalidResponse, correctedResponse]),
+        runtime as any,
+    );
+
+    assert.ok(
+        store.progressLog.some(msg => msg.includes('text_response action is invalid')),
+        'validation message should be logged when plan_state_update is missing',
+    );
+    assert.strictEqual(store.validationEvents.length, 1);
+    assert.strictEqual(store.validationEvents[0].actionType, 'text_response');
+    assert.deepStrictEqual(
+        store.agentActionTraces.map(t => t.actionType),
+        ['text_response', 'plan_state_update', 'text_response'],
+    );
+    const lastMessage = store.chatHistory.at(-1);
+    assert.strictEqual(lastMessage?.text, 'On it.');
+});
+
+await test('invalid dom_action payload triggers validation telemetry before retry', async () => {
+    const invalidDomAction = {
+        responseType: 'dom_action' as const,
+        thought: 'Highlight the chart',
+        domAction: {
+            toolName: 'highlightCard' as const,
+            args: { cardId: '' },
+        },
+    };
+    const validDomAction = {
+        responseType: 'dom_action' as const,
+        thought: 'Highlight the chart',
+        domAction: {
+            toolName: 'highlightCard' as const,
+            args: { cardId: 'card-123' },
+        },
+    };
+
+    const { runtime, store } = createPlannerHarness();
+    await runPlannerWorkflow(
+        'Show me card 3',
+        buildMultiResponseContext([
+            { actions: [planStateAction, invalidDomAction] },
+            { actions: [planStateAction, validDomAction] },
+        ]),
+        runtime as any,
+    );
+
+    assert.ok(
+        store.progressLog.some(msg => msg.includes('DOM action')),
+        'Should log validation error for dom_action',
+    );
+    assert.strictEqual(store.validationEvents.length, 1);
+    assert.strictEqual(store.validationEvents[0].actionType, 'dom_action');
+    assert.deepStrictEqual(
+        store.agentActionTraces.map(t => t.actionType),
+        ['dom_action', 'plan_state_update', 'dom_action'],
+    );
+});
+
+await test('too-short filter query triggers validation retry', async () => {
+    const shortFilterAction = {
+        responseType: 'filter_spreadsheet' as const,
+        thought: 'Need to scan entries',
+        args: { query: 'hi' },
+    };
+    const validFilterAction = {
+        responseType: 'filter_spreadsheet' as const,
+        thought: 'Zoom into Hannah orders',
+        args: { query: 'show orders for Hannah in March' },
+    };
+
+    const { runtime, store } = createPlannerHarness();
+    await runPlannerWorkflow(
+        'Filter Hannah',
+        buildMultiResponseContext([
+            { actions: [planStateAction, shortFilterAction] },
+            { actions: [planStateAction, validFilterAction] },
+        ]),
+        runtime as any,
+    );
+
+    assert.ok(
+        store.progressLog.some(msg => msg.includes('filter_spreadsheet action is invalid')),
+        'Should log validation error for short filter query',
+    );
+    assert.strictEqual(store.validationEvents.length, 1);
+    assert.strictEqual(store.validationEvents[0].actionType, 'filter_spreadsheet');
+    assert.strictEqual(store.lastFilterQuery, 'show orders for Hannah in March');
+    assert.deepStrictEqual(
+        store.agentActionTraces.map(t => t.actionType),
+        ['filter_spreadsheet', 'plan_state_update', 'filter_spreadsheet'],
+    );
+});
+
+await test('execute_js_code without return statement is rejected before retry', async () => {
+    const invalidTransformAction = {
+        responseType: 'execute_js_code' as const,
+        thought: 'Scale revenue',
+        code: {
+            explanation: 'Scale totals',
+            jsFunctionBody: 'data.map(row => ({ ...row, Revenue_total: row.Revenue_total * 1.1 }));',
+        },
+    };
+    const validTransformAction = {
+        responseType: 'execute_js_code' as const,
+        thought: 'Scale revenue properly',
+        code: {
+            explanation: 'Scale totals by 10%',
+            jsFunctionBody:
+                'return data.map(row => ({ ...row, Revenue_total: Number(row.Revenue_total) * 1.1 }));',
+        },
+    };
+
+    const { runtime, store } = createPlannerHarness();
+    await runPlannerWorkflow(
+        'Scale revenue',
+        buildMultiResponseContext([
+            { actions: [planStateAction, invalidTransformAction] },
+            { actions: [planStateAction, validTransformAction] },
+        ]),
+        runtime as any,
+    );
+
+    assert.ok(
+        store.progressLog.some(msg => msg.includes('execute_js_code action is invalid')),
+        'Should log validation error for missing return',
+    );
+    assert.strictEqual(store.validationEvents.length, 1);
+    assert.strictEqual(store.validationEvents[0].actionType, 'execute_js_code');
+    assert.ok(store.pendingDataTransform, 'Valid transform should queue after retry');
+    assert.deepStrictEqual(
+        store.agentActionTraces.map(t => t.actionType),
+        ['execute_js_code', 'plan_state_update', 'execute_js_code'],
+    );
 });
 
 await test('runPlannerWorkflow halts when clarification is required', async () => {
@@ -361,13 +553,81 @@ await test('single-option clarification auto-resolves and continues immediately'
     );
 });
 
+await test('planner continues when plan_state next steps remain', async () => {
+    const continuationPlanState = {
+        responseType: 'plan_state_update' as const,
+        thought: 'Need to keep going',
+        planState: {
+            goal: 'Deliver continuation chart',
+            contextSummary: 'User wants more detail',
+            progress: 'Outlined the approach',
+            nextSteps: ['Generate continuation chart'],
+            blockedBy: null,
+            observationIds: [],
+            confidence: 0.7,
+            updatedAt: new Date().toISOString(),
+        },
+    };
+
+    const followUpPlanState = {
+        responseType: 'plan_state_update' as const,
+        thought: 'Continuing execution',
+        planState: {
+            goal: 'Deliver continuation chart',
+            contextSummary: 'User wants more detail',
+            progress: 'Running the requested chart',
+            nextSteps: ['Finalize summary'],
+            blockedBy: null,
+            observationIds: [],
+            confidence: 0.8,
+            updatedAt: new Date().toISOString(),
+        },
+    };
+
+    const planCreationAction = {
+        responseType: 'plan_creation' as const,
+        thought: 'Build continuation chart',
+        plan: {
+            chartType: 'bar',
+            title: 'Continuation Chart',
+            description: 'Follow-up analysis',
+            aggregation: 'sum',
+            groupByColumn: 'Month',
+            valueColumn: 'Revenue_total',
+        },
+    };
+
+    const { runtime, store } = createPlannerHarness();
+    const plannerContext = buildMultiResponseContext([
+        { actions: [continuationPlanState] },
+        { actions: [followUpPlanState, planCreationAction] },
+    ]);
+    await runPlannerWorkflow(
+        'Keep going',
+        plannerContext,
+        runtime as any,
+    );
+
+    assert.ok(
+        store.progressLog.some(msg => msg.includes('Continuing plan')),
+        'continuation status should be logged',
+    );
+    assert.deepStrictEqual(store.executedPlans, ['Continuation Chart']);
+    assert.deepStrictEqual(
+        store.agentActionTraces.map(t => t.actionType),
+        ['plan_state_update', 'plan_state_update', 'plan_creation'],
+    );
+    assert.strictEqual(plannerContext.wasExhausted(), false, 'should not consume more responses than provided');
+    assert.strictEqual(plannerContext.getRequestCount(), 2);
+});
+
 await test('execute_js_code failure triggers auto-retry flow', async () => {
     const failingTransformAction = {
         responseType: 'execute_js_code' as const,
         thought: 'Transform dataset',
         code: {
             explanation: 'Attempt transform',
-            jsFunctionBody: 'throw new Error("Boom");',
+            jsFunctionBody: 'return data.map(row => { throw new Error("Boom"); });',
         },
     };
     const successTextAction = {
