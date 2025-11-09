@@ -3,9 +3,10 @@ import Masonry from 'react-masonry-css';
 import { AnalysisCard } from './AnalysisCard';
 import { FinalSummary } from './FinalSummary';
 import { useAppStore } from '../store/useAppStore';
+import { CardLayoutControl, COLUMN_OPTIONS } from './CardLayoutControl';
 
-const MAX_COLUMNS = 3;
-const MIN_CARD_WIDTH = 420;
+const MAX_COLUMNS = COLUMN_OPTIONS[COLUMN_OPTIONS.length - 1];
+const MIN_CARD_WIDTH = 460;
 
 const getAutoColumnCount = (width: number) => {
     if (!width) {
@@ -19,44 +20,78 @@ export const AnalysisPanel: React.FC = () => {
     const cards = useAppStore(state => state.analysisCards);
     const finalSummary = useAppStore(state => state.finalSummary);
     const panelRef = useRef<HTMLDivElement | null>(null);
-    const [columnCount, setColumnCount] = useState<number>(1);
+    const resizeFrame = useRef<number | null>(null);
+    const [autoColumnCount, setAutoColumnCount] = useState<number>(1);
+    const [manualColumnCount, setManualColumnCount] = useState<number>(2);
+    const [isManualLayout, setIsManualLayout] = useState(false);
+    const effectiveColumnCount = isManualLayout ? manualColumnCount : autoColumnCount;
 
     useLayoutEffect(() => {
+        if (isManualLayout) {
+            return;
+        }
+
         const node = panelRef.current;
         if (!node) {
             return;
         }
 
-        const updateColumns = () => {
-            const width = node.getBoundingClientRect().width;
-            setColumnCount(prev => {
-                const next = getAutoColumnCount(width);
-                return prev === next ? prev : next;
+        const scheduleUpdate = (width: number) => {
+            if (resizeFrame.current !== null) {
+                cancelAnimationFrame(resizeFrame.current);
+            }
+
+            resizeFrame.current = requestAnimationFrame(() => {
+                resizeFrame.current = null;
+                setAutoColumnCount(prev => {
+                    const next = getAutoColumnCount(width);
+                    return prev === next ? prev : next;
+                });
             });
         };
 
-        updateColumns();
+        scheduleUpdate(node.getBoundingClientRect().width);
 
         if (typeof ResizeObserver !== 'undefined') {
             const observer = new ResizeObserver(entries => {
                 for (const entry of entries) {
                     if (entry.target === node) {
                         const width = entry.contentRect?.width ?? node.getBoundingClientRect().width;
-                        setColumnCount(prev => {
-                            const next = getAutoColumnCount(width);
-                            return prev === next ? prev : next;
-                        });
+                        scheduleUpdate(width);
                     }
                 }
             });
 
             observer.observe(node);
-            return () => observer.disconnect();
+            return () => {
+                observer.disconnect();
+                if (resizeFrame.current !== null) {
+                    cancelAnimationFrame(resizeFrame.current);
+                }
+            };
         }
 
-        window.addEventListener('resize', updateColumns);
-        return () => window.removeEventListener('resize', updateColumns);
-    }, []);
+        const handleResize = () => {
+            scheduleUpdate(node.getBoundingClientRect().width);
+        };
+
+        window.addEventListener('resize', handleResize);
+        return () => {
+            window.removeEventListener('resize', handleResize);
+            if (resizeFrame.current !== null) {
+                cancelAnimationFrame(resizeFrame.current);
+            }
+        };
+    }, [isManualLayout]);
+
+    const handleManualToggle = () => {
+        setIsManualLayout(prev => {
+            if (!prev) {
+                setManualColumnCount(effectiveColumnCount);
+            }
+            return !prev;
+        });
+    };
 
     if (cards.length === 0) {
         return (
@@ -77,13 +112,17 @@ export const AnalysisPanel: React.FC = () => {
                         <FinalSummary summary={finalSummary} />
                     </div>
                 )}
-                <div className="flex items-center justify-end">
-                    <span className="text-xs text-slate-400 uppercase tracking-wide">Layout auto-adjusts</span>
-                </div>
+                <CardLayoutControl
+                    isManual={isManualLayout}
+                    statusLabel={isManualLayout ? 'Manual control enabled' : 'Auto based on panel width'}
+                    selectedCount={effectiveColumnCount}
+                    onToggleMode={handleManualToggle}
+                    onSelectManualCount={(value) => setManualColumnCount(value)}
+                />
             </div>
             <div className="mt-6">
                 <Masonry
-                    breakpointCols={columnCount}
+                    breakpointCols={effectiveColumnCount}
                     className="flex w-auto -ml-6"
                     columnClassName="pl-6 space-y-6"
                 >
