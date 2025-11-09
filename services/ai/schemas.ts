@@ -1,25 +1,49 @@
 import { Type } from "@google/genai";
 
-export const planSchema = {
-  type: Type.ARRAY,
-  items: {
+const analysisPlanItemSchema = {
     type: Type.OBJECT,
     properties: {
-      chartType: { type: Type.STRING, enum: ['bar', 'line', 'pie', 'doughnut', 'scatter', 'combo'], description: 'Type of chart to generate.' },
-      title: { type: Type.STRING, description: 'A concise title for the analysis.' },
-      description: { type: Type.STRING, minLength: 8, description: 'A brief explanation of what the analysis shows. Must be a full sentence with at least 8 characters.' },
-      aggregation: { type: Type.STRING, enum: ['sum', 'count', 'avg'], description: 'The aggregation function to apply. Omit for scatter plots.' },
-      groupByColumn: { type: Type.STRING, description: 'The column to group data by (categorical). Omit for scatter plots.' },
-      valueColumn: { type: Type.STRING, description: 'The column for aggregation (numerical). Not needed for "count".' },
-      xValueColumn: { type: Type.STRING, description: 'The column for the X-axis of a scatter plot (numerical). Required for scatter plots.' },
-      yValueColumn: { type: Type.STRING, description: 'The column for the Y-axis of a scatter plot (numerical). Required for scatter plots.' },
-      secondaryValueColumn: { type: Type.STRING, description: 'For combo charts, the secondary column for aggregation (numerical).' },
-      secondaryAggregation: { type: Type.STRING, enum: ['sum', 'count', 'avg'], description: 'For combo charts, the aggregation for the secondary value column.' },
-      defaultTopN: { type: Type.INTEGER, description: 'Optional. If the analysis has many categories, this suggests a default Top N view (e.g., 8).' },
-      defaultHideOthers: { type: Type.BOOLEAN, description: 'Optional. If using defaultTopN, suggests whether to hide the "Others" category by default.' },
+        chartType: { type: Type.STRING, enum: ['bar', 'line', 'pie', 'doughnut', 'scatter', 'combo'], description: 'Type of chart to generate.' },
+        title: { type: Type.STRING, description: 'A concise title for the analysis.' },
+        description: { type: Type.STRING, minLength: 8, description: 'A brief explanation of what the analysis shows. Must be a full sentence with at least 8 characters.' },
+        aggregation: { type: Type.STRING, enum: ['sum', 'count', 'avg'], description: 'The aggregation function to apply. Omit for scatter plots.' },
+        groupByColumn: { type: Type.STRING, description: 'The column to group data by (categorical). Omit for scatter plots.' },
+        valueColumn: { type: Type.STRING, description: 'The column for aggregation (numerical). Not needed for "count".' },
+        xValueColumn: { type: Type.STRING, description: 'The column for the X-axis of a scatter plot (numerical). Required for scatter plots.' },
+        yValueColumn: { type: Type.STRING, description: 'The column for the Y-axis of a scatter plot (numerical). Required for scatter plots.' },
+        secondaryValueColumn: { type: Type.STRING, description: 'For combo charts, the secondary column for aggregation (numerical).' },
+        secondaryAggregation: { type: Type.STRING, enum: ['sum', 'count', 'avg'], description: 'For combo charts, the aggregation for the secondary value column.' },
+        defaultTopN: { type: Type.INTEGER, description: 'Optional. If the analysis has many categories, this suggests a default Top N view (e.g., 8).' },
+        defaultHideOthers: { type: Type.BOOLEAN, description: 'Optional. If using defaultTopN, suggests whether to hide the "Others" category by default.' },
     },
-    required: ['chartType', 'title', 'description'],
-  },
+    required: [
+        'chartType',
+        'title',
+        'description',
+        'aggregation',
+        'groupByColumn',
+        'valueColumn',
+        'xValueColumn',
+        'yValueColumn',
+        'secondaryValueColumn',
+        'secondaryAggregation',
+        'defaultTopN',
+        'defaultHideOthers',
+    ],
+    additionalProperties: false,
+};
+
+export const planSchema = {
+    type: Type.OBJECT,
+    properties: {
+        plans: {
+            type: Type.ARRAY,
+            description: 'Array of analysis plans to execute.',
+            items: analysisPlanItemSchema,
+        },
+    },
+    required: ['plans'],
+    additionalProperties: false,
 };
 
 export const columnProfileSchema = {
@@ -29,6 +53,7 @@ export const columnProfileSchema = {
         type: { type: Type.STRING, enum: ['numerical', 'categorical', 'date', 'time', 'currency', 'percentage'], description: "The data type of the column. Identify specific types like 'date', 'currency', etc., where possible." },
     },
     required: ['name', 'type'],
+    additionalProperties: false,
 };
 
 export const dataPreparationSchema = {
@@ -45,7 +70,7 @@ export const dataPreparationSchema = {
             items: columnProfileSchema,
         },
     },
-    required: ['explanation', 'outputColumns']
+    required: ['explanation', 'jsFunctionBody', 'outputColumns']
 };
 
 export const filterFunctionSchema = {
@@ -69,24 +94,7 @@ export const proactiveInsightSchema = {
     required: ['insight', 'cardId'],
 };
 
-export const singlePlanSchema = {
-    type: Type.OBJECT,
-    properties: {
-      chartType: { type: Type.STRING, enum: ['bar', 'line', 'pie', 'doughnut', 'scatter', 'combo'], description: 'Type of chart to generate.' },
-      title: { type: Type.STRING, description: 'A concise title for the analysis.' },
-      description: { type: Type.STRING, description: 'A brief explanation of what the analysis shows.' },
-      aggregation: { type: Type.STRING, enum: ['sum', 'count', 'avg'], description: 'The aggregation function to apply. Omit for scatter plots.' },
-      groupByColumn: { type: Type.STRING, description: 'The column to group data by (categorical). Omit for scatter plots.' },
-      valueColumn: { type: Type.STRING, description: 'The column for aggregation (numerical). Not needed for "count".' },
-      xValueColumn: { type: Type.STRING, description: 'The column for the X-axis of a scatter plot (numerical). Required for scatter plots.' },
-      yValueColumn: { type: Type.STRING, description: 'The column for the Y-axis of a scatter plot (numerical). Required for scatter plots.' },
-      secondaryValueColumn: { type: Type.STRING, description: 'For combo charts, the secondary column for aggregation (numerical).' },
-      secondaryAggregation: { type: Type.STRING, enum: ['sum', 'count', 'avg'], description: 'For combo charts, the aggregation for the secondary value column.' },
-      defaultTopN: { type: Type.INTEGER, description: 'Optional. If the analysis has many categories, this suggests a default Top N view (e.g., 8).' },
-      defaultHideOthers: { type: Type.BOOLEAN, description: 'Optional. If using defaultTopN, suggests whether to hide the "Others" category by default.' },
-    },
-    required: ['chartType', 'title', 'description'],
-};
+export const singlePlanSchema = analysisPlanItemSchema;
 
 const clarificationRequestSchema = {
     type: Type.OBJECT,
@@ -142,6 +150,7 @@ export const multiActionChatResponseSchema = {
                 type: Type.OBJECT,
                 properties: {
                     thought: { type: Type.STRING, description: "The AI's reasoning or thought process before performing the action. This explains *why* this action is being taken. This is a mandatory part of the ReAct pattern." },
+                    stateTag: { type: Type.STRING, description: "Optional short tag summarizing the assistant's internal state (e.g., 'context_ready', 'awaiting_data')." },
                     responseType: { type: Type.STRING, enum: ['text_response', 'plan_creation', 'dom_action', 'execute_js_code', 'proceed_to_analysis', 'filter_spreadsheet', 'clarification_request'] },
                     text: { type: Type.STRING, description: "A conversational text response to the user. Required for 'text_response'." },
                     cardId: { type: Type.STRING, description: "Optional. The ID of the card this text response refers to. Used to link text to a specific chart." },
@@ -237,6 +246,7 @@ const strictAllPropsRequiredPaths = new Set([
 
 const nullablePropertyPaths = new Set([
     'properties.actions.items.properties.text',
+    'properties.actions.items.properties.stateTag',
     'properties.actions.items.properties.cardId',
     'properties.actions.items.properties.plan',
     'properties.actions.items.properties.plan.properties.aggregation',
@@ -274,6 +284,16 @@ const nullablePropertyPaths = new Set([
     'properties.actions.items.properties.clarification.properties.pendingPlan.properties.secondaryAggregation',
     'properties.actions.items.properties.clarification.properties.pendingPlan.properties.defaultTopN',
     'properties.actions.items.properties.clarification.properties.pendingPlan.properties.defaultHideOthers',
+    'properties.jsFunctionBody',
+    'properties.plans.items.properties.aggregation',
+    'properties.plans.items.properties.groupByColumn',
+    'properties.plans.items.properties.valueColumn',
+    'properties.plans.items.properties.xValueColumn',
+    'properties.plans.items.properties.yValueColumn',
+    'properties.plans.items.properties.secondaryValueColumn',
+    'properties.plans.items.properties.secondaryAggregation',
+    'properties.plans.items.properties.defaultTopN',
+    'properties.plans.items.properties.defaultHideOthers',
 ]);
 
 const applyNullability = (schema: any) => {

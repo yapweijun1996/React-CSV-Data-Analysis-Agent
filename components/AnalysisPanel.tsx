@@ -6,14 +6,25 @@ import { useAppStore } from '../store/useAppStore';
 import { CardLayoutControl, COLUMN_OPTIONS } from './CardLayoutControl';
 
 const MAX_COLUMNS = COLUMN_OPTIONS[COLUMN_OPTIONS.length - 1];
-const MIN_CARD_WIDTH = 460;
+
+const CARD_LAYOUT_BREAKPOINTS: Array<{ minWidth: number; columns: (typeof COLUMN_OPTIONS)[number] }> = [
+    { minWidth: 1280, columns: 3 },
+    { minWidth: 920, columns: 2 },
+    { minWidth: 0, columns: 1 },
+];
 
 const getAutoColumnCount = (width: number) => {
     if (!width) {
         return 1;
     }
-    const estimatedColumns = Math.floor(width / MIN_CARD_WIDTH);
-    return Math.max(1, Math.min(MAX_COLUMNS, estimatedColumns || 1));
+
+    for (const breakpoint of CARD_LAYOUT_BREAKPOINTS) {
+        if (width >= breakpoint.minWidth) {
+            return Math.min(MAX_COLUMNS, breakpoint.columns);
+        }
+    }
+
+    return 1;
 };
 
 export const AnalysisPanel: React.FC = () => {
@@ -82,7 +93,7 @@ export const AnalysisPanel: React.FC = () => {
                 cancelAnimationFrame(resizeFrame.current);
             }
         };
-    }, [isManualLayout]);
+    }, [isManualLayout, cards.length]);
 
     const handleManualToggle = () => {
         setIsManualLayout(prev => {

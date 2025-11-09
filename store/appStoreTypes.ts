@@ -19,6 +19,7 @@ import type {
     PendingDataTransform,
     AppliedDataTransformRecord,
     SelectionDrilldownFilter,
+    AgentActionTrace,
 } from '../types';
 
 export interface StoreState extends AppState {
@@ -44,6 +45,7 @@ export interface StoreState extends AppState {
     isApiKeySet: boolean;
     pendingDataTransform: PendingDataTransform | null;
     lastAppliedDataTransform: AppliedDataTransformRecord | null;
+    isLastAppliedDataTransformBannerDismissed: boolean;
     interactiveSelectionFilter: SelectionDrilldownFilter | null;
 }
 
@@ -98,11 +100,17 @@ export interface StoreActions {
     setIsMemoryPanelOpen: (isOpen: boolean) => void;
     setIsResizing: (isResizing: boolean) => void;
     beginAgentActionTrace: (actionType: AgentActionType, summary: string, source?: AgentActionSource) => string;
-    updateAgentActionTrace: (traceId: string, status: AgentActionStatus, details?: string) => void;
+    updateAgentActionTrace: (
+        traceId: string,
+        status: AgentActionStatus,
+        details?: string,
+        telemetry?: Partial<Pick<AgentActionTrace, 'durationMs' | 'errorCode' | 'metadata'>>
+    ) => void;
     queuePendingDataTransform: (preview: PendingDataTransform) => void;
     confirmPendingDataTransform: () => Promise<void>;
     discardPendingDataTransform: () => void;
     undoLastDataTransform: () => Promise<void>;
+    dismissLastAppliedDataTransformBanner: () => void;
     linkChartSelectionToRawData: (cardId: string, column: string | null, values: (string | number)[], label: string) => void;
     clearInteractiveSelectionFilter: () => void;
 }

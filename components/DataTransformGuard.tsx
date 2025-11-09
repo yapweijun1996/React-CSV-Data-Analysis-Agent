@@ -13,18 +13,25 @@ export const DataTransformGuard: React.FC = () => {
     const {
         pendingDataTransform,
         lastAppliedDataTransform,
+        isLastAppliedDataTransformBannerDismissed,
         confirmPendingDataTransform,
         discardPendingDataTransform,
         undoLastDataTransform,
+        dismissLastAppliedDataTransformBanner,
     } = useAppStore(state => ({
         pendingDataTransform: state.pendingDataTransform,
         lastAppliedDataTransform: state.lastAppliedDataTransform,
+        isLastAppliedDataTransformBannerDismissed: state.isLastAppliedDataTransformBannerDismissed,
         confirmPendingDataTransform: state.confirmPendingDataTransform,
         discardPendingDataTransform: state.discardPendingDataTransform,
         undoLastDataTransform: state.undoLastDataTransform,
+        dismissLastAppliedDataTransformBanner: state.dismissLastAppliedDataTransformBanner,
     }));
 
-    if (!pendingDataTransform && !lastAppliedDataTransform) {
+    const lastAppliedBannerData = !isLastAppliedDataTransformBannerDismissed ? lastAppliedDataTransform : null;
+    const shouldShowLastAppliedBanner = !!lastAppliedBannerData;
+
+    if (!pendingDataTransform && !shouldShowLastAppliedBanner) {
         return null;
     }
 
@@ -67,20 +74,42 @@ export const DataTransformGuard: React.FC = () => {
                 </div>
             )}
 
-            {lastAppliedDataTransform && (
-                <div className="border border-emerald-200 bg-emerald-50 rounded-md p-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                    <div>
-                        <p className="text-sm font-semibold text-emerald-900">Last Applied AI Change</p>
-                        <p className="text-xs text-emerald-800 mt-1">
-                            {lastAppliedDataTransform.summary}
-                        </p>
+            {shouldShowLastAppliedBanner && (
+                <div className="border border-emerald-200 bg-emerald-50 rounded-md p-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                        <div>
+                            <p className="text-sm font-semibold text-emerald-900">Last Applied AI Change</p>
+                            <p className="text-xs text-emerald-800 mt-1">{lastAppliedBannerData.summary}</p>
+                        </div>
+                        <div className="flex items-center gap-2 self-start sm:self-auto">
+                            <button
+                                onClick={undoLastDataTransform}
+                                className="px-3 py-1.5 border border-emerald-400 text-emerald-900 rounded-md text-sm hover:bg-emerald-100 transition-colors"
+                            >
+                                Undo Change
+                            </button>
+                            <button
+                                type="button"
+                                onClick={dismissLastAppliedDataTransformBanner}
+                                aria-label="Dismiss last applied AI change"
+                                className="p-1.5 rounded-full text-emerald-700 hover:text-emerald-900 hover:bg-emerald-100 transition-colors"
+                            >
+                                <svg
+                                    xmlns="http://www.w3.org/2000/svg"
+                                    viewBox="0 0 20 20"
+                                    fill="currentColor"
+                                    className="w-4 h-4"
+                                    aria-hidden="true"
+                                >
+                                    <path
+                                        fillRule="evenodd"
+                                        d="M5.22 5.22a.75.75 0 0 1 1.06 0L10 8.94l3.72-3.72a.75.75 0 1 1 1.06 1.06L11.06 10l3.72 3.72a.75.75 0 1 1-1.06 1.06L10 11.06l-3.72 3.72a.75.75 0 1 1-1.06-1.06L8.94 10 5.22 6.28a.75.75 0 0 1 0-1.06Z"
+                                        clipRule="evenodd"
+                                    />
+                                </svg>
+                            </button>
+                        </div>
                     </div>
-                    <button
-                        onClick={undoLastDataTransform}
-                        className="px-3 py-1.5 border border-emerald-400 text-emerald-900 rounded-md text-sm hover:bg-emerald-100 transition-colors self-start sm:self-auto"
-                    >
-                        Undo Change
-                    </button>
                 </div>
             )}
         </div>

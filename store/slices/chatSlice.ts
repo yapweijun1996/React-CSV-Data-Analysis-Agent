@@ -21,7 +21,9 @@ import type {
     DomAction,
     MemoryReference,
     AgentActionStatus,
+    AgentStateTag,
 } from '../../types';
+import { AGENT_STATE_TAGS } from '../../types';
 import type { AppStore, ChatSlice } from '../appStoreTypes';
 
 interface ChatSliceDependencies {
@@ -57,6 +59,52 @@ type DispatchResult =
     | { type: 'halt' };
 
 const ACTION_STEP_CONTINUE: ActionStepResult = { type: 'continue' };
+const STATE_TAG_SET = new Set<AgentStateTag>(AGENT_STATE_TAGS);
+const STATE_TAG_WARNING_THROTTLE_MS = 5000;
+const THOUGHTLESS_TOAST_THROTTLE_MS = 8000;
+
+let lastStateTagWarningAt = 0;
+let lastThoughtlessToastAt = 0;
+
+type TraceRecorder = (status: AgentActionStatus, details?: string, telemetry?: ActionTraceTelemetry) => void;
+
+interface ActionExecutionContext {
+    action: AiAction;
+    runtime: PlannerRuntime;
+    remainingAutoRetries: number;
+    markTrace: TraceRecorder;
+}
+
+type AgentActionExecutor = (context: ActionExecutionContext) => Promise<ActionStepResult>;
+type ActionMiddleware = (
+    context: ActionExecutionContext,
+    next: () => Promise<ActionStepResult>
+) => Promise<ActionStepResult>;
+
+interface ActionTraceTelemetry {
+    durationMs?: number;
+    errorCode?: string;
+    metadata?: Record<string, any>;
+}
+
+const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
+const ACTION_ERROR_CODES = {
+    MISSING_TEXT: 'MISSING_TEXT',
+    MISSING_PLAN_PAYLOAD: 'MISSING_PLAN_PAYLOAD',
+    DOM_PAYLOAD_MISSING: 'DOM_PAYLOAD_MISSING',
+    DATASET_UNAVAILABLE: 'DATASET_UNAVAILABLE',
+    MISSING_JS_CODE: 'MISSING_JS_CODE',
+    TRANSFORM_PENDING: 'TRANSFORM_PENDING',
+    TRANSFORM_FAILED: 'TRANSFORM_FAILED',
+    FILTER_QUERY_MISSING: 'FILTER_QUERY_MISSING',
+    CLARIFICATION_PAYLOAD_MISSING: 'CLARIFICATION_PAYLOAD_MISSING',
+    CLARIFICATION_NO_OPTIONS: 'CLARIFICATION_NO_OPTIONS',
+    THOUGHT_MISSING: 'THOUGHT_MISSING',
+    UNSUPPORTED_ACTION: 'UNSUPPORTED_ACTION',
+} as const;
+
+type ActionErrorCode = (typeof ACTION_ERROR_CODES)[keyof typeof ACTION_ERROR_CODES];
 
 const summarizeAction = (action: AiAction): string => {
     switch (action.responseType) {
@@ -164,6 +212,81 @@ const buildChatPlannerContext = async (
     };
 };
 
+const chainOfThoughtGuardMiddleware: ActionMiddleware = async (context, next) => {
+    const thought = context.action.thought?.trim();
+    if (!thought) {
+        context.runtime.get().addProgress('AI response missing reasoning; action skipped.', 'error');
+        maybeShowThoughtlessToast(context.runtime);
+        context.markTrace('failed', 'Action blocked because no reasoning was provided.', {
+            errorCode: ACTION_ERROR_CODES.THOUGHT_MISSING,
+        });
+        return ACTION_STEP_CONTINUE;
+    }
+    return next();
+};
+
+const thoughtLoggingMiddleware: ActionMiddleware = async (context, next) => {
+    if (context.action.thought) {
+        context.runtime.get().addProgress(`AI Thought: ${context.action.thought}`);
+    }
+    return next();
+};
+
+const telemetryMiddleware: ActionMiddleware = async (context, next) => {
+    const start = now();
+    const originalMarkTrace = context.markTrace;
+    context.markTrace = (status, details, telemetry) => {
+        const shouldAnnotate = status === 'succeeded' || status === 'failed';
+        const enhancedTelemetry = shouldAnnotate
+            ? { ...(telemetry ?? {}), durationMs: Math.max(0, now() - start) }
+            : telemetry;
+        originalMarkTrace(status, details, enhancedTelemetry);
+    };
+    try {
+        return await next();
+    } finally {
+        context.markTrace = originalMarkTrace;
+    }
+};
+
+const registeredMiddlewares: ActionMiddleware[] = [];
+const coreMiddlewares: ActionMiddleware[] = [
+    chainOfThoughtGuardMiddleware,
+    thoughtLoggingMiddleware,
+    telemetryMiddleware,
+];
+
+const getActionMiddlewares = (): ActionMiddleware[] => [...coreMiddlewares, ...registeredMiddlewares];
+
+export const registerActionMiddleware = (middleware: ActionMiddleware) => {
+    registeredMiddlewares.push(middleware);
+};
+
+const composeMiddlewares = (
+    middlewares: ActionMiddleware[],
+    executor: AgentActionExecutor,
+): AgentActionExecutor =>
+    middlewares.reduceRight(
+        (next, middleware) => async context => middleware(context, () => next(context)),
+        executor,
+    );
+
+const runActionThroughRegistry = async (
+    action: AiAction,
+    runtime: PlannerRuntime,
+    remainingAutoRetries: number,
+    markTrace: TraceRecorder,
+): Promise<ActionStepResult> => {
+    const executor = actionExecutorRegistry[action.responseType];
+    if (!executor) {
+        markTrace('failed', 'Unsupported action type.', { errorCode: ACTION_ERROR_CODES.UNSUPPORTED_ACTION });
+        return ACTION_STEP_CONTINUE;
+    }
+    const context: ActionExecutionContext = { action, runtime, remainingAutoRetries, markTrace };
+    const pipeline = composeMiddlewares(getActionMiddlewares(), executor);
+    return pipeline(context);
+};
+
 const planAgentActions = async (
     prompt: string,
     requestAiResponse: (prompt: string) => Promise<AiChatResponse>,
@@ -240,12 +363,14 @@ const dispatchAgentActions = async (
 
         const traceSummary = summarizeAction(action);
         const traceId = runtime.get().beginAgentActionTrace(action.responseType, traceSummary, 'chat');
-        const markTrace = (status: AgentActionStatus, details?: string) => {
-            runtime.get().updateAgentActionTrace(traceId, status, details);
+        const markTrace: TraceRecorder = (status, details, telemetry) => {
+            runtime.get().updateAgentActionTrace(traceId, status, details, telemetry);
         };
-        markTrace('executing');
+        const normalizedStateTag = normalizeStateTag(action.stateTag);
+        const initialTelemetry = normalizedStateTag ? { metadata: { stateTag: normalizedStateTag } } : undefined;
+        markTrace('executing', undefined, initialTelemetry);
 
-        const stepResult = await executeActionByType(action, runtime, remainingAutoRetries, markTrace);
+        const stepResult = await runActionThroughRegistry(action, runtime, remainingAutoRetries, markTrace);
         if (stepResult.type === 'retry') {
             return { type: 'retry', reason: stepResult.reason };
         }
@@ -257,42 +382,9 @@ const dispatchAgentActions = async (
     return { type: 'complete' };
 };
 
-const executeActionByType = async (
-    action: AiAction,
-    runtime: PlannerRuntime,
-    remainingAutoRetries: number,
-    markTrace: (status: AgentActionStatus, details?: string) => void,
-): Promise<ActionStepResult> => {
-    if (action.thought) runtime.get().addProgress(`AI Thought: ${action.thought}`);
-
-    switch (action.responseType) {
-        case 'text_response':
-            return handleTextResponseAction(action, runtime, markTrace);
-        case 'plan_creation':
-            return handlePlanCreationAction(action, runtime, markTrace);
-        case 'dom_action':
-            return handleDomAction(action, runtime, markTrace);
-        case 'execute_js_code':
-            return handleExecuteCodeAction(action, runtime, remainingAutoRetries, markTrace);
-        case 'filter_spreadsheet':
-            return handleFilterSpreadsheetAction(action, runtime, markTrace);
-        case 'clarification_request':
-            return handleClarificationRequestAction(action, runtime, markTrace);
-        case 'proceed_to_analysis':
-            return handleProceedToAnalysisAction(markTrace);
-        default:
-            markTrace('failed', 'Unsupported action type.');
-            return ACTION_STEP_CONTINUE;
-    }
-};
-
-const handleTextResponseAction = async (
-    action: AiAction,
-    runtime: PlannerRuntime,
-    markTrace: (status: AgentActionStatus, details?: string) => void,
-): Promise<ActionStepResult> => {
+const handleTextResponseAction: AgentActionExecutor = async ({ action, runtime, markTrace }) => {
     if (!hasTextPayload(action)) {
-        markTrace('failed', 'No AI text response provided.');
+        markTrace('failed', 'No AI text response provided.', { errorCode: ACTION_ERROR_CODES.MISSING_TEXT });
         return ACTION_STEP_CONTINUE;
     }
 
@@ -314,14 +406,12 @@ const handleTextResponseAction = async (
     return ACTION_STEP_CONTINUE;
 };
 
-const handlePlanCreationAction = async (
-    action: AiAction,
-    runtime: PlannerRuntime,
-    markTrace: (status: AgentActionStatus, details?: string) => void,
-): Promise<ActionStepResult> => {
+const handlePlanCreationAction: AgentActionExecutor = async ({ action, runtime, markTrace }) => {
     const dataset = runtime.get().csvData;
     if (!hasPlanPayload(action) || !dataset) {
-        markTrace('failed', 'Missing plan payload or dataset.');
+        markTrace('failed', 'Missing plan payload or dataset.', {
+            errorCode: ACTION_ERROR_CODES.MISSING_PLAN_PAYLOAD,
+        });
         return ACTION_STEP_CONTINUE;
     }
 
@@ -330,13 +420,11 @@ const handlePlanCreationAction = async (
     return ACTION_STEP_CONTINUE;
 };
 
-const handleDomAction = async (
-    action: AiAction,
-    runtime: PlannerRuntime,
-    markTrace: (status: AgentActionStatus, details?: string) => void,
-): Promise<ActionStepResult> => {
+const handleDomAction: AgentActionExecutor = async ({ action, runtime, markTrace }) => {
     if (!hasDomActionPayload(action)) {
-        markTrace('failed', 'Missing DOM action payload.');
+        markTrace('failed', 'Missing DOM action payload.', {
+            errorCode: ACTION_ERROR_CODES.DOM_PAYLOAD_MISSING,
+        });
         return ACTION_STEP_CONTINUE;
     }
 
@@ -345,12 +433,7 @@ const handleDomAction = async (
     return ACTION_STEP_CONTINUE;
 };
 
-const handleExecuteCodeAction = async (
-    action: AiAction,
-    runtime: PlannerRuntime,
-    remainingAutoRetries: number,
-    markTrace: (status: AgentActionStatus, details?: string) => void,
-): Promise<ActionStepResult> => {
+const handleExecuteCodeAction: AgentActionExecutor = async ({ action, runtime, remainingAutoRetries, markTrace }) => {
     const dataset = runtime.get().csvData;
     const jsBody = action.code?.jsFunctionBody?.trim();
 
@@ -365,7 +448,7 @@ const handleExecuteCodeAction = async (
             isError: true,
         };
         runtime.set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
-        markTrace('failed', warning);
+        markTrace('failed', warning, { errorCode: ACTION_ERROR_CODES.DATASET_UNAVAILABLE });
         return ACTION_STEP_CONTINUE;
     }
 
@@ -380,7 +463,9 @@ const handleExecuteCodeAction = async (
             isError: true,
         };
         runtime.set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
-        markTrace('failed', 'Missing jsFunctionBody in execute_js_code payload.');
+        markTrace('failed', 'Missing jsFunctionBody in execute_js_code payload.', {
+            errorCode: ACTION_ERROR_CODES.MISSING_JS_CODE,
+        });
         return ACTION_STEP_CONTINUE;
     }
 
@@ -396,7 +481,7 @@ const handleExecuteCodeAction = async (
             isError: true,
         };
         runtime.set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
-        markTrace('failed', warning);
+        markTrace('failed', warning, { errorCode: ACTION_ERROR_CODES.TRANSFORM_PENDING });
         return ACTION_STEP_CONTINUE;
     }
 
@@ -449,18 +534,14 @@ const handleExecuteCodeAction = async (
             isError: true,
         };
         runtime.set(prev => ({ chatHistory: [...prev.chatHistory, failureMessage] }));
-        markTrace('failed', errorMessage);
+        markTrace('failed', errorMessage, { errorCode: ACTION_ERROR_CODES.TRANSFORM_FAILED });
         return remainingAutoRetries > 0 ? { type: 'retry', reason: errorMessage } : { type: 'halt' };
     }
 };
 
-const handleFilterSpreadsheetAction = async (
-    action: AiAction,
-    runtime: PlannerRuntime,
-    markTrace: (status: AgentActionStatus, details?: string) => void,
-): Promise<ActionStepResult> => {
+const handleFilterSpreadsheetAction: AgentActionExecutor = async ({ action, runtime, markTrace }) => {
     if (!hasFilterArgsPayload(action)) {
-        markTrace('failed', 'Missing filter query.');
+        markTrace('failed', 'Missing filter query.', { errorCode: ACTION_ERROR_CODES.FILTER_QUERY_MISSING });
         return ACTION_STEP_CONTINUE;
     }
 
@@ -474,13 +555,11 @@ const handleFilterSpreadsheetAction = async (
     return ACTION_STEP_CONTINUE;
 };
 
-const handleClarificationRequestAction = async (
-    action: AiAction,
-    runtime: PlannerRuntime,
-    markTrace: (status: AgentActionStatus, details?: string) => void,
-): Promise<ActionStepResult> => {
+const handleClarificationRequestAction: AgentActionExecutor = async ({ action, runtime, markTrace }) => {
     if (!hasClarificationPayload(action)) {
-        markTrace('failed', 'Clarification payload missing.');
+        markTrace('failed', 'Clarification payload missing.', {
+            errorCode: ACTION_ERROR_CODES.CLARIFICATION_PAYLOAD_MISSING,
+        });
         return ACTION_STEP_CONTINUE;
     }
 
@@ -507,7 +586,9 @@ const handleClarificationRequestAction = async (
             },
         };
         runtime.set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
-        markTrace('failed', 'Unable to find usable clarification options.');
+        markTrace('failed', 'Unable to find usable clarification options.', {
+            errorCode: ACTION_ERROR_CODES.CLARIFICATION_NO_OPTIONS,
+        });
         return ACTION_STEP_CONTINUE;
     }
 
@@ -537,11 +618,49 @@ const handleClarificationRequestAction = async (
     return { type: 'halt' };
 };
 
-const handleProceedToAnalysisAction = (
-    markTrace: (status: AgentActionStatus, details?: string) => void,
-): ActionStepResult => {
+const handleProceedToAnalysisAction: AgentActionExecutor = async ({ markTrace }) => {
     markTrace('succeeded', 'Proceed to analysis acknowledged.');
     return ACTION_STEP_CONTINUE;
+};
+
+const actionExecutorRegistry: Record<AgentActionType, AgentActionExecutor> = {
+    text_response: handleTextResponseAction,
+    plan_creation: handlePlanCreationAction,
+    dom_action: handleDomAction,
+    execute_js_code: handleExecuteCodeAction,
+    filter_spreadsheet: handleFilterSpreadsheetAction,
+    clarification_request: handleClarificationRequestAction,
+    proceed_to_analysis: handleProceedToAnalysisAction,
+};
+
+const normalizeStateTag = (tag?: string | null): AgentStateTag | undefined => {
+    if (!tag) return undefined;
+    if (STATE_TAG_SET.has(tag as AgentStateTag)) {
+        return tag as AgentStateTag;
+    }
+    const ts = Date.now();
+    if (ts - lastStateTagWarningAt > STATE_TAG_WARNING_THROTTLE_MS) {
+        console.warn(`Unknown agent stateTag "${tag}". Allowed values: ${AGENT_STATE_TAGS.join(', ')}`);
+        lastStateTagWarningAt = ts;
+    }
+    return undefined;
+};
+
+const maybeShowThoughtlessToast = (runtime: PlannerRuntime) => {
+    const ts = Date.now();
+    if (ts - lastThoughtlessToastAt < THOUGHTLESS_TOAST_THROTTLE_MS) {
+        return;
+    }
+    lastThoughtlessToastAt = ts;
+    runtime.get().addToast('AI 正在重新思考，請稍候。', 'info');
+};
+
+export const agentSdk = {
+    errorCodes: ACTION_ERROR_CODES,
+    runAction: runActionThroughRegistry,
+    getMiddlewares: getActionMiddlewares,
+    registerMiddleware: registerActionMiddleware,
+    executors: actionExecutorRegistry,
 };
 
 export const createChatSlice = (

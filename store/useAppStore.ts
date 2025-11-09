@@ -83,6 +83,7 @@ const initialAppState: AppState = {
     columnAliasMap: {},
     pendingDataTransform: null,
     lastAppliedDataTransform: null,
+    isLastAppliedDataTransformBannerDismissed: false,
     interactiveSelectionFilter: null,
 };
 
@@ -299,6 +300,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 columnProfiles: pending.nextColumnProfiles,
                 columnAliasMap: pending.nextAliasMap,
                 pendingDataTransform: null,
+                isLastAppliedDataTransformBannerDismissed: false,
                 lastAppliedDataTransform: {
                     id: pending.id,
                     summary: pending.summary,
@@ -336,9 +338,16 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 columnProfiles: last.previousColumnProfiles,
                 columnAliasMap: last.previousAliasMap,
                 lastAppliedDataTransform: null,
+                isLastAppliedDataTransformBannerDismissed: false,
             });
             get().addProgress('Reverted the last AI data transformation.');
             await get().regenerateAnalyses(last.previousData);
+        },
+        dismissLastAppliedDataTransformBanner: () => {
+            if (!get().lastAppliedDataTransform) {
+                return;
+            }
+            set({ isLastAppliedDataTransformBannerDismissed: true });
         },
         linkChartSelectionToRawData: (cardId, column, values, label) => {
             const hasValues = !!column && values.length > 0;
@@ -941,11 +950,23 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         });
         return traceId;
     },
-    updateAgentActionTrace: (traceId, status, details) => {
+    updateAgentActionTrace: (traceId, status, details, telemetry) => {
         set(state => ({
-            agentActionTraces: state.agentActionTraces.map(trace =>
-                trace.id === traceId ? { ...trace, status, details, timestamp: new Date() } : trace
-            ),
+            agentActionTraces: state.agentActionTraces.map(trace => {
+                if (trace.id !== traceId) return trace;
+                const mergedMetadata = telemetry?.metadata
+                    ? { ...(trace.metadata ?? {}), ...telemetry.metadata }
+                    : trace.metadata;
+                return {
+                    ...trace,
+                    status,
+                    details,
+                    timestamp: new Date(),
+                    durationMs: telemetry?.durationMs ?? trace.durationMs,
+                    errorCode: telemetry?.errorCode ?? trace.errorCode,
+                    metadata: mergedMetadata,
+                };
+            }),
         }));
     },
     focusDataPreview: () => {

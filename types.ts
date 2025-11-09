@@ -68,6 +68,17 @@ export type AgentActionType = 'plan_creation' | 'text_response' | 'dom_action' |
 export type AgentActionStatus = 'observing' | 'executing' | 'succeeded' | 'failed';
 export type AgentActionSource = 'chat' | 'pipeline' | 'system';
 
+export const AGENT_STATE_TAGS = [
+    'context_ready',
+    'needs_clarification',
+    'transform_drafted',
+    'analysis_shared',
+    'awaiting_data',
+    'error_retrying',
+] as const;
+
+export type AgentStateTag = typeof AGENT_STATE_TAGS[number];
+
 export interface AgentActionTrace {
     id: string;
     actionType: AgentActionType;
@@ -76,6 +87,9 @@ export interface AgentActionTrace {
     details?: string;
     timestamp: Date;
     source: AgentActionSource;
+    durationMs?: number;
+    errorCode?: string;
+    metadata?: Record<string, any>;
 }
 
 export interface AnalysisPlan {
@@ -193,6 +207,7 @@ export interface AppState {
     columnAliasMap: Record<string, string>;
     pendingDataTransform: PendingDataTransform | null;
     lastAppliedDataTransform: AppliedDataTransformRecord | null;
+    isLastAppliedDataTransformBannerDismissed: boolean;
     interactiveSelectionFilter: SelectionDrilldownFilter | null;
 }
 
@@ -212,6 +227,7 @@ export interface DomAction {
 export interface AiAction {
   thought?: string; // The AI's reasoning for this action (ReAct pattern).
   responseType: AgentActionType;
+  stateTag?: AgentStateTag;
   plan?: AnalysisPlan;
   text?: string;
   cardId?: string; // For text_response, the ID of the card being discussed

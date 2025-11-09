@@ -128,6 +128,12 @@ export const createCandidatePlansPrompt = (categoricalCols: string[], numericalC
     - **CRITICAL**: Only use one of the following aggregation types: 'sum', 'count', 'avg'. Do NOT use other statistical measures like 'stddev', 'variance', 'median', etc.
     - Do not create plans that are too granular (e.g., grouping by a unique ID column if there are thousands of them).
     - Never leave the \`description\` empty; summarize the business takeaway in a sentence.
+
+    **Output Format:** Return a single JSON object with this shape:
+    {
+        "plans": [ /* array of plan objects */ ]
+    }
+    Do not include any other top-level properties or commentary.
 `;
 
 export const createRefinePlansPrompt = (plansWithData: { plan: any; aggregatedSample: CsvRow[] }[]): string => `
@@ -141,7 +147,7 @@ export const createRefinePlansPrompt = (plansWithData: { plan: any; aggregatedSa
     3.  **Configure for Readability**: For good, insightful charts that have a moderate number of categories (e.g., 15 to 50), you MUST add default settings to make them readable. Set \`defaultTopN\` to 8 and \`defaultHideOthers\` to \`true\`.
     4.  **Keep Good Charts**: If a chart is insightful and has a reasonable number of categories (e.g., under 15), keep it as is without adding default settings.
     5.  **Copy Quality Gate**: Reject any plan whose \`description\` is blank, shorter than 8 characters, or not an explanatory sentence.
-    6.  **Return the Result**: Your final output must be an array of ONLY the good, configured plan objects. Do not include the discarded plans.
+    6.  **Return the Result**: Your final output must be a JSON object shaped as { "plans": [ ... ] } containing ONLY the good, configured plan objects. Do not include the discarded plans or any additional commentary.
     
     **Proposed Plans and Data Samples:**
     ${JSON.stringify(plansWithData, null, 2)}
@@ -253,6 +259,10 @@ export const createChatPrompt = (
         - **Raw Data Sample (first 20 rows):**
             ${rawDataSample.length > 0 ? JSON.stringify(rawDataSample, null, 2) : "No raw data available."}
 
+        **Agent Runtime (Pipeline Awareness):**
+        - The frontend runs you through **Context Builder → Planner → Action Dispatcher**. Stay concise so downstream executors can follow the plan.
+        - Each action may include an optional \`stateTag\` describing the new internal state. Pick from: \`context_ready\`, \`needs_clarification\`, \`transform_drafted\`, \`analysis_shared\`, \`awaiting_data\`, \`error_retrying\`.
+
         **Recent Conversation (for flow):**
         ${recentHistory}
 
@@ -286,6 +296,7 @@ export const createChatPrompt = (
                 - \`targetProperty\`: The name of the property in the plan that the user's choice will fill (e.g., "valueColumn").
 
         **Decision-Making Process (Observe → Think → Act):**
+        - **StateTag Etiquette**: Whenever you finish an action, populate \`stateTag\` with a short label of the state you are leaving the system in (examples: \`context_ready\`, \`clarifying\`, \`transform_ready\`, \`analysis_shared\`). This helps downstream middleware route follow-ups.
         - **OBSERVE**: Begin every response by explicitly noting what you see in the dataset, the existing cards, and the user's prompt. Observe before you plan. When creating a new plan, OBSERVE the relevant raw data sample (up to 20 rows) and any existing cards to understand context.
         - **THINK (Reason)**: After observing, reason about the user's request. What is their goal? Can it be answered from memory, or does it require new analysis? What is the first logical step? Formulate this reasoning and place it in the 'thought' field of your action. This field is MANDATORY for every action and must reference what you just observed.
         - **ACT**: Based on your thought, choose the most appropriate action from your toolset and define its parameters in the same action object.
