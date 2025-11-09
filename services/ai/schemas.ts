@@ -139,6 +139,37 @@ const clarificationRequestSchema = {
     required: ['question', 'options', 'pendingPlan', 'targetProperty']
 };
 
+const planStateSnapshotSchema = {
+    type: Type.OBJECT,
+    description: "Structured summary of the agent's current goal, progress, and blockers.",
+    properties: {
+        goal: { type: Type.STRING, minLength: 6, description: 'Overarching objective the agent is pursuing.' },
+        contextSummary: { type: Type.STRING, description: 'Optional short reminder of the context or constraint shaping the plan.' },
+        progress: { type: Type.STRING, minLength: 6, description: 'What was just learned or completed from the latest observations.' },
+        nextSteps: {
+            type: Type.ARRAY,
+            description: 'Concrete upcoming actions, ordered by priority.',
+            minItems: 1,
+            items: { type: Type.STRING, minLength: 4 },
+        },
+        blockedBy: { type: Type.STRING, description: 'Describe any blockers or open questions. Omit if none.' },
+        observationIds: {
+            type: Type.ARRAY,
+            description: 'IDs of the observations that informed this update.',
+            items: { type: Type.STRING },
+        },
+        confidence: {
+            type: Type.NUMBER,
+            description: 'Optional confidence score between 0 and 1.',
+            minimum: 0,
+            maximum: 1,
+        },
+        updatedAt: { type: Type.STRING, description: 'ISO timestamp describing when this snapshot was generated.' },
+    },
+    required: ['goal', 'contextSummary', 'progress', 'nextSteps', 'blockedBy', 'observationIds', 'confidence', 'updatedAt'],
+    additionalProperties: false,
+};
+
 
 export const multiActionChatResponseSchema = {
     type: Type.OBJECT,
@@ -151,12 +182,16 @@ export const multiActionChatResponseSchema = {
                 properties: {
                     thought: { type: Type.STRING, description: "The AI's reasoning or thought process before performing the action. This explains *why* this action is being taken. This is a mandatory part of the ReAct pattern." },
                     stateTag: { type: Type.STRING, description: "Optional short tag summarizing the assistant's internal state (e.g., 'context_ready', 'awaiting_data')." },
-                    responseType: { type: Type.STRING, enum: ['text_response', 'plan_creation', 'dom_action', 'execute_js_code', 'proceed_to_analysis', 'filter_spreadsheet', 'clarification_request'] },
+                    responseType: { type: Type.STRING, enum: ['text_response', 'plan_creation', 'dom_action', 'execute_js_code', 'proceed_to_analysis', 'filter_spreadsheet', 'clarification_request', 'plan_state_update'] },
                     text: { type: Type.STRING, description: "A conversational text response to the user. Required for 'text_response'." },
                     cardId: { type: Type.STRING, description: "Optional. The ID of the card this text response refers to. Used to link text to a specific chart." },
                     plan: {
                         ...singlePlanSchema,
                         description: "Analysis plan object. Required for 'plan_creation'."
+                    },
+                    planState: {
+                        ...planStateSnapshotSchema,
+                        description: "Summary of the agent goal and progress. Required for 'plan_state_update'."
                     },
                     domAction: {
                         type: Type.OBJECT,
@@ -218,6 +253,7 @@ export const multiActionChatResponseSchema = {
 const typeMap = new Map<any, string>([
     [Type.STRING, 'string'],
     [Type.INTEGER, 'integer'],
+    [Type.NUMBER, 'number'],
     [Type.BOOLEAN, 'boolean'],
     [Type.ARRAY, 'array'],
     [Type.OBJECT, 'object'],
@@ -284,6 +320,9 @@ const nullablePropertyPaths = new Set([
     'properties.actions.items.properties.clarification.properties.pendingPlan.properties.secondaryAggregation',
     'properties.actions.items.properties.clarification.properties.pendingPlan.properties.defaultTopN',
     'properties.actions.items.properties.clarification.properties.pendingPlan.properties.defaultHideOthers',
+    'properties.actions.items.properties.planState',
+    'properties.actions.items.properties.planState.properties.contextSummary',
+    'properties.actions.items.properties.planState.properties.blockedBy',
     'properties.jsFunctionBody',
     'properties.plans.items.properties.aggregation',
     'properties.plans.items.properties.groupByColumn',

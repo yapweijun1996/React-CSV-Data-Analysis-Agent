@@ -71,7 +71,8 @@ export type AgentActionType =
     | 'execute_js_code'
     | 'proceed_to_analysis'
     | 'filter_spreadsheet'
-    | 'clarification_request';
+    | 'clarification_request'
+    | 'plan_state_update';
 export type AgentActionStatus = 'observing' | 'executing' | 'succeeded' | 'failed';
 export type AgentActionSource = 'chat' | 'pipeline' | 'system';
 
@@ -112,8 +113,20 @@ export interface AgentObservation {
     uiDelta?: string | null;
 }
 
+export interface AgentPlanState {
+    goal: string;
+    contextSummary?: string | null;
+    progress: string;
+    nextSteps: string[];
+    blockedBy?: string | null;
+    observationIds?: string[];
+    confidence?: number | null;
+    updatedAt: string;
+}
+
 export interface PlannerSessionState {
     observations: AgentObservation[];
+    planState: AgentPlanState | null;
 }
 
 export interface AnalysisPlan {
@@ -267,6 +280,7 @@ export interface AiAction {
     query: string;
   };
   clarification?: ClarificationRequestPayload;
+  planState?: AgentPlanState;
 }
 
 export interface AiChatResponse {

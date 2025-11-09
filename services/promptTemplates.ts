@@ -8,6 +8,7 @@ import {
     AppView,
     AgentActionTrace,
     AgentObservation,
+    AgentPlanState,
 } from '../types';
 
 // Centralized rules to avoid repetition
@@ -233,6 +234,7 @@ export const createChatPrompt = (
     rawDataSample: CsvRow[],
     longTermMemory: string[],
     recentObservations: AgentObservation[],
+    planState: AgentPlanState | null,
     dataPreparationPlan: DataPreparationPlan | null,
     recentActionTraces: AgentActionTrace[],
 ): string => {
@@ -254,6 +256,9 @@ export const createChatPrompt = (
             })
             .join('\n')
         : 'No runtime observations captured yet for this session.';
+    const planStateSummary = planState
+        ? `Goal: ${planState.goal}\nContext: ${planState.contextSummary || '—'}\nProgress: ${planState.progress}\nNext Steps:\n${planState.nextSteps.map((step, idx) => `  ${idx + 1}. ${step}`).join('\n')}\nBlocked By: ${planState.blockedBy || 'Nothing reported.'}\nConfidence: ${typeof planState.confidence === 'number' ? planState.confidence.toFixed(2) : 'Not provided'}\nReferenced Observations: ${(planState.observationIds && planState.observationIds.length > 0) ? planState.observationIds.join(', ') : 'None specified.'}`
+        : 'No structured goal has been recorded yet. Your first action must be a plan_state_update that defines a clear goal, ties it to current data, and lists concrete next steps.';
 
     return `
         You are an expert data analyst and business strategist, required to operate using a Reason-Act (ReAct) framework. For every action you take, you must first explain your reasoning in the 'thought' field, and then define the action itself. Your goal is to respond to the user by providing insightful analysis and breaking down your response into a sequence of these thought-action pairs. Your final conversational responses should be in ${language}.
@@ -269,6 +274,10 @@ export const createChatPrompt = (
         **LONG-TERM MEMORY (Relevant past context, ordered by relevance):**
         ---
         ${longTermMemory.length > 0 ? longTermMemory.join('\n---\n') : "No specific long-term memories seem relevant to this query."}
+        ---
+        **AGENT PLAN STATE (Goal tracker shared with the UI):**
+        ---
+        ${planStateSummary}
         ---
         **Your Knowledge Base (Real-time Info):**
         - **Dataset Columns**:
@@ -325,8 +334,9 @@ export const createChatPrompt = (
         - **ACT**: Based on your thought, choose the most appropriate action from your toolset and define its parameters in the same action object.
         - **CRITICAL RULE ON AMBIGUITY**: If the user's request is ambiguous, you must either resolve it yourself (when there is only one reasonable interpretation) or use the \`clarification_request\` action. For example, if they ask to group by "category" and there is a "Product_Category" and a "Customer_Category" column, you must ask them to clarify which one they intend to use. But if there is only one "category" column, proceed without asking. When you do ask, ensure every option's \`value\` is an actual column name from the dataset (case-sensitive, including underscores).
         **Multi-Step Task Planning:** For complex requests that require multiple steps (e.g., "compare X and Y, then summarize"), you MUST adopt a planner persona.
-        1.  **Formulate a Plan**: In the \`thought\` of your VERY FIRST action, outline your step-by-step plan. For example: \`thought: "Okay, this is a multi-step request. My plan is: 1. Isolate the data for X. 2. Create an analysis for X. 3. Isolate the data for Y. 4. Create an analysis for Y. 5. Summarize the findings from both analyses."\`
-        2.  **Execute the Plan**: Decompose your plan into a sequence of \`actions\`. Each action should have its own \`thought\` explaining that specific step. This allows you to chain tools together to solve the problem.
+        1.  **Plan-State Loop**: Every turn must begin with a \`plan_state_update\` action. Use it to restate the latest user goal (or refine the previous one), summarize what you learned from prior observations, list concrete next steps, and cite observation IDs you are relying on. Update this again whenever your understanding materially changes.
+        2.  **Formulate a Plan**: In the \`thought\` of your VERY FIRST non-plan_state action, outline your tactical steps ("Plan: 1. ...").
+        3.  **Execute the Plan**: Decompose your plan into a sequence of \`actions\`. Each action must have its own \`thought\` explaining that specific step. This allows you to chain tools together to solve the problem.
         - **CRITICAL**: If the user asks where a specific data value comes from (like 'Software Product 10') or how the data was cleaned, you MUST consult the **DATA PREPARATION LOG**. Use a 'text_response' to explain the transformation in simple, non-technical language. You can include snippets of the code using markdown formatting to illustrate your point.
         - **Suggest Next Steps**: After successfully answering the user's request, you should add one final \`text_response\` action to proactively suggest a logical next step or a relevant follow-up question. This guides the user and makes the analysis more conversational. Example: "Now that we've seen the regional breakdown, would you like to explore the top-performing product categories within the East region?"
         - **EXAMPLE of Chaining**:

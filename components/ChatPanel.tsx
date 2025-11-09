@@ -38,6 +38,35 @@ const LoadingIcon: React.FC = () => (
 const formatMemorySnippet = (text: string, maxLength = 60) =>
     text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
 
+type HelperTone = 'info' | 'warning' | 'muted' | 'progress' | 'neutral';
+
+type HelperDescriptor = {
+    tone: HelperTone;
+    message: string;
+    helperText?: string;
+    icon?: string;
+    actions?: Array<{
+        label: string;
+        onClick: () => void;
+    }>;
+};
+
+const helperToneClasses: Record<HelperTone, string> = {
+    info: 'bg-blue-50 text-blue-800 border-blue-200',
+    warning: 'bg-amber-50 text-amber-800 border-amber-200',
+    muted: 'bg-slate-100 text-slate-600 border-slate-200',
+    progress: 'bg-indigo-50 text-indigo-800 border-indigo-200',
+    neutral: 'bg-white text-slate-600 border-slate-200',
+};
+
+const helperToneIcon: Record<HelperTone, string> = {
+    info: '🧩',
+    warning: '🔑',
+    muted: '📁',
+    progress: '⏱️',
+    neutral: '💬',
+};
+
 
 export const ChatPanel: React.FC = () => {
     const {
@@ -64,6 +93,7 @@ export const ChatPanel: React.FC = () => {
         isMemoryPreviewLoading,
         agentTraces,
         plannerObservations,
+        plannerPlanState,
     } = useAppStore(state => ({
         progressMessages: state.progressMessages,
         chatHistory: state.chatHistory,
@@ -88,6 +118,7 @@ export const ChatPanel: React.FC = () => {
         isMemoryPreviewLoading: state.isMemoryPreviewLoading,
         agentTraces: state.agentActionTraces,
         plannerObservations: state.plannerSession.observations,
+        plannerPlanState: state.plannerSession.planState,
     }));
 
     const [input, setInput] = useState('');
@@ -103,10 +134,112 @@ export const ChatPanel: React.FC = () => {
     
     const selectedMemoryCount = chatMemoryPreview.filter(mem => !chatMemoryExclusions.includes(mem.id)).length;
     const showMemoryPreview = chatMemoryPreview.length > 0;
+    const primaryClarificationId =
+        activeClarificationId ?? pendingClarifications.find(req => req.status === 'pending')?.id ?? null;
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     };
+
+    const highlightElement = (element: HTMLElement, colorClass = 'ring-blue-400') => {
+        element.classList.add('ring-2', colorClass);
+        setTimeout(() => element.classList.remove('ring-2', colorClass), 1800);
+    };
+
+    const scrollToPendingClarification = () => {
+        if (!primaryClarificationId || typeof document === 'undefined') return;
+        const element = document.getElementById(`clarification-${primaryClarificationId}`);
+        if (element) {
+            element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            highlightElement(element, 'ring-blue-400');
+        }
+    };
+
+    const scrollToFileUploadPanel = () => {
+        if (typeof document === 'undefined') return;
+        const element = document.getElementById('file-upload-panel');
+        if (element) {
+            element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            highlightElement(element, 'ring-blue-300');
+        }
+    };
+
+    const openFilePicker = () => {
+        if (typeof document === 'undefined') return;
+        const picker = document.getElementById('file-upload') as HTMLInputElement | null;
+        if (picker) {
+            picker.click();
+            return;
+        }
+        scrollToFileUploadPanel();
+    };
+
+    const helperDescriptor: HelperDescriptor = (() => {
+        if (!isApiKeySet) {
+            return {
+                tone: 'warning',
+                icon: '🔐',
+                message: 'API key missing — add one so Gemini can help.',
+                helperText: 'Open Settings and paste your Google Gemini API key to enable chat + analysis.',
+                actions: [
+                    {
+                        label: 'Open Settings',
+                        onClick: () => setIsSettingsModalOpen(true),
+                    },
+                ],
+            };
+        }
+        if (hasAwaitingClarification) {
+            return {
+                tone: 'info',
+                icon: '🧩',
+                message: 'Clarification pending — answer the follow-up to continue.',
+                helperText: 'Jump to the question, choose the right column, or skip it if it no longer applies.',
+                actions: primaryClarificationId
+                    ? [
+                          {
+                              label: 'Jump to question',
+                              onClick: scrollToPendingClarification,
+                          },
+                      ]
+                    : undefined,
+            };
+        }
+        if (currentView === 'file_upload') {
+            return {
+                tone: 'muted',
+                icon: '📂',
+                message: 'No dataset yet — upload a CSV to unlock the workspace.',
+                helperText: 'Drag & drop directly into the uploader or use Select a file.',
+                actions: [
+                    {
+                        label: 'Scroll to uploader',
+                        onClick: scrollToFileUploadPanel,
+                    },
+                    {
+                        label: 'Select a file',
+                        onClick: openFilePicker,
+                    },
+                ],
+            };
+        }
+        if (isBusy) {
+            return {
+                tone: 'progress',
+                icon: isCancellationRequested ? '🛑' : '⚙️',
+                message: isCancellationRequested ? 'Stopping the last run…' : 'AI is crunching your request.',
+                helperText: isCancellationRequested
+                    ? 'Once cancelled you can submit a new instruction right away.'
+                    : 'Feel free to review earlier messages while the agent works.',
+            };
+        }
+        return {
+            tone: 'neutral',
+            icon: '💬',
+            message: 'Ready for your next instruction.',
+            helperText: 'Try “Sum of sales by region” or “Remove rows for USA”.',
+        };
+    })();
 
     useEffect(scrollToBottom, [timeline]);
 
@@ -156,6 +289,36 @@ export const ChatPanel: React.FC = () => {
             default:
                 return "Upload a file to begin chatting";
         }
+    };
+
+    const renderPlanState = () => {
+        if (!plannerPlanState) return null;
+        const updatedAt = plannerPlanState.updatedAt ? new Date(plannerPlanState.updatedAt) : new Date();
+        return (
+            <div className="mb-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-sm font-semibold text-slate-900">Agent Goal Tracker</h3>
+                    <span className="text-xs text-slate-500">Updated {updatedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                </div>
+                <p className="text-sm text-slate-800 mb-2"><span className="font-medium">Goal:</span> {plannerPlanState.goal}</p>
+                {plannerPlanState.progress && (
+                    <p className="text-sm text-slate-700 mb-2"><span className="font-medium">Progress:</span> {plannerPlanState.progress}</p>
+                )}
+                {plannerPlanState.nextSteps.length > 0 && (
+                    <div className="mb-2">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">Next steps</p>
+                        <ol className="list-decimal list-inside text-sm text-slate-700 space-y-0.5">
+                            {plannerPlanState.nextSteps.map(step => (
+                                <li key={step}>{step}</li>
+                            ))}
+                        </ol>
+                    </div>
+                )}
+                {plannerPlanState.blockedBy && (
+                    <p className="text-sm text-amber-600"><span className="font-medium">Blocked by:</span> {plannerPlanState.blockedBy}</p>
+                )}
+            </div>
+        );
     };
 
     const renderActionLog = () => {
@@ -327,6 +490,7 @@ export const ChatPanel: React.FC = () => {
                     resolved: 'bg-emerald-100 text-emerald-800 border-emerald-200',
                     skipped: 'bg-slate-200 text-slate-500 border-slate-300',
                 };
+                const clarificationDomId = `clarification-${linkedClarification?.id ?? msg.clarificationRequest.id}`;
                 const statusLabel = (() => {
                     if (status === 'pending') return isActive ? 'Active' : 'Queued';
                     if (status === 'resolving') return 'Working';
@@ -336,6 +500,7 @@ export const ChatPanel: React.FC = () => {
 
                 return (
                     <div
+                        id={clarificationDomId}
                         key={`chat-${index}`}
                         className={`my-2 p-3 bg-white border rounded-lg transition-colors ${
                             isActive ? 'border-blue-400 shadow shadow-blue-100' : 'border-blue-200'
@@ -521,6 +686,7 @@ export const ChatPanel: React.FC = () => {
                 </div>
             </div>
             <div className="flex-1 p-4 overflow-y-auto space-y-4">
+                {renderPlanState()}
                 {renderActionLog()}
                 {renderObservationLog()}
                 {timeline.map(renderMessage)}
@@ -579,11 +745,32 @@ export const ChatPanel: React.FC = () => {
                         </span>
                     </button>
                 </form>
-                 <div className="text-xs text-slate-400 mt-2">
-                    {currentView === 'analysis_dashboard' 
-                        ? 'e.g., "Sum of sales by region", or "Remove rows for USA"'
-                        : ''
-                    }
+                <div
+                    className={`mt-3 flex flex-wrap items-center gap-2 rounded-md border px-3 py-2 text-xs ${helperToneClasses[helperDescriptor.tone]}`}
+                    role="status"
+                    aria-live="polite"
+                >
+                    <div className="flex items-start gap-2 flex-1 min-w-[200px]">
+                        <span className="text-base leading-5">
+                            {helperDescriptor.icon ?? helperToneIcon[helperDescriptor.tone]}
+                        </span>
+                        <div>
+                            <p className="font-medium">{helperDescriptor.message}</p>
+                            {helperDescriptor.helperText && (
+                                <p className="text-[11px] opacity-90 mt-0.5">{helperDescriptor.helperText}</p>
+                            )}
+                        </div>
+                    </div>
+                    {helperDescriptor.actions?.map(action => (
+                        <button
+                            key={action.label}
+                            type="button"
+                            onClick={action.onClick}
+                            className="text-xs font-semibold text-blue-700 hover:text-blue-800 underline-offset-2 hover:underline"
+                        >
+                            {action.label}
+                        </button>
+                    ))}
                 </div>
             </div>
         </div>

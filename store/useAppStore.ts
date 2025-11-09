@@ -22,6 +22,8 @@ import {
     AgentActionSource,
     ExternalCsvPayload,
     AgentObservation,
+    AgentPlanState,
+    PlannerSessionState,
 } from '../types';
 import { executePlan, applyTopNWithOthers } from '../utils/dataProcessor';
 import { generateAnalysisPlans, generateSummary, generateFinalSummary, generateCoreAnalysisSummary, generateProactiveInsights } from '../services/aiService';
@@ -126,6 +128,11 @@ const MAX_PLANNER_OBSERVATIONS = 12;
 
 const deriveAliasMap = (profiles: ColumnProfile[] = []) => buildColumnAliasMap(profiles.map(p => p.name));
 
+const normalizePlannerSession = (session?: PlannerSessionState | null): PlannerSessionState => ({
+    observations: session?.observations ?? [],
+    planState: session?.planState ?? null,
+});
+
 const arraysAreEqual = (a: (string | number)[], b: (string | number)[]) => {
     if (a.length !== b.length) return false;
     return a.every((value, index) => value === b[index]);
@@ -157,9 +164,7 @@ const initialAppState: AppState = {
     lastAppliedDataTransform: null,
     isLastAppliedDataTransformBannerDismissed: false,
     interactiveSelectionFilter: null,
-    plannerSession: {
-        observations: [],
-    },
+    plannerSession: normalizePlannerSession(),
 };
 
 export const useAppStore = create<StoreState & StoreActions>((set, get) => {
@@ -498,7 +503,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 pendingDataTransform: null,
                 lastAppliedDataTransform: null,
                 interactiveSelectionFilter: null,
-                plannerSession: currentSession.appState.plannerSession ?? { observations: [] },
+                plannerSession: normalizePlannerSession(currentSession.appState.plannerSession),
             });
             if (currentSession.appState.vectorStoreDocuments && vectorStore.getIsInitialized()) {
                 vectorStore.rehydrate(currentSession.appState.vectorStoreDocuments);
@@ -995,7 +1000,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 isMemoryPreviewLoading: false,
                 agentActionTraces: report.appState.agentActionTraces ?? [],
                 columnAliasMap: report.appState.columnAliasMap ?? deriveAliasMap(report.appState.columnProfiles ?? []),
-                plannerSession: report.appState.plannerSession ?? { observations: [] },
+                plannerSession: normalizePlannerSession(report.appState.plannerSession),
             });
             if (report.appState.vectorStoreDocuments) {
                 vectorStore.rehydrate(report.appState.vectorStoreDocuments);
@@ -1065,15 +1070,21 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             }),
         }));
     },
-    appendPlannerObservation: (observation: AgentObservation) => {
-        set(state => {
-            const nextObservations = [...state.plannerSession.observations, observation].slice(-MAX_PLANNER_OBSERVATIONS);
-            return { plannerSession: { observations: nextObservations } };
-        });
-    },
-    resetPlannerObservations: () => {
-        set({ plannerSession: { observations: [] } });
-    },
+        appendPlannerObservation: (observation: AgentObservation) => {
+            set(state => {
+                const nextObservations = [...state.plannerSession.observations, observation].slice(-MAX_PLANNER_OBSERVATIONS);
+                return { plannerSession: { ...state.plannerSession, observations: nextObservations } };
+            });
+        },
+        resetPlannerObservations: () => {
+            set(state => ({ plannerSession: { ...state.plannerSession, observations: [] } }));
+        },
+        updatePlannerPlanState: (planState: AgentPlanState) => {
+            set(state => ({ plannerSession: { ...state.plannerSession, planState } }));
+        },
+        clearPlannerPlanState: () => {
+            set(state => ({ plannerSession: { ...state.plannerSession, planState: null } }));
+        },
     focusDataPreview: () => {
         set({ isSpreadsheetVisible: true });
         setTimeout(() => {

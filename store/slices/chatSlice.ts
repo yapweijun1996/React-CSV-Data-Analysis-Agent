@@ -24,6 +24,7 @@ import type {
     AgentStateTag,
     AgentObservation,
     AgentObservationStatus,
+    AgentPlanState,
 } from '../../types';
 import { AGENT_STATE_TAGS } from '../../types';
 import type { AppStore, ChatSlice } from '../appStoreTypes';
@@ -110,6 +111,7 @@ const ACTION_ERROR_CODES = {
     CLARIFICATION_NO_OPTIONS: 'CLARIFICATION_NO_OPTIONS',
     THOUGHT_MISSING: 'THOUGHT_MISSING',
     UNSUPPORTED_ACTION: 'UNSUPPORTED_ACTION',
+    PLAN_STATE_PAYLOAD_MISSING: 'PLAN_STATE_PAYLOAD_MISSING',
 } as const;
 
 type ActionErrorCode = (typeof ACTION_ERROR_CODES)[keyof typeof ACTION_ERROR_CODES];
@@ -198,6 +200,15 @@ const hasClarificationPayload = (
     return !!action.clarification;
 };
 
+const hasPlanStatePayload = (action: AiAction): action is AiAction & { planState: AgentPlanState } => {
+    const payload = action.planState;
+    if (!payload) return false;
+    const hasGoal = typeof payload.goal === 'string' && payload.goal.trim().length > 0;
+    const hasProgress = typeof payload.progress === 'string' && payload.progress.trim().length > 0;
+    const hasNextSteps = Array.isArray(payload.nextSteps) && payload.nextSteps.length > 0;
+    return hasGoal && hasProgress && hasNextSteps;
+};
+
 const buildChatPlannerContext = async (
     message: string,
     get: GetState<AppStore>,
@@ -241,6 +252,7 @@ const buildChatPlannerContext = async (
             (get().csvData?.data || []).slice(0, 20),
             memoryPayload,
             get().plannerSession.observations,
+            get().plannerSession.planState,
             get().dataPreparationPlan,
             get().agentActionTraces.slice(-10),
             { signal: deps.getRunSignal(runId) },
@@ -473,6 +485,53 @@ const handleTextResponseAction: AgentActionExecutor = async ({ action, runtime, 
             outputs: {
                 textPreview: action.text.slice(0, 200),
                 cardId: action.cardId ?? null,
+            },
+        },
+    };
+};
+
+const handlePlanStateUpdateAction: AgentActionExecutor = async ({ action, runtime, markTrace }) => {
+    if (!hasPlanStatePayload(action)) {
+        markTrace('failed', 'Missing plan state payload.', {
+            errorCode: ACTION_ERROR_CODES.PLAN_STATE_PAYLOAD_MISSING,
+        });
+        return {
+            type: 'continue',
+            observation: {
+                status: 'error',
+                errorCode: ACTION_ERROR_CODES.PLAN_STATE_PAYLOAD_MISSING,
+            },
+        };
+    }
+
+    const payload = action.planState;
+    const normalizedState: AgentPlanState = {
+        goal: payload.goal.trim(),
+        progress: payload.progress.trim(),
+        nextSteps: payload.nextSteps.map(step => step.trim()).filter(Boolean),
+        blockedBy: payload.blockedBy?.trim() || null,
+        contextSummary: payload.contextSummary?.trim() || null,
+        observationIds: Array.isArray(payload.observationIds)
+            ? payload.observationIds.filter(id => typeof id === 'string' && id.trim().length > 0)
+            : [],
+        confidence:
+            typeof payload.confidence === 'number'
+                ? Math.min(1, Math.max(0, payload.confidence))
+                : payload.confidence ?? null,
+        updatedAt: payload.updatedAt || new Date().toISOString(),
+    };
+
+    runtime.get().updatePlannerPlanState(normalizedState);
+    runtime.get().addProgress(`Plan goal updated: ${normalizedState.goal}`);
+    markTrace('succeeded', 'Plan state captured.');
+    return {
+        type: 'continue',
+        observation: {
+            status: 'success',
+            outputs: {
+                goal: normalizedState.goal,
+                nextSteps: normalizedState.nextSteps,
+                blockedBy: normalizedState.blockedBy,
             },
         },
     };
@@ -814,6 +873,7 @@ const handleProceedToAnalysisAction: AgentActionExecutor = async ({ markTrace })
 const actionExecutorRegistry: Record<AgentActionType, AgentActionExecutor> = {
     text_response: handleTextResponseAction,
     plan_creation: handlePlanCreationAction,
+    plan_state_update: handlePlanStateUpdateAction,
     dom_action: handleDomAction,
     execute_js_code: handleExecuteCodeAction,
     filter_spreadsheet: handleFilterSpreadsheetAction,
@@ -870,6 +930,7 @@ export const createChatSlice = (
         }
 
         get().resetPlannerObservations();
+        get().clearPlannerPlanState();
         const runId = get().beginBusy('Working on your request...', { cancellable: true });
             const newChatMessage: ChatMessage = { sender: 'user', text: message, timestamp: new Date(), type: 'user_message' };
             set(prev => ({ chatHistory: [...prev.chatHistory, newChatMessage] }));

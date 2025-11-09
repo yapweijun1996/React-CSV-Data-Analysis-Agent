@@ -21,6 +21,7 @@ import type {
     SelectionDrilldownFilter,
     AgentActionTrace,
     AgentObservation,
+    AgentPlanState,
 } from '../types';
 
 export interface StoreState extends AppState {
@@ -115,6 +116,8 @@ export interface StoreActions {
     ) => void;
     appendPlannerObservation: (observation: AgentObservation) => void;
     resetPlannerObservations: () => void;
+    updatePlannerPlanState: (state: AgentPlanState) => void;
+    clearPlannerPlanState: () => void;
     queuePendingDataTransform: (preview: PendingDataTransform) => void;
     confirmPendingDataTransform: () => Promise<void>;
     discardPendingDataTransform: () => void;

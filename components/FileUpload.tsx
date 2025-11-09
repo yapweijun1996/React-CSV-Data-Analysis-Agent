@@ -12,6 +12,7 @@ export const FileUpload: React.FC = () => {
     }));
 
     const [dragActive, setDragActive] = useState(false);
+    const panelAttributes = { id: 'file-upload-panel' as const };
     
     const handleDrag = useCallback((e: React.DragEvent) => {
         e.preventDefault();
@@ -43,7 +44,7 @@ export const FileUpload: React.FC = () => {
 
     if (isBusy && fileName) {
         return (
-            <div className="flex flex-col items-center justify-center p-12 border-2 border-dashed rounded-lg border-blue-500 bg-slate-100 h-full">
+            <div {...panelAttributes} className="flex flex-col items-center justify-center p-12 border-2 border-dashed rounded-lg border-blue-500 bg-slate-100 h-full">
                 <div className="flex items-center text-xl text-slate-800 mb-4">
                     <svg className="animate-spin -ml-1 mr-3 h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
@@ -68,7 +69,7 @@ export const FileUpload: React.FC = () => {
 
     if (!isApiKeySet) {
         return (
-             <div className="flex flex-col items-center justify-center p-12 border-2 border-dashed rounded-lg border-slate-300 h-full">
+             <div {...panelAttributes} className="flex flex-col items-center justify-center p-12 border-2 border-dashed rounded-lg border-slate-300 h-full">
                 <svg xmlns="http://www.w3.org/2000/svg" className="w-16 h-16 text-slate-400 mb-4" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z" />
                 </svg>
@@ -83,6 +84,7 @@ export const FileUpload: React.FC = () => {
 
     return (
         <div 
+            {...panelAttributes}
             onDragEnter={handleDrag}
             onDragLeave={handleDrag}
             onDragOver={handleDrag}

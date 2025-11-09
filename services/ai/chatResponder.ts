@@ -10,6 +10,7 @@ import {
     AiChatResponse,
     AgentActionTrace,
     AgentObservation,
+    AgentPlanState,
 } from '../../types';
 import { callGemini, callOpenAI } from './apiClient';
 import { multiActionChatResponseSchema, multiActionChatResponseJsonSchema } from './schemas';
@@ -38,6 +39,7 @@ export const generateChatResponse = async (
     rawDataSample: CsvRow[],
     longTermMemory: string[],
     recentObservations: AgentObservation[],
+    activePlanState: AgentPlanState | null,
     dataPreparationPlan: DataPreparationPlan | null,
     recentActionTraces: AgentActionTrace[],
     options?: ChatResponseOptions
@@ -58,11 +60,12 @@ export const generateChatResponse = async (
             rawDataSample,
             longTermMemory,
             recentObservations,
+            activePlanState,
             dataPreparationPlan,
             recentActionTraces,
         );
 
-        const baseSystemPrompt = `You are an expert data analyst and business strategist, required to operate using a Reason-Act (ReAct) framework. For every action you take, you must first explain your reasoning in the 'thought' field, and then define the action itself. Your goal is to respond to the user by providing insightful analysis and breaking down your response into a sequence of these thought-action pairs. Your final conversational responses should be in ${settings.language}.
+        const baseSystemPrompt = `You are an expert data analyst and business strategist, required to operate using a Reason-Act (ReAct) framework. For every action you take, you must first explain your reasoning in the 'thought' field, and then define the action itself. You also maintain an explicit goal tracker by emitting a 'plan_state_update' action at the start of each response (and whenever the mission changes) so the UI can display your progress. Your final conversational responses should be in ${settings.language}.
 Your output MUST be a single JSON object with an "actions" key containing an array of action objects.`;
         const maxAttempts = settings.provider === 'openai' ? 2 : 1;
         let retryInstruction = '';
