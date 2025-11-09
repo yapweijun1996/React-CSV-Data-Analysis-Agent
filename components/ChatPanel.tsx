@@ -324,7 +324,7 @@ export const ChatPanel: React.FC = () => {
                 return (
                     <div key={`chat-${index}`} className="flex justify-end">
                         <div className="bg-blue-600 rounded-lg px-3 py-2 max-w-xs lg:max-w-md">
-                            <p className="text-sm text-white">{msg.text}</p>
+                            <p className="text-sm text-white" style={{ whiteSpace: 'break-spaces' }}>{msg.text}</p>
                         </div>
                     </div>
                 );
@@ -333,7 +333,12 @@ export const ChatPanel: React.FC = () => {
             return (
                 <div key={`chat-${index}`} className="flex">
                     <div className={`rounded-lg px-3 py-2 max-w-xs lg:max-w-md ${msg.isError ? 'bg-red-100' : 'bg-slate-200'}`}>
-                         <p className={`text-sm ${msg.isError ? 'text-red-800' : 'text-slate-800'}`}>{msg.text}</p>
+                         <p
+                            className={`text-sm ${msg.isError ? 'text-red-800' : 'text-slate-800'}`}
+                            style={{ whiteSpace: 'break-spaces' }}
+                         >
+                            {msg.text}
+                         </p>
                          {msg.cardId && !msg.isError && (
                             <button 
                                 onClick={() => handleShowCardFromChat(msg.cardId!)}
