@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { shallow } from 'zustand/shallow';
-import { ProgressMessage, ChatMessage, AgentActionTrace, AgentObservation, AgentObservationStatus } from '../types';
+import { ProgressMessage, ChatMessage, AgentActionTrace, AgentObservation, AgentObservationStatus, AgentPhaseState } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { useAutosizeTextArea } from '../hooks/useAutosizeTextArea';
 
@@ -71,6 +71,108 @@ const helperToneIcon: Record<HelperTone, string> = {
 
 const MAX_CHAT_INPUT_HEIGHT = 240;
 
+const phaseDescriptors: Record<
+    AgentPhaseState['phase'],
+    { label: string; helper: string; icon: string; badge: string }
+> = {
+    idle: {
+        label: 'Idle / Ready',
+        helper: 'Waiting for your next instruction.',
+        icon: '💤',
+        badge: 'border-slate-200 bg-white text-slate-600',
+    },
+    observing: {
+        label: 'Observing data',
+        helper: 'Reviewing dataset context before acting.',
+        icon: '🧐',
+        badge: 'border-sky-200 bg-sky-50 text-sky-700',
+    },
+    planning: {
+        label: 'Planning',
+        helper: 'Breaking the task into actionable steps.',
+        icon: '🧠',
+        badge: 'border-purple-200 bg-purple-50 text-purple-700',
+    },
+    acting: {
+        label: 'Executing',
+        helper: 'Running the next tool or UI action.',
+        icon: '⚙️',
+        badge: 'border-indigo-200 bg-indigo-50 text-indigo-700',
+    },
+    verifying: {
+        label: 'Verifying',
+        helper: 'Checking outputs before sharing updates.',
+        icon: '🔍',
+        badge: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+    },
+    reporting: {
+        label: 'Reporting',
+        helper: 'Summarizing findings back to you.',
+        icon: '📝',
+        badge: 'border-slate-200 bg-slate-50 text-slate-700',
+    },
+    clarifying: {
+        label: 'Needs clarification',
+        helper: 'Waiting on your answer to keep going.',
+        icon: '❓',
+        badge: 'border-amber-200 bg-amber-50 text-amber-800',
+    },
+    retrying: {
+        label: 'Retrying',
+        helper: 'Adjusting after a failed attempt.',
+        icon: '🔁',
+        badge: 'border-rose-200 bg-rose-50 text-rose-700',
+    },
+};
+
+const phaseHelperOverrides: Partial<Record<
+    AgentPhaseState['phase'],
+    Omit<HelperDescriptor, 'helperText'> & { defaultHelperText: string }
+>> = {
+    observing: {
+        tone: 'info',
+        icon: '🧐',
+        message: 'Reviewing your dataset…',
+        defaultHelperText: 'Scanning columns, totals, and data freshness before planning.',
+    },
+    planning: {
+        tone: 'info',
+        icon: '🧠',
+        message: 'Planning the next steps…',
+        defaultHelperText: 'Sequencing the right tools to answer your question.',
+    },
+    acting: {
+        tone: 'progress',
+        icon: '⚙️',
+        message: 'Executing the plan…',
+        defaultHelperText: 'Running transformations or updating charts for you.',
+    },
+    verifying: {
+        tone: 'progress',
+        icon: '🔍',
+        message: 'Double-checking results…',
+        defaultHelperText: 'Validating outputs before sharing them.',
+    },
+    reporting: {
+        tone: 'neutral',
+        icon: '📝',
+        message: 'Summarizing findings…',
+        defaultHelperText: 'Preparing the explanation you will see in chat.',
+    },
+    retrying: {
+        tone: 'warning',
+        icon: '🔁',
+        message: 'Retrying after an error…',
+        defaultHelperText: 'Adjusting the last step to recover automatically.',
+    },
+    clarifying: {
+        tone: 'info',
+        icon: '❓',
+        message: 'Waiting for your clarification…',
+        defaultHelperText: 'Answer the question above so I can continue.',
+    },
+};
+
 
 const useChatCore = () =>
     useAppStore(
@@ -96,6 +198,7 @@ const useChatCore = () =>
             previewChatMemories: state.previewChatMemories,
             toggleMemoryPreviewSelection: state.toggleMemoryPreviewSelection,
             isMemoryPreviewLoading: state.isMemoryPreviewLoading,
+            agentPhase: state.agentPhase,
         }),
         shallow,
     );
@@ -125,6 +228,7 @@ export const ChatPanel: React.FC = () => {
         previewChatMemories,
         toggleMemoryPreviewSelection,
         isMemoryPreviewLoading,
+        agentPhase,
     } = core;
 
     const [input, setInput] = useState('');
@@ -183,6 +287,9 @@ export const ChatPanel: React.FC = () => {
     const helperDescriptor: HelperDescriptor = (() => {
         const lastProgress = progressMessages[progressMessages.length - 1]?.text ?? '';
         const continuationMatch = lastProgress.startsWith('Continuing plan');
+        const activePhase = agentPhase?.phase ?? 'idle';
+        const phaseOverride = activePhase !== 'idle' ? phaseHelperOverrides[activePhase] : undefined;
+        const overrideHelperText = agentPhase?.message?.trim() || phaseOverride?.defaultHelperText;
         if (!isApiKeySet) {
             return {
                 tone: 'warning',
@@ -240,13 +347,35 @@ export const ChatPanel: React.FC = () => {
             };
         }
         if (isBusy) {
+            if (isCancellationRequested) {
+                return {
+                    tone: 'progress',
+                    icon: '🛑',
+                    message: 'Stopping the last run…',
+                    helperText: 'Once cancelled you can submit a new instruction right away.',
+                };
+            }
+            if (phaseOverride) {
+                return {
+                    tone: phaseOverride.tone,
+                    icon: phaseOverride.icon,
+                    message: phaseOverride.message,
+                    helperText: overrideHelperText,
+                };
+            }
             return {
                 tone: 'progress',
-                icon: isCancellationRequested ? '🛑' : '⚙️',
-                message: isCancellationRequested ? 'Stopping the last run…' : 'AI is crunching your request.',
-                helperText: isCancellationRequested
-                    ? 'Once cancelled you can submit a new instruction right away.'
-                    : 'Feel free to review earlier messages while the agent works.',
+                icon: '⚙️',
+                message: 'AI is crunching your request.',
+                helperText: 'Feel free to review earlier messages while the agent works.',
+            };
+        }
+        if (phaseOverride) {
+            return {
+                tone: phaseOverride.tone,
+                icon: phaseOverride.icon,
+                message: phaseOverride.message,
+                helperText: overrideHelperText,
             };
         }
         return {
@@ -515,6 +644,7 @@ export const ChatPanel: React.FC = () => {
                 </div>
             </div>
             <div className="flex-1 p-4 overflow-y-auto space-y-4">
+                <AgentPhaseIndicator />
                 <PlannerGoalTracker />
                 <AgentActionLogPanel />
                 <AgentObservationTimeline />
@@ -656,6 +786,38 @@ const PlannerGoalTracker = React.memo(() => {
     );
 });
 PlannerGoalTracker.displayName = 'PlannerGoalTracker';
+
+const AgentPhaseIndicator = React.memo(() => {
+    const phaseState = useAppStore(state => state.agentPhase);
+    const { phase, message, enteredAt } = phaseState ?? { phase: 'idle', message: null, enteredAt: null };
+    const descriptor = phaseDescriptors[phase] ?? phaseDescriptors.idle;
+    const detail = message?.trim() || descriptor.helper;
+    const enteredDate = enteredAt ? new Date(enteredAt) : null;
+    const sinceLabel =
+        enteredDate && !Number.isNaN(enteredDate.getTime())
+            ? enteredDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+            : null;
+
+    return (
+        <div
+            className={`mb-4 flex items-center justify-between rounded-lg border px-3 py-2 text-sm ${descriptor.badge}`}
+            role="status"
+            aria-live="polite"
+        >
+            <div className="flex items-center gap-2">
+                <span className="text-base">{descriptor.icon}</span>
+                <div>
+                    <p className="font-semibold">{descriptor.label}</p>
+                    <p className="text-xs opacity-90">{detail}</p>
+                </div>
+            </div>
+            {sinceLabel && (
+                <span className="text-xs text-slate-500 whitespace-nowrap">Since {sinceLabel}</span>
+            )}
+        </div>
+    );
+});
+AgentPhaseIndicator.displayName = 'AgentPhaseIndicator';
 
 const actionStatusColor: Record<AgentActionTrace['status'], string> = {
     observing: 'bg-slate-400',

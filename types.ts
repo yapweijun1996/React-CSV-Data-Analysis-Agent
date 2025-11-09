@@ -87,6 +87,25 @@ export const AGENT_STATE_TAGS = [
 
 export type AgentStateTag = typeof AGENT_STATE_TAGS[number];
 
+export const AGENT_PHASES = [
+    'idle',
+    'observing',
+    'planning',
+    'acting',
+    'verifying',
+    'reporting',
+    'clarifying',
+    'retrying',
+] as const;
+
+export type AgentPhase = typeof AGENT_PHASES[number];
+
+export interface AgentPhaseState {
+    phase: AgentPhase;
+    message: string | null;
+    enteredAt: string | null;
+}
+
 export interface AgentActionTrace {
     id: string;
     actionType: AgentActionType;
@@ -262,6 +281,7 @@ export interface AppState {
     isLastAppliedDataTransformBannerDismissed: boolean;
     interactiveSelectionFilter: SelectionDrilldownFilter | null;
     plannerSession: PlannerSessionState;
+    agentPhase: AgentPhaseState;
 }
 
 export interface DomAction {

@@ -26,6 +26,8 @@ import {
     PlannerSessionState,
     AgentValidationEvent,
     VectorStoreDocument,
+    AgentPhaseState,
+    AgentPhase,
 } from '../types';
 import { executePlan, applyTopNWithOthers } from '../utils/dataProcessor';
 import { generateAnalysisPlans, generateSummary, generateFinalSummary, generateCoreAnalysisSummary, generateProactiveInsights } from '../services/aiService';
@@ -117,6 +119,7 @@ const buildSerializableAppState = (state: AppStore): AppState => ({
     isLastAppliedDataTransformBannerDismissed: state.isLastAppliedDataTransformBannerDismissed,
     interactiveSelectionFilter: state.interactiveSelectionFilter,
     plannerSession: state.plannerSession,
+    agentPhase: state.agentPhase,
 });
 
 const buildFileNameFromHeader = (header?: string | null) => {
@@ -219,6 +222,7 @@ const initialAppState: AppState = {
     isLastAppliedDataTransformBannerDismissed: false,
     interactiveSelectionFilter: null,
     plannerSession: normalizePlannerSession(),
+    agentPhase: { phase: 'idle', message: null, enteredAt: null },
 };
 
 export const useAppStore = create<StoreState & StoreActions>((set, get) => {
@@ -1106,6 +1110,14 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
     },
 
     // Simple setters
+    setAgentPhase: (phase, message) =>
+        set({
+            agentPhase: {
+                phase,
+                message: message ?? null,
+                enteredAt: new Date().toISOString(),
+            },
+        }),
     setIsAsideVisible: (isVisible) => set({ isAsideVisible: isVisible }),
     setAsideWidth: (width) => set({ asideWidth: width }),
     setIsSpreadsheetVisible: (isVisible) => set({ isSpreadsheetVisible: isVisible }),

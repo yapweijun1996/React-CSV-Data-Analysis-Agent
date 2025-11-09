@@ -22,6 +22,7 @@ import type {
     AgentActionTrace,
     AgentObservation,
     AgentPlanState,
+    AgentPhase,
 } from '../types';
 
 export interface StoreState extends AppState {
@@ -100,6 +101,7 @@ export interface StoreActions {
     handleNewSession: () => Promise<void>;
     focusDataPreview: () => void;
     triggerAutoSaveNow: () => void;
+    setAgentPhase: (phase: AgentPhase, message?: string | null) => void;
     setIsAsideVisible: (isVisible: boolean) => void;
     setAsideWidth: (width: number) => void;
     setIsSpreadsheetVisible: (isVisible: boolean) => void;

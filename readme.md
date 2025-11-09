@@ -25,6 +25,7 @@ This advanced tool allows users to have a conversation with their data, asking f
     *   **Full Self-Explanation**: The agent remembers every action it takes, including the initial data preparation script. You can ask it, "Where did the 'Software Product 10' value come from?", and it will consult its logs to explain exactly how it cleaned and standardized the raw data, building trust and ensuring reproducibility.
     *   **Strict Schema Validation**: Every AI action is validated against a Gemini-compatible JSON schema that requires a full plan payload. If the AI omits required fields, the planner automatically requests a corrected response before anything touches your data.
     *   **Automation Safeguards**: The DOM action handler inspects the current card state before applying changes. Redundant requests (e.g., switching to a chart type that is already active or re-showing data that is visible) are skipped with a friendly explanation so the UI never “thrashes”.
+    *   **Visible Execution Phases**: The UI surfaces each planner phase (Observing → Planning → Acting → Verifying → Reporting, plus Clarifying/Retrying states) so you always know what the assistant is doing, why it might pause, and when it needs your input.
 
 ### 🧩 Agent Architecture Notes
 

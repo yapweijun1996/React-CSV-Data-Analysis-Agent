@@ -212,7 +212,7 @@ export const multiActionChatResponseSchema = {
                                     label: { type: Type.STRING, description: "For 'toggleLegendLabel'. The exact legend label to toggle visibility for." },
                                     format: { type: Type.STRING, enum: ['png', 'csv', 'html'], description: "For 'exportCard'. Choose the export format." },
                                 },
-                                required: ['cardId'],
+                                required: ['cardId', 'newType', 'visible', 'column', 'values', 'topN', 'hide', 'label', 'format'],
                                 additionalProperties: false,
                             },
                         },

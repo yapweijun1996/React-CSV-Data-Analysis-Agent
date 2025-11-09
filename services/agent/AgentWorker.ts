@@ -22,6 +22,7 @@ import type {
     AgentObservation,
     AgentObservationStatus,
     AgentPlanState,
+    AgentPhase,
     PendingPlan,
     AgentActionType,
 } from '../../types';
@@ -93,6 +94,25 @@ const CONTINUATION_STATE_TAG_DENYLIST = new Set<AgentStateTag>(['awaiting_clarif
 
 let lastStateTagWarningAt = 0;
 let lastThoughtlessToastAt = 0;
+
+const enterAgentPhase = (runtime: PlannerRuntime, phase: AgentPhase, message?: string) => {
+    const store = runtime.get();
+    if (typeof store.setAgentPhase === 'function') {
+        store.setAgentPhase(phase, message ?? null);
+    }
+};
+
+const resetAgentPhase = (runtime: PlannerRuntime) => {
+    const store = runtime.get();
+    if (typeof store.setAgentPhase === 'function') {
+        store.setAgentPhase('idle', null);
+    }
+};
+
+const hasActiveClarifications = (runtime: PlannerRuntime) =>
+    runtime
+        .get()
+        .pendingClarifications?.some(req => req.status === 'pending' || req.status === 'resolving');
 
 type TraceRecorder = (status: AgentActionStatus, details?: string, telemetry?: ActionTraceTelemetry) => void;
 
@@ -504,7 +524,8 @@ const describeNoOpDomAction = (runtime: PlannerRuntime, domAction: DomAction): s
     const cardId = typeof args.cardId === 'string' ? args.cardId.trim() : '';
     if (!cardId) return null;
 
-    const card = runtime.get().analysisCards.find(current => current.id === cardId);
+    const cards = Array.isArray(runtime.get().analysisCards) ? runtime.get().analysisCards : [];
+    const card = cards.find(current => current.id === cardId);
     if (!card) return null;
     const cardLabel = card.plan?.title ?? 'this card';
 
@@ -786,116 +807,137 @@ const runPlannerWorkflow = async (
     let retryAttempts = 0;
     let validationRetries = 0;
     let continuationAttempts = 0;
-    const updateBusyStatus = runtime.get().updateBusyStatus;
-    let response = await planAgentActions(
-        originalPrompt,
-        plannerContext.requestAiResponse,
-        updateBusyStatus,
-        'Thinking through your question...',
-    );
+    enterAgentPhase(runtime, 'observing', 'Reviewing the current dataset and prior context...');
+    try {
+        const updateBusyStatus = runtime.get().updateBusyStatus;
+        enterAgentPhase(runtime, 'planning', 'Thinking through your question...');
+        let response = await planAgentActions(
+            originalPrompt,
+            plannerContext.requestAiResponse,
+            updateBusyStatus,
+            'Thinking through your question...',
+        );
 
-    while (response) {
-        if (runtime.get().isRunCancellationRequested(runtime.runId)) {
-            runtime.get().addProgress('Stopped processing request.');
-            return;
-        }
+        while (response) {
+            if (runtime.get().isRunCancellationRequested(runtime.runId)) {
+                runtime.get().addProgress('Stopped processing request.');
+                return;
+            }
 
-        const validation = validateAgentResponse(response, runtime);
-        if (!validation.isValid) {
-            validationRetries++;
-            recordValidationTelemetry(runtime, validation.details, validation.retryInstruction);
-            runtime.get().addProgress(validation.userMessage, 'error');
-            if (validationRetries >= MAX_VALIDATION_RETRIES) {
-                runtime.get().addProgress('Unable to obtain a valid plan update after multiple attempts.', 'error');
-                const failureMessage: ChatMessage = {
+            const validation = validateAgentResponse(response, runtime);
+            if (!validation.isValid) {
+                validationRetries++;
+                recordValidationTelemetry(runtime, validation.details, validation.retryInstruction);
+                runtime.get().addProgress(validation.userMessage, 'error');
+                if (validationRetries >= MAX_VALIDATION_RETRIES) {
+                    runtime.get().addProgress('Unable to obtain a valid plan update after multiple attempts.', 'error');
+                    const failureMessage: ChatMessage = {
+                        sender: 'ai',
+                        text: 'Sorry, I could not establish a valid plan_state_update. Please try again or rephrase your question.',
+                        timestamp: new Date(),
+                        type: 'ai_message',
+                        isError: true,
+                    };
+                    runtime.set(prev => ({ chatHistory: [...prev.chatHistory, failureMessage] }));
+                    return;
+                }
+                enterAgentPhase(runtime, 'planning', 'Revising the plan outline based on validation feedback...');
+                response = await planAgentActions(
+                    `${runtime.userMessage}\n\nSYSTEM NOTE: ${validation.retryInstruction}`,
+                    plannerContext.requestAiResponse,
+                    updateBusyStatus,
+                    PLAN_CORRECTION_STATUS,
+                );
+                continue;
+            }
+
+            const remainingAutoRetries = MAX_AUTO_RETRIES - retryAttempts;
+            const containsToolActions = response.actions.some(action =>
+                action.responseType === 'plan_creation' ||
+                action.responseType === 'execute_js_code' ||
+                action.responseType === 'filter_spreadsheet' ||
+                action.responseType === 'dom_action' ||
+                action.responseType === 'clarification_request' ||
+                action.responseType === 'proceed_to_analysis'
+            );
+            enterAgentPhase(
+                runtime,
+                'acting',
+                containsToolActions ? 'Executing the next step of the plan...' : 'Delivering the latest reasoning step...',
+            );
+            const dispatchResult = await dispatchAgentActions(response, runtime, remainingAutoRetries);
+
+            if (dispatchResult.type === 'halt') {
+                return;
+            }
+
+            if (dispatchResult.type === 'retry') {
+                enterAgentPhase(runtime, 'retrying', 'Retrying the last action automatically...');
+                const nextAttemptNumber = retryAttempts + 2;
+                retryAttempts++;
+                const retryMessage: ChatMessage = {
                     sender: 'ai',
-                    text: 'Sorry, I could not establish a valid plan_state_update. Please try again or rephrase your question.',
+                    text: `The previous data transformation failed (${dispatchResult.reason}). I'll try again automatically (attempt ${nextAttemptNumber}).`,
                     timestamp: new Date(),
                     type: 'ai_message',
                     isError: true,
                 };
-                runtime.set(prev => ({ chatHistory: [...prev.chatHistory, failureMessage] }));
-                return;
+                runtime.set(prev => ({ chatHistory: [...prev.chatHistory, retryMessage] }));
+                runtime.get().addProgress(`Auto-retrying data transformation (attempt ${nextAttemptNumber})...`);
+                enterAgentPhase(runtime, 'planning', 'Adjusting the plan after a failed attempt...');
+                response = await planAgentActions(
+                    `${runtime.userMessage}\n\nSYSTEM NOTE: Previous data transformation failed because ${dispatchResult.reason}. Please adjust the code and try again.`,
+                    plannerContext.requestAiResponse,
+                    updateBusyStatus,
+                    'Retrying data transformation...',
+                );
+                continue;
             }
-            response = await planAgentActions(
-                `${runtime.userMessage}\n\nSYSTEM NOTE: ${validation.retryInstruction}`,
-                plannerContext.requestAiResponse,
-                updateBusyStatus,
-                PLAN_CORRECTION_STATUS,
-            );
-            continue;
+
+            enterAgentPhase(runtime, 'verifying', 'Reviewing what just happened before continuing...');
+            const { hasPendingSteps, stateTag, hasBlocker } = plannerHasPendingSteps(runtime);
+            const isStateTagBlocked = stateTag ? CONTINUATION_STATE_TAG_DENYLIST.has(stateTag) : false;
+            if (
+                dispatchResult.type === 'complete' &&
+                continuationAttempts < MAX_PLAN_CONTINUATIONS &&
+                hasPendingSteps &&
+                !isStateTagBlocked &&
+                !hasBlocker &&
+                !runtime.get().isRunCancellationRequested(runtime.runId) &&
+                !containsToolActions
+            ) {
+                continuationAttempts++;
+                const planState = runtime.get().plannerSession.planState;
+                const continuationPrompt = [
+                    runtime.userMessage,
+                    '',
+                    `SYSTEM NOTE: Continue executing your plan. Current goal: ${planState?.goal ?? 'N/A'}.`,
+                    planState?.nextSteps?.length ? `Remaining steps: ${planState.nextSteps.join(' | ')}` : null,
+                    planState?.blockedBy ? `Known blockers: ${planState.blockedBy}` : null,
+                ]
+                    .filter(Boolean)
+                    .join('\n');
+                const continuationLabel =
+                    continuationAttempts === 1 ? 'Continuing plan' : `Continuing plan (cycle ${continuationAttempts}/${MAX_PLAN_CONTINUATIONS})`;
+                runtime.get().addProgress(continuationLabel);
+                enterAgentPhase(runtime, 'planning', 'Continuing with the remaining plan steps...');
+                response = await planAgentActions(
+                    continuationPrompt,
+                    plannerContext.requestAiResponse,
+                    updateBusyStatus,
+                    continuationAttempts === 1 ? 'Continuing plan...' : `Continuing plan (cycle ${continuationAttempts})...`,
+                );
+                continue;
+            }
+
+            break;
         }
 
-        const remainingAutoRetries = MAX_AUTO_RETRIES - retryAttempts;
-        const containsToolActions = response.actions.some(action =>
-            action.responseType === 'plan_creation' ||
-            action.responseType === 'execute_js_code' ||
-            action.responseType === 'filter_spreadsheet' ||
-            action.responseType === 'dom_action' ||
-            action.responseType === 'clarification_request' ||
-            action.responseType === 'proceed_to_analysis'
-        );
-        const dispatchResult = await dispatchAgentActions(response, runtime, remainingAutoRetries);
-
-        if (dispatchResult.type === 'halt') {
-            return;
+        enterAgentPhase(runtime, 'reporting', 'Summarizing the latest findings...');
+    } finally {
+        if (!hasActiveClarifications(runtime)) {
+            resetAgentPhase(runtime);
         }
-
-        if (dispatchResult.type === 'retry') {
-            const nextAttemptNumber = retryAttempts + 2;
-            retryAttempts++;
-            const retryMessage: ChatMessage = {
-                sender: 'ai',
-                text: `The previous data transformation failed (${dispatchResult.reason}). I'll try again automatically (attempt ${nextAttemptNumber}).`,
-                timestamp: new Date(),
-                type: 'ai_message',
-                isError: true,
-            };
-            runtime.set(prev => ({ chatHistory: [...prev.chatHistory, retryMessage] }));
-            runtime.get().addProgress(`Auto-retrying data transformation (attempt ${nextAttemptNumber})...`);
-            response = await planAgentActions(
-                `${runtime.userMessage}\n\nSYSTEM NOTE: Previous data transformation failed because ${dispatchResult.reason}. Please adjust the code and try again.`,
-                plannerContext.requestAiResponse,
-                updateBusyStatus,
-                'Retrying data transformation...',
-            );
-            continue;
-        }
-
-        const { hasPendingSteps, stateTag, hasBlocker } = plannerHasPendingSteps(runtime);
-        const isStateTagBlocked = stateTag ? CONTINUATION_STATE_TAG_DENYLIST.has(stateTag) : false;
-        if (
-            dispatchResult.type === 'complete' &&
-            continuationAttempts < MAX_PLAN_CONTINUATIONS &&
-            hasPendingSteps &&
-            !isStateTagBlocked &&
-            !hasBlocker &&
-            !runtime.get().isRunCancellationRequested(runtime.runId) &&
-            !containsToolActions
-        ) {
-            continuationAttempts++;
-            const planState = runtime.get().plannerSession.planState;
-            const continuationPrompt = [
-                runtime.userMessage,
-                '',
-                `SYSTEM NOTE: Continue executing your plan. Current goal: ${planState?.goal ?? 'N/A'}.`,
-                planState?.nextSteps?.length ? `Remaining steps: ${planState.nextSteps.join(' | ')}` : null,
-                planState?.blockedBy ? `Known blockers: ${planState.blockedBy}` : null,
-            ]
-                .filter(Boolean)
-                .join('\n');
-            const continuationLabel = continuationAttempts === 1 ? 'Continuing plan' : `Continuing plan (cycle ${continuationAttempts}/${MAX_PLAN_CONTINUATIONS})`;
-            runtime.get().addProgress(continuationLabel);
-            response = await planAgentActions(
-                continuationPrompt,
-                plannerContext.requestAiResponse,
-                updateBusyStatus,
-                continuationAttempts === 1 ? 'Continuing plan...' : `Continuing plan (cycle ${continuationAttempts})...`,
-            );
-            continue;
-        }
-
-        break;
     }
 };
 
@@ -1363,6 +1405,7 @@ const handleClarificationRequestAction: AgentActionExecutor = async ({ action, r
         chatHistory: [...prev.chatHistory, clarificationMessage],
     }));
     runtime.set({ activeClarificationId: enrichedClarification.id });
+    enterAgentPhase(runtime, 'clarifying', 'Need your input to keep going...');
     runtime.get().endBusy(runtime.runId);
     markTrace('succeeded', 'Requested user clarification.');
     return {
