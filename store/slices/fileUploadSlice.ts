@@ -9,6 +9,7 @@ import { getReport, saveReport, deleteReport, CURRENT_SESSION_KEY } from '../../
 
 interface FileUploadSliceDependencies {
     initialAppState: AppState;
+    resetAutoSaveSession: () => void;
 }
 
 export const createFileUploadSlice = (
@@ -23,12 +24,17 @@ export const createFileUploadSlice = (
             if (existingSession) {
                 const archiveId = `report-${existingSession.createdAt.getTime()}`;
                 const sessionToArchive: Report = { ...existingSession, id: archiveId, updatedAt: new Date() };
-                await saveReport(sessionToArchive);
+                try {
+                    await saveReport(sessionToArchive);
+                } catch (error) {
+                    console.error('Failed to archive current session before upload:', error);
+                }
             }
         }
 
         vectorStore.clear();
         await deleteReport(CURRENT_SESSION_KEY);
+        deps.resetAutoSaveSession();
         await get().loadReportsList();
 
         set({
@@ -137,11 +143,16 @@ export const createFileUploadSlice = (
             const existingSession = await getReport(CURRENT_SESSION_KEY);
             if (existingSession) {
                 const archiveId = `report-${existingSession.createdAt.getTime()}`;
-                await saveReport({ ...existingSession, id: archiveId, updatedAt: new Date() });
+                try {
+                    await saveReport({ ...existingSession, id: archiveId, updatedAt: new Date() });
+                } catch (error) {
+                    console.error('Failed to archive session before starting new one:', error);
+                }
             }
         }
         vectorStore.clear();
         await deleteReport(CURRENT_SESSION_KEY);
+        deps.resetAutoSaveSession();
         set({
             ...deps.initialAppState,
             busyRunId: null,

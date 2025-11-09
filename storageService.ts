@@ -59,12 +59,8 @@ const getDb = (): Promise<IDBPDatabase<MyDB>> => {
 
 // Report History Management
 export const saveReport = async (report: Report): Promise<void> => {
-  try {
     const db = await getDb();
     await db.put(REPORTS_STORE_NAME, report);
-  } catch (error) {
-    console.error('Failed to save report to IndexedDB:', error);
-  }
 };
 
 export const getReport = async (id: string): Promise<Report | undefined> => {
@@ -108,7 +104,9 @@ const defaultSettings: Settings = {
     geminiApiKey: '',
     openAIApiKey: '',
     model: 'gemini-2.5-pro',
-    language: 'English'
+    language: 'English',
+    autoSaveEnabled: true,
+    autoSaveIntervalSeconds: 15,
 };
 
 export const saveSettings = (settings: Settings): void => {

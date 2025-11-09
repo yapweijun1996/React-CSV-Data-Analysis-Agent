@@ -4,16 +4,17 @@ import type { MouseEvent as ReactMouseEvent } from 'react';
 import { AnalysisCardData, ChatMessage, ProgressMessage, CsvData, AnalysisPlan, AppState, CardContext, ChartType, DomAction, Settings, Report, ReportListItem, ClarificationRequest, ClarificationRequestPayload, ClarificationStatus, ColumnProfile, AgentActionStatus, AgentActionSource, ExternalCsvPayload } from '../types';
 import { executePlan, applyTopNWithOthers } from '../utils/dataProcessor';
 import { generateAnalysisPlans, generateSummary, generateFinalSummary, generateCoreAnalysisSummary, generateProactiveInsights } from '../services/aiService';
-import { getReportsList, saveReport, getReport, deleteReport, getSettings, saveSettings, CURRENT_SESSION_KEY } from '../storageService';
+import { getReportsList, getReport, deleteReport, getSettings, saveSettings, CURRENT_SESSION_KEY } from '../storageService';
 import { vectorStore } from '../services/vectorStore';
 import { runWithBusyState } from '../utils/runWithBusy';
 import { preparePlanForExecution } from '../utils/planValidation';
 import { buildColumnAliasMap } from '../utils/columnAliases';
 import { exportToPng, exportToCsv, exportToHtml } from '../utils/exportUtils';
-import type { StoreActions, StoreState } from './appStoreTypes';
+import type { AppStore, StoreActions, StoreState } from './appStoreTypes';
 import { createChatSlice } from './slices/chatSlice';
 import { createFileUploadSlice } from './slices/fileUploadSlice';
 import { createAiFilterSlice } from './slices/aiFilterSlice';
+import { AutoSaveManager, AutoSaveConfig, deriveAutoSaveConfig } from '../utils/autoSaveManager';
 
 const createClarificationId = () =>
     typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -22,6 +23,26 @@ const createClarificationId = () =>
 
 const createRunId = () => `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const createToastId = () => `toast-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+let autoSaveManager: AutoSaveManager | null = null;
+let latestAutoSaveConfig: AutoSaveConfig | null = null;
+
+const updateAutoSaveConfiguration = (settings: Settings) => {
+    latestAutoSaveConfig = deriveAutoSaveConfig(settings);
+    autoSaveManager?.configure(latestAutoSaveConfig);
+};
+
+const resetAutoSaveSessionMetadata = () => {
+    autoSaveManager?.resetSessionMetadata();
+};
+
+const seedAutoSaveCreatedAt = (createdAt: Date | null) => {
+    autoSaveManager?.seedCreatedAt(createdAt);
+};
+
+const triggerAutoSaveImmediately = () => {
+    autoSaveManager?.triggerImmediateSave(true);
+};
 
 const getNextAwaitingClarificationId = (clarifications: ClarificationRequest[]): string | null =>
     clarifications.find(c => c.status === 'pending')?.id ?? null;
@@ -39,6 +60,34 @@ const sanitizeFileStemFromHeader = (header?: string | null) => {
         .replace(/^-|-$/g, '');
     return sanitized || 'report';
 };
+
+const buildSerializableAppState = (state: AppStore): AppState => ({
+    currentView: state.currentView,
+    isBusy: state.isBusy,
+    busyMessage: state.busyMessage,
+    canCancelBusy: state.canCancelBusy,
+    progressMessages: state.progressMessages,
+    csvData: state.csvData,
+    columnProfiles: state.columnProfiles,
+    analysisCards: state.analysisCards,
+    chatHistory: state.chatHistory,
+    finalSummary: state.finalSummary,
+    aiCoreAnalysisSummary: state.aiCoreAnalysisSummary,
+    dataPreparationPlan: state.dataPreparationPlan,
+    initialDataSample: state.initialDataSample,
+    vectorStoreDocuments: vectorStore.getDocuments(),
+    spreadsheetFilterFunction: state.spreadsheetFilterFunction,
+    aiFilterExplanation: state.aiFilterExplanation,
+    pendingClarifications: state.pendingClarifications,
+    activeClarificationId: state.activeClarificationId,
+    toasts: [],
+    agentActionTraces: state.agentActionTraces,
+    columnAliasMap: state.columnAliasMap,
+    pendingDataTransform: state.pendingDataTransform,
+    lastAppliedDataTransform: state.lastAppliedDataTransform,
+    isLastAppliedDataTransformBannerDismissed: state.isLastAppliedDataTransformBannerDismissed,
+    interactiveSelectionFilter: state.interactiveSelectionFilter,
+});
 
 const buildFileNameFromHeader = (header?: string | null) => {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -155,7 +204,10 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         getRunSignal,
         runPlanWithChatLifecycle,
     });
-    const fileUploadSlice = createFileUploadSlice(set, get, { initialAppState });
+    const fileUploadSlice = createFileUploadSlice(set, get, {
+        initialAppState,
+        resetAutoSaveSession: resetAutoSaveSessionMetadata,
+    });
     const aiFilterSlice = createAiFilterSlice(set, get, { createRunId });
 
     return {
@@ -260,10 +312,19 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 return { abortControllers: next };
             });
         },
-        addToast: (message, type = 'info', duration = 4000) => {
+        addToast: (message, type = 'info', duration = 4000, action) => {
             const id = createToastId();
             set(state => ({
-                toasts: [...state.toasts, { id, message, type }],
+                toasts: [
+                    ...state.toasts,
+                    {
+                        id,
+                        message,
+                        type,
+                        actionLabel: action?.label,
+                        onAction: action?.onClick,
+                    },
+                ],
             }));
             if (duration > 0) {
                 setTimeout(() => {
@@ -416,6 +477,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 vectorStore.rehydrate(currentSession.appState.vectorStoreDocuments);
                 get().addProgress('Restored AI long-term memory from last session.');
             }
+            seedAutoSaveCreatedAt(currentSession.createdAt);
         }
         await get().loadReportsList();
     },
@@ -440,6 +502,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             settings: newSettings,
             isApiKeySet: isSet,
         });
+        updateAutoSaveConfiguration(newSettings);
     },
 
     handleAsideMouseDown: (e) => {
@@ -886,6 +949,10 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         }));
     },
 
+    triggerAutoSaveNow: () => {
+        triggerAutoSaveImmediately();
+    },
+
     handleLoadReport: async (id) => {
         get().addProgress(`Loading report ${id}...`);
         const report = await getReport(id);
@@ -906,6 +973,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 vectorStore.rehydrate(report.appState.vectorStoreDocuments);
             }
             get().addProgress(`Report "${report.filename}" loaded.`);
+            seedAutoSaveCreatedAt(report.createdAt);
         } else {
             get().addProgress(`Failed to load report ${id}.`, 'error');
         }
@@ -978,43 +1046,14 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
 };
 });
 
-// Auto-save current session to IndexedDB periodically
-setInterval(async () => {
-    const state = useAppStore.getState();
-    if (state.csvData && state.csvData.data.length > 0) {
-        // Fix: Only include serializable state properties in the report.
-        // This prevents a "DataCloneError" by excluding functions (actions) from the saved object.
-        const stateToSave: AppState = {
-            currentView: state.currentView,
-            isBusy: state.isBusy,
-            busyMessage: state.busyMessage,
-            canCancelBusy: state.canCancelBusy,
-            progressMessages: state.progressMessages,
-            csvData: state.csvData,
-            columnProfiles: state.columnProfiles,
-            analysisCards: state.analysisCards,
-            chatHistory: state.chatHistory,
-            finalSummary: state.finalSummary,
-            aiCoreAnalysisSummary: state.aiCoreAnalysisSummary,
-            dataPreparationPlan: state.dataPreparationPlan,
-            initialDataSample: state.initialDataSample,
-            vectorStoreDocuments: vectorStore.getDocuments(),
-            spreadsheetFilterFunction: state.spreadsheetFilterFunction,
-            aiFilterExplanation: state.aiFilterExplanation,
-            pendingClarifications: state.pendingClarifications,
-            activeClarificationId: state.activeClarificationId,
-            toasts: [],
-            agentActionTraces: state.agentActionTraces,
-            columnAliasMap: state.columnAliasMap,
-        };
-
-        const currentReport: Report = {
-            id: CURRENT_SESSION_KEY,
-            filename: state.csvData.fileName || 'Current Session',
-            createdAt: (await getReport(CURRENT_SESSION_KEY))?.createdAt || new Date(),
-            updatedAt: new Date(),
-            appState: stateToSave,
-        };
-        await saveReport(currentReport);
-    }
-}, 2000);
+updateAutoSaveConfiguration(useAppStore.getState().settings);
+autoSaveManager = new AutoSaveManager({
+    getStore: () => useAppStore.getState(),
+    buildSnapshot: buildSerializableAppState,
+    addToast: (message, type, duration, action) =>
+        useAppStore.getState().addToast(message, type, duration, action),
+    dismissToast: (toastId) => useAppStore.getState().dismissToast(toastId),
+});
+if (latestAutoSaveConfig) {
+    autoSaveManager.configure(latestAutoSaveConfig);
+}

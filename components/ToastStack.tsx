@@ -22,7 +22,20 @@ export const ToastStack: React.FC = () => {
                     key={toast.id}
                     className={`flex items-start justify-between rounded-lg shadow-lg px-4 py-3 text-sm ${typeStyles[toast.type]}`}
                 >
-                    <p className="pr-4">{toast.message}</p>
+                    <div className="pr-4 space-y-2">
+                        <p>{toast.message}</p>
+                        {toast.actionLabel && toast.onAction && (
+                            <button
+                                className="underline text-white/90 hover:text-white text-xs font-medium"
+                                onClick={() => {
+                                    toast.onAction?.();
+                                    dismissToast(toast.id);
+                                }}
+                            >
+                                {toast.actionLabel}
+                            </button>
+                        )}
+                    </div>
                     <button
                         onClick={() => dismissToast(toast.id)}
                         className="text-white/70 hover:text-white text-lg leading-none"

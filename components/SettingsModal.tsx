@@ -5,7 +5,12 @@ import { useAppStore } from '../store/useAppStore';
 const languages: Settings['language'][] = ['English', 'Mandarin', 'Spanish', 'Japanese', 'French'];
 const googleModels: Settings['model'][] = ['gemini-2.5-flash', 'gemini-2.5-pro'];
 const openAIModels: Settings['model'][] = ['gpt-5', 'gpt-5-mini'];
-
+const autoSaveIntervals = [
+    { label: 'Every 15 seconds', value: 15 },
+    { label: 'Every 30 seconds', value: 30 },
+    { label: 'Every minute', value: 60 },
+    { label: 'Every 2 minutes', value: 120 },
+];
 
 export const SettingsModal: React.FC = () => {
     const { isOpen, onClose, onSave, currentSettings } = useAppStore(state => ({
@@ -32,7 +37,11 @@ export const SettingsModal: React.FC = () => {
 
     const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
         const { name, value } = e.target;
-        setSettings(prev => ({ ...prev, [name]: value }));
+        if (name === 'autoSaveIntervalSeconds') {
+            setSettings(prev => ({ ...prev, [name]: Number(value) }));
+        } else {
+            setSettings(prev => ({ ...prev, [name]: value }));
+        }
     };
 
     const handleProviderChange = (provider: 'google' | 'openai') => {
@@ -161,6 +170,47 @@ export const SettingsModal: React.FC = () => {
                          <p className="text-xs text-slate-500 mt-1">
                             Primary language for AI summaries and chat responses.
                         </p>
+                    </div>
+
+                    <div className="border-t border-slate-200 pt-4">
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <label className="block text-sm font-medium text-slate-700">
+                                    Auto-Save
+                                </label>
+                                <p className="text-xs text-slate-500">
+                                    Periodically store the current analysis so you can recover it later.
+                                </p>
+                            </div>
+                            <button
+                                onClick={() => setSettings(prev => ({ ...prev, autoSaveEnabled: !prev.autoSaveEnabled }))}
+                                className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${
+                                    settings.autoSaveEnabled ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-700'
+                                }`}
+                            >
+                                {settings.autoSaveEnabled ? 'Enabled' : 'Paused'}
+                            </button>
+                        </div>
+                        {settings.autoSaveEnabled && (
+                            <div className="mt-4">
+                                <label htmlFor="autoSaveIntervalSeconds" className="block text-sm font-medium text-slate-700">
+                                    Auto-Save Frequency
+                                </label>
+                                <select
+                                    id="autoSaveIntervalSeconds"
+                                    name="autoSaveIntervalSeconds"
+                                    value={settings.autoSaveIntervalSeconds}
+                                    onChange={handleInputChange}
+                                    className="mt-1 block w-full bg-white border border-slate-300 rounded-md py-2 px-3 text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                >
+                                    {autoSaveIntervals.map(option => (
+                                        <option key={option.value} value={option.value}>
+                                            {option.label}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                        )}
                     </div>
                 </div>
 

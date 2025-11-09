@@ -179,6 +179,8 @@ export interface Settings {
     openAIApiKey: string;
     model: string;
     language: 'English' | 'Mandarin' | 'Spanish' | 'Japanese' | 'French';
+    autoSaveEnabled: boolean;
+    autoSaveIntervalSeconds: number;
 }
 
 export type AppView = 'file_upload' | 'analysis_dashboard';
@@ -300,4 +302,6 @@ export interface AppToast {
     id: string;
     type: 'info' | 'success' | 'error';
     message: string;
+    actionLabel?: string;
+    onAction?: () => void;
 }

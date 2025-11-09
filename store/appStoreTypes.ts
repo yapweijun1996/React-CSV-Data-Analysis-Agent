@@ -79,7 +79,12 @@ export interface StoreActions {
     handleNaturalLanguageQuery: (query: string) => Promise<void>;
     clearAiFilter: () => void;
     cancelAiFilterRequest: () => void;
-    addToast: (message: string, type?: 'info' | 'success' | 'error', duration?: number) => string;
+    addToast: (
+        message: string,
+        type?: 'info' | 'success' | 'error',
+        duration?: number,
+        action?: { label: string; onClick: () => void }
+    ) => string;
     dismissToast: (toastId: string) => void;
     handleChartTypeChange: (cardId: string, newType: ChartType) => void;
     handleToggleDataVisibility: (cardId: string) => void;
@@ -91,6 +96,7 @@ export interface StoreActions {
     handleShowCardFromChat: (cardId: string) => void;
     handleNewSession: () => Promise<void>;
     focusDataPreview: () => void;
+    triggerAutoSaveNow: () => void;
     setIsAsideVisible: (isVisible: boolean) => void;
     setAsideWidth: (width: number) => void;
     setIsSpreadsheetVisible: (isVisible: boolean) => void;
