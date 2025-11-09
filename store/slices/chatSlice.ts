@@ -881,6 +881,8 @@ const actionExecutorRegistry: Record<AgentActionType, AgentActionExecutor> = {
     proceed_to_analysis: handleProceedToAnalysisAction,
 };
 
+export { runPlannerWorkflow };
+
 const normalizeStateTag = (tag?: string | null): AgentStateTag | undefined => {
     if (!tag) return undefined;
     if (STATE_TAG_SET.has(tag as AgentStateTag)) {

@@ -26,6 +26,8 @@ type RuntimeState = {
     addProgress: (message: string, type?: 'system' | 'error') => void;
     addToast: (message: string, type?: 'info' | 'success' | 'error', duration?: number) => string;
     endBusy: () => void;
+    updatePlannerPlanState: (state: Record<string, any>) => void;
+    plannerSession: { planState: any; observations: any[] };
 };
 
 const createRuntime = (overrides: Partial<RuntimeState> = {}) => {
@@ -43,6 +45,10 @@ const createRuntime = (overrides: Partial<RuntimeState> = {}) => {
         addProgress: () => {},
         addToast: () => 'toast-id',
         endBusy: () => {},
+        updatePlannerPlanState: (state) => {
+            baseState.plannerSession.planState = state;
+        },
+        plannerSession: { planState: null, observations: [] },
         ...overrides,
     };
 
@@ -192,6 +198,48 @@ await run('proceed_to_analysis succeeds and records duration', async () => {
     assert.ok(success);
     assert.ok(typeof success?.telemetry?.durationMs === 'number');
     assert.ok(success.telemetry!.durationMs! >= 0);
+});
+
+await run('plan_state_update without payload is rejected', async () => {
+    const { runtime } = createRuntime();
+    const { entries, markTrace } = createTraceRecorder();
+    const action: AiAction = { responseType: 'plan_state_update', thought: 'Need to log goal' };
+
+    await runActionThroughRegistry(action, runtime, 0, markTrace);
+    const failure = entries.find(entry => entry.status === 'failed');
+    assert.strictEqual(failure?.telemetry?.errorCode, ACTION_ERROR_CODES.PLAN_STATE_PAYLOAD_MISSING);
+});
+
+await run('plan_state_update normalizes payload and stores plan state', async () => {
+    const addProgressCalls: string[] = [];
+    const { runtime, state } = createRuntime({
+        addProgress: (msg: string) => addProgressCalls.push(msg),
+    });
+    const { entries, markTrace } = createTraceRecorder();
+    const action: AiAction = {
+        responseType: 'plan_state_update',
+        thought: 'Clarify mission',
+        planState: {
+            goal: '  Increase revenue insights  ',
+            contextSummary: null,
+            progress: ' outlined targets ',
+            nextSteps: [' collect metrics ', 'build chart'],
+            blockedBy: '',
+            observationIds: ['obs-1'],
+            confidence: 0.42,
+            updatedAt: '2024-01-01T00:00:00.000Z',
+        },
+    };
+
+    await runActionThroughRegistry(action, runtime, 0, markTrace);
+    const success = entries.find(entry => entry.status === 'succeeded');
+    assert.ok(success);
+    assert.deepStrictEqual(state.plannerSession.planState?.goal, 'Increase revenue insights');
+    assert.deepStrictEqual(state.plannerSession.planState?.nextSteps, ['collect metrics', 'build chart']);
+    assert.strictEqual(state.plannerSession.planState?.blockedBy, null);
+    assert.strictEqual(state.plannerSession.planState?.contextSummary, null);
+    assert.strictEqual(state.plannerSession.planState?.confidence, 0.42);
+    assert.ok(addProgressCalls.some(message => message.includes('Plan goal updated')));
 });
 
 console.log('🎉 chatActionExecutors tests completed successfully.');

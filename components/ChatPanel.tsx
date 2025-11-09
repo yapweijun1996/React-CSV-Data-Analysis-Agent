@@ -724,7 +724,7 @@ export const ChatPanel: React.FC = () => {
                             onChange={(e) => setInput(e.target.value)}
                             onKeyDown={handleKeyDown}
                             placeholder={getPlaceholder()}
-                            disabled={isBusy || !isApiKeySet || currentView === 'file_upload' || hasAwaitingClarification}
+                            disabled={!isApiKeySet || currentView === 'file_upload' || hasAwaitingClarification}
                             aria-describedby="chat-input-char-count"
                             className="w-full bg-white border border-slate-300 rounded-md py-2 pl-3 pr-14 text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 resize-none"
                             style={{ maxHeight: `${MAX_CHAT_INPUT_HEIGHT}px`, overflowY: 'hidden' }}

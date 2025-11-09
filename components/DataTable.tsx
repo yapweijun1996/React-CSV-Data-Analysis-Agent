@@ -1,5 +1,6 @@
 import React from 'react';
 import { CsvRow } from '../types';
+import { formatCellValue } from '../utils/formatCellValue';
 
 interface DataTableProps {
     data: CsvRow[];
@@ -12,14 +13,6 @@ export const DataTable: React.FC<DataTableProps> = ({ data }) => {
 
     const headers = Object.keys(data[0]);
     
-    // Check if value is a number and format it
-    const formatValue = (value: string | number) => {
-        if (typeof value === 'number') {
-            return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
-        }
-        return value;
-    };
-
     return (
         <div className="w-full text-sm">
             <table className="w-full text-left">
@@ -35,7 +28,7 @@ export const DataTable: React.FC<DataTableProps> = ({ data }) => {
                         <tr key={rowIndex} className="border-b border-slate-200 last:border-b-0">
                             {headers.map(header => (
                                 <td key={`${rowIndex}-${header}`} className="p-2 text-slate-700">
-                                    {formatValue(row[header])}
+                                    {formatCellValue(row[header])}
                                 </td>
                             ))}
                         </tr>

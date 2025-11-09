@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { CsvRow, SortConfig } from '../types';
+import { formatCellValue } from '../utils/formatCellValue';
 
 interface SpreadsheetTableProps {
     data: CsvRow[];
@@ -33,13 +34,6 @@ export const SpreadsheetTable: React.FC<SpreadsheetTableProps> = ({ data, sortCo
 
     const handlePrevPage = () => setCurrentPage(prev => Math.max(0, prev - 1));
     const handleNextPage = () => setCurrentPage(prev => Math.min(totalPages - 1, prev + 1));
-    
-    const formatValue = (value: string | number) => {
-        if (typeof value === 'number') {
-            return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
-        }
-        return value;
-    };
     
     const getColumnLetter = (index: number) => {
         let temp, letter = '';
@@ -82,7 +76,7 @@ export const SpreadsheetTable: React.FC<SpreadsheetTableProps> = ({ data, sortCo
                                 <td className="p-2 text-slate-400 text-center sticky left-0 z-10 bg-white border-r border-slate-200" style={{width: '60px'}}>{startIndex + rowIndex + 1}</td>
                                 {headers.map(header => (
                                     <td key={`${rowIndex}-${header}`} className="p-2 text-slate-700 whitespace-nowrap overflow-hidden text-ellipsis border-r border-l border-slate-200">
-                                        {formatValue(row[header])}
+                                        {formatCellValue(row[header])}
                                     </td>
                                 ))}
                             </tr>
