@@ -20,6 +20,7 @@ import type {
     AppliedDataTransformRecord,
     SelectionDrilldownFilter,
     AgentActionTrace,
+    AgentObservation,
 } from '../types';
 
 export interface StoreState extends AppState {
@@ -112,6 +113,8 @@ export interface StoreActions {
         details?: string,
         telemetry?: Partial<Pick<AgentActionTrace, 'durationMs' | 'errorCode' | 'metadata'>>
     ) => void;
+    appendPlannerObservation: (observation: AgentObservation) => void;
+    resetPlannerObservations: () => void;
     queuePendingDataTransform: (preview: PendingDataTransform) => void;
     confirmPendingDataTransform: () => Promise<void>;
     discardPendingDataTransform: () => void;

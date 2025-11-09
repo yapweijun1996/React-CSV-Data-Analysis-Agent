@@ -22,6 +22,8 @@ import type {
     MemoryReference,
     AgentActionStatus,
     AgentStateTag,
+    AgentObservation,
+    AgentObservationStatus,
 } from '../../types';
 import { AGENT_STATE_TAGS } from '../../types';
 import type { AppStore, ChatSlice } from '../appStoreTypes';
@@ -48,17 +50,23 @@ interface ChatPlannerContext {
     requestAiResponse: (prompt: string) => Promise<AiChatResponse>;
 }
 
+interface ActionObservationPayload {
+    status: AgentObservationStatus;
+    outputs?: Record<string, any> | null;
+    errorCode?: string | null;
+    uiDelta?: string | null;
+}
+
 type ActionStepResult =
-    | { type: 'continue' }
-    | { type: 'retry'; reason: string }
-    | { type: 'halt' };
+    | { type: 'continue'; observation?: ActionObservationPayload }
+    | { type: 'retry'; reason: string; observation?: ActionObservationPayload }
+    | { type: 'halt'; observation?: ActionObservationPayload };
 
 type DispatchResult =
     | { type: 'complete' }
     | { type: 'retry'; reason: string }
     | { type: 'halt' };
 
-const ACTION_STEP_CONTINUE: ActionStepResult = { type: 'continue' };
 const STATE_TAG_SET = new Set<AgentStateTag>(AGENT_STATE_TAGS);
 const STATE_TAG_WARNING_THROTTLE_MS = 5000;
 const THOUGHTLESS_TOAST_THROTTLE_MS = 8000;
@@ -105,6 +113,37 @@ const ACTION_ERROR_CODES = {
 } as const;
 
 type ActionErrorCode = (typeof ACTION_ERROR_CODES)[keyof typeof ACTION_ERROR_CODES];
+
+const createObservationId = () =>
+    `obs-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+const normalizeObservationPayload = (result: ActionStepResult): ActionObservationPayload => {
+    if (result.observation) {
+        return result.observation;
+    }
+    if (result.type === 'retry') {
+        return {
+            status: 'error',
+            outputs: { reason: result.reason },
+        };
+    }
+    return { status: 'success' };
+};
+
+const toAgentObservation = (
+    action: AiAction,
+    traceId: string,
+    payload: ActionObservationPayload,
+): AgentObservation => ({
+    id: createObservationId(),
+    actionId: traceId,
+    responseType: action.responseType,
+    status: payload.status,
+    timestamp: new Date().toISOString(),
+    outputs: payload.outputs ?? null,
+    errorCode: payload.errorCode ?? null,
+    uiDelta: payload.uiDelta ?? null,
+});
 
 const summarizeAction = (action: AiAction): string => {
     switch (action.responseType) {
@@ -201,6 +240,7 @@ const buildChatPlannerContext = async (
             get().currentView,
             (get().csvData?.data || []).slice(0, 20),
             memoryPayload,
+            get().plannerSession.observations,
             get().dataPreparationPlan,
             get().agentActionTraces.slice(-10),
             { signal: deps.getRunSignal(runId) },
@@ -220,7 +260,14 @@ const chainOfThoughtGuardMiddleware: ActionMiddleware = async (context, next) =>
         context.markTrace('failed', 'Action blocked because no reasoning was provided.', {
             errorCode: ACTION_ERROR_CODES.THOUGHT_MISSING,
         });
-        return ACTION_STEP_CONTINUE;
+        return {
+            type: 'continue',
+            observation: {
+                status: 'error',
+                errorCode: ACTION_ERROR_CODES.THOUGHT_MISSING,
+                outputs: { note: 'Action skipped because thought field was empty.' },
+            },
+        };
     }
     return next();
 };
@@ -280,7 +327,13 @@ const runActionThroughRegistry = async (
     const executor = actionExecutorRegistry[action.responseType];
     if (!executor) {
         markTrace('failed', 'Unsupported action type.', { errorCode: ACTION_ERROR_CODES.UNSUPPORTED_ACTION });
-        return ACTION_STEP_CONTINUE;
+        return {
+            type: 'continue',
+            observation: {
+                status: 'error',
+                errorCode: ACTION_ERROR_CODES.UNSUPPORTED_ACTION,
+            },
+        };
     }
     const context: ActionExecutionContext = { action, runtime, remainingAutoRetries, markTrace };
     const pipeline = composeMiddlewares(getActionMiddlewares(), executor);
@@ -371,6 +424,10 @@ const dispatchAgentActions = async (
         markTrace('executing', undefined, initialTelemetry);
 
         const stepResult = await runActionThroughRegistry(action, runtime, remainingAutoRetries, markTrace);
+        const observationPayload = normalizeObservationPayload(stepResult);
+        runtime.get().appendPlannerObservation(
+            toAgentObservation(action, traceId, observationPayload),
+        );
         if (stepResult.type === 'retry') {
             return { type: 'retry', reason: stepResult.reason };
         }
@@ -385,7 +442,13 @@ const dispatchAgentActions = async (
 const handleTextResponseAction: AgentActionExecutor = async ({ action, runtime, markTrace }) => {
     if (!hasTextPayload(action)) {
         markTrace('failed', 'No AI text response provided.', { errorCode: ACTION_ERROR_CODES.MISSING_TEXT });
-        return ACTION_STEP_CONTINUE;
+        return {
+            type: 'continue',
+            observation: {
+                status: 'error',
+                errorCode: ACTION_ERROR_CODES.MISSING_TEXT,
+            },
+        };
     }
 
     const shouldAttachMemory = !runtime.memoryTagAttached && runtime.memorySnapshot.length > 0;
@@ -403,7 +466,16 @@ const handleTextResponseAction: AgentActionExecutor = async ({ action, runtime, 
         runtime.memoryTagAttached = true;
     }
     markTrace('succeeded', 'Shared response with user.');
-    return ACTION_STEP_CONTINUE;
+    return {
+        type: 'continue',
+        observation: {
+            status: 'success',
+            outputs: {
+                textPreview: action.text.slice(0, 200),
+                cardId: action.cardId ?? null,
+            },
+        },
+    };
 };
 
 const handlePlanCreationAction: AgentActionExecutor = async ({ action, runtime, markTrace }) => {
@@ -412,12 +484,27 @@ const handlePlanCreationAction: AgentActionExecutor = async ({ action, runtime, 
         markTrace('failed', 'Missing plan payload or dataset.', {
             errorCode: ACTION_ERROR_CODES.MISSING_PLAN_PAYLOAD,
         });
-        return ACTION_STEP_CONTINUE;
+        return {
+            type: 'continue',
+            observation: {
+                status: 'error',
+                errorCode: ACTION_ERROR_CODES.MISSING_PLAN_PAYLOAD,
+            },
+        };
     }
 
-    await runtime.deps.runPlanWithChatLifecycle(action.plan, dataset, runtime.runId);
+    const createdCards = await runtime.deps.runPlanWithChatLifecycle(action.plan, dataset, runtime.runId);
     markTrace('succeeded', `Executed plan for "${action.plan.title ?? 'analysis'}".`);
-    return ACTION_STEP_CONTINUE;
+    return {
+        type: 'continue',
+        observation: {
+            status: 'success',
+            outputs: {
+                planTitle: action.plan.title ?? 'analysis',
+                cardsCreated: createdCards.length,
+            },
+        },
+    };
 };
 
 const handleDomAction: AgentActionExecutor = async ({ action, runtime, markTrace }) => {
@@ -425,17 +512,32 @@ const handleDomAction: AgentActionExecutor = async ({ action, runtime, markTrace
         markTrace('failed', 'Missing DOM action payload.', {
             errorCode: ACTION_ERROR_CODES.DOM_PAYLOAD_MISSING,
         });
-        return ACTION_STEP_CONTINUE;
+        return {
+            type: 'continue',
+            observation: {
+                status: 'error',
+                errorCode: ACTION_ERROR_CODES.DOM_PAYLOAD_MISSING,
+            },
+        };
     }
 
     runtime.get().executeDomAction(action.domAction);
     markTrace('succeeded', `DOM action ${action.domAction.toolName} completed.`);
-    return ACTION_STEP_CONTINUE;
+    return {
+        type: 'continue',
+        observation: {
+            status: 'success',
+            outputs: {
+                toolName: action.domAction.toolName,
+                args: action.domAction.args ?? null,
+            },
+            uiDelta: action.domAction.toolName,
+        },
+    };
 };
 
 const handleExecuteCodeAction: AgentActionExecutor = async ({ action, runtime, remainingAutoRetries, markTrace }) => {
     const dataset = runtime.get().csvData;
-    const jsBody = action.code?.jsFunctionBody?.trim();
 
     if (!dataset) {
         const warning = 'Dataset unavailable for transformation.';
@@ -449,7 +551,13 @@ const handleExecuteCodeAction: AgentActionExecutor = async ({ action, runtime, r
         };
         runtime.set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
         markTrace('failed', warning, { errorCode: ACTION_ERROR_CODES.DATASET_UNAVAILABLE });
-        return ACTION_STEP_CONTINUE;
+        return {
+            type: 'continue',
+            observation: {
+                status: 'error',
+                errorCode: ACTION_ERROR_CODES.DATASET_UNAVAILABLE,
+            },
+        };
     }
 
     if (!hasExecutableCodePayload(action)) {
@@ -462,11 +570,17 @@ const handleExecuteCodeAction: AgentActionExecutor = async ({ action, runtime, r
             type: 'ai_message',
             isError: true,
         };
-        runtime.set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
+       runtime.set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
         markTrace('failed', 'Missing jsFunctionBody in execute_js_code payload.', {
             errorCode: ACTION_ERROR_CODES.MISSING_JS_CODE,
         });
-        return ACTION_STEP_CONTINUE;
+        return {
+            type: 'continue',
+            observation: {
+                status: 'error',
+                errorCode: ACTION_ERROR_CODES.MISSING_JS_CODE,
+            },
+        };
     }
 
     if (runtime.get().pendingDataTransform) {
@@ -482,7 +596,13 @@ const handleExecuteCodeAction: AgentActionExecutor = async ({ action, runtime, r
         };
         runtime.set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
         markTrace('failed', warning, { errorCode: ACTION_ERROR_CODES.TRANSFORM_PENDING });
-        return ACTION_STEP_CONTINUE;
+        return {
+            type: 'continue',
+            observation: {
+                status: 'error',
+                errorCode: ACTION_ERROR_CODES.TRANSFORM_PENDING,
+            },
+        };
     }
 
     try {
@@ -501,8 +621,9 @@ const handleExecuteCodeAction: AgentActionExecutor = async ({ action, runtime, r
             modifiedRows ? `${modifiedRows} modified` : null,
         ].filter(Boolean);
         const summaryDescription = summaryParts.length > 0 ? summaryParts.join(', ') : 'changes detected';
+        const pendingTransformId = `transform-${Date.now()}`;
         runtime.get().queuePendingDataTransform({
-            id: `transform-${Date.now()}`,
+            id: pendingTransformId,
             summary: summaryDescription,
             explanation: action.code.explanation,
             meta: transformResult.meta,
@@ -522,7 +643,18 @@ const handleExecuteCodeAction: AgentActionExecutor = async ({ action, runtime, r
         };
         runtime.set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
         markTrace('succeeded', `${summaryDescription} (awaiting confirmation)`);
-        return ACTION_STEP_CONTINUE;
+        return {
+            type: 'continue',
+            observation: {
+                status: 'success',
+                outputs: {
+                    summary: summaryDescription,
+                    rowsBefore,
+                    rowsAfter,
+                    pendingTransformId,
+                },
+            },
+        };
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         runtime.get().addProgress(`AI data transformation failed: ${errorMessage}`, 'error');
@@ -535,14 +667,28 @@ const handleExecuteCodeAction: AgentActionExecutor = async ({ action, runtime, r
         };
         runtime.set(prev => ({ chatHistory: [...prev.chatHistory, failureMessage] }));
         markTrace('failed', errorMessage, { errorCode: ACTION_ERROR_CODES.TRANSFORM_FAILED });
-        return remainingAutoRetries > 0 ? { type: 'retry', reason: errorMessage } : { type: 'halt' };
+        const observation = {
+            status: 'error',
+            errorCode: ACTION_ERROR_CODES.TRANSFORM_FAILED,
+            outputs: { message: errorMessage },
+        };
+        if (remainingAutoRetries > 0) {
+            return { type: 'retry', reason: errorMessage, observation };
+        }
+        return { type: 'halt', observation };
     }
 };
 
 const handleFilterSpreadsheetAction: AgentActionExecutor = async ({ action, runtime, markTrace }) => {
     if (!hasFilterArgsPayload(action)) {
         markTrace('failed', 'Missing filter query.', { errorCode: ACTION_ERROR_CODES.FILTER_QUERY_MISSING });
-        return ACTION_STEP_CONTINUE;
+        return {
+            type: 'continue',
+            observation: {
+                status: 'error',
+                errorCode: ACTION_ERROR_CODES.FILTER_QUERY_MISSING,
+            },
+        };
     }
 
     runtime.get().addProgress('AI is filtering the data explorer based on your request.');
@@ -552,7 +698,14 @@ const handleFilterSpreadsheetAction: AgentActionExecutor = async ({ action, runt
         document.getElementById('raw-data-explorer')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }, 100);
     markTrace('succeeded', `Filter query: ${action.args.query}`);
-    return ACTION_STEP_CONTINUE;
+    return {
+        type: 'continue',
+        observation: {
+            status: 'success',
+            outputs: { query: action.args.query },
+            uiDelta: 'filter_spreadsheet',
+        },
+    };
 };
 
 const handleClarificationRequestAction: AgentActionExecutor = async ({ action, runtime, markTrace }) => {
@@ -560,7 +713,13 @@ const handleClarificationRequestAction: AgentActionExecutor = async ({ action, r
         markTrace('failed', 'Clarification payload missing.', {
             errorCode: ACTION_ERROR_CODES.CLARIFICATION_PAYLOAD_MISSING,
         });
-        return ACTION_STEP_CONTINUE;
+        return {
+            type: 'continue',
+            observation: {
+                status: 'error',
+                errorCode: ACTION_ERROR_CODES.CLARIFICATION_PAYLOAD_MISSING,
+            },
+        };
     }
 
     const filteredClarification = filterClarificationOptions(
@@ -589,7 +748,13 @@ const handleClarificationRequestAction: AgentActionExecutor = async ({ action, r
         markTrace('failed', 'Unable to find usable clarification options.', {
             errorCode: ACTION_ERROR_CODES.CLARIFICATION_NO_OPTIONS,
         });
-        return ACTION_STEP_CONTINUE;
+        return {
+            type: 'continue',
+            observation: {
+                status: 'error',
+                errorCode: ACTION_ERROR_CODES.CLARIFICATION_NO_OPTIONS,
+            },
+        };
     }
 
     const enrichedClarification = runtime.deps.registerClarification(filteredClarification);
@@ -599,7 +764,16 @@ const handleClarificationRequestAction: AgentActionExecutor = async ({ action, r
         runtime.get().addProgress(`AI inferred you meant "${autoOption.label}" (${autoOption.value}).`);
         await runtime.get().handleClarificationResponse(enrichedClarification.id, autoOption);
         markTrace('succeeded', 'Auto-resolved clarification based on single option.');
-        return ACTION_STEP_CONTINUE;
+        return {
+            type: 'continue',
+            observation: {
+                status: 'success',
+                outputs: {
+                    clarificationId: enrichedClarification.id,
+                    autoResolved: true,
+                },
+            },
+        };
     }
 
     const clarificationMessage: ChatMessage = {
@@ -615,12 +789,26 @@ const handleClarificationRequestAction: AgentActionExecutor = async ({ action, r
     runtime.set({ activeClarificationId: enrichedClarification.id });
     runtime.get().endBusy(runtime.runId);
     markTrace('succeeded', 'Requested user clarification.');
-    return { type: 'halt' };
+    return {
+        type: 'halt',
+        observation: {
+            status: 'pending',
+            outputs: {
+                clarificationId: enrichedClarification.id,
+                optionCount: enrichedClarification.options.length,
+            },
+        },
+    };
 };
 
 const handleProceedToAnalysisAction: AgentActionExecutor = async ({ markTrace }) => {
     markTrace('succeeded', 'Proceed to analysis acknowledged.');
-    return ACTION_STEP_CONTINUE;
+    return {
+        type: 'continue',
+        observation: {
+            status: 'success',
+        },
+    };
 };
 
 const actionExecutorRegistry: Record<AgentActionType, AgentActionExecutor> = {
@@ -674,14 +862,15 @@ export const createChatSlice = (
         chatMemoryPreviewQuery: '',
         isMemoryPreviewLoading: false,
 
-        handleChatMessage: async (message: string) => {
-            if (!get().isApiKeySet) {
-                get().addProgress('API Key not set.', 'error');
-                get().setIsSettingsModalOpen(true);
-                return;
-            }
+    handleChatMessage: async (message: string) => {
+        if (!get().isApiKeySet) {
+            get().addProgress('API Key not set.', 'error');
+            get().setIsSettingsModalOpen(true);
+            return;
+        }
 
-            const runId = get().beginBusy('Working on your request...', { cancellable: true });
+        get().resetPlannerObservations();
+        const runId = get().beginBusy('Working on your request...', { cancellable: true });
             const newChatMessage: ChatMessage = { sender: 'user', text: message, timestamp: new Date(), type: 'user_message' };
             set(prev => ({ chatHistory: [...prev.chatHistory, newChatMessage] }));
 

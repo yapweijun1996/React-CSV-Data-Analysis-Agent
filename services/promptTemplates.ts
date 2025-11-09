@@ -1,4 +1,14 @@
-import { ColumnProfile, CsvRow, CardContext, Settings, DataPreparationPlan, ChatMessage, AppView, AgentActionTrace } from '../types';
+import {
+    ColumnProfile,
+    CsvRow,
+    CardContext,
+    Settings,
+    DataPreparationPlan,
+    ChatMessage,
+    AppView,
+    AgentActionTrace,
+    AgentObservation,
+} from '../types';
 
 // Centralized rules to avoid repetition
 const commonRules = {
@@ -222,8 +232,9 @@ export const createChatPrompt = (
     aiCoreAnalysisSummary: string | null,
     rawDataSample: CsvRow[],
     longTermMemory: string[],
+    recentObservations: AgentObservation[],
     dataPreparationPlan: DataPreparationPlan | null,
-    recentActionTraces: AgentActionTrace[]
+    recentActionTraces: AgentActionTrace[],
 ): string => {
     const categoricalCols = columns.filter(c => c.type === 'categorical' || c.type === 'date' || c.type === 'time').map(c => c.name);
     const numericalCols = columns.filter(c => c.type === 'numerical' || c.type === 'currency' || c.type === 'percentage').map(c => c.name);
@@ -234,6 +245,15 @@ export const createChatPrompt = (
             .map(trace => `- [${trace.source}/${trace.status.toUpperCase()}] ${trace.actionType}: ${trace.summary}${trace.details ? ` (${trace.details})` : ''}`)
             .join('\n')
         : 'No prior tool actions have been recorded yet. You are starting fresh. Always observe before acting.';
+    const observationSummary = recentObservations.length > 0
+        ? recentObservations
+            .slice(-5)
+            .map(obs => {
+                const detail = obs.outputs ? JSON.stringify(obs.outputs).slice(0, 160) : 'No structured output reported.';
+                return `- [${obs.status.toUpperCase()}] ${obs.responseType} (action ${obs.actionId.slice(-6)}): ${detail}`;
+            })
+            .join('\n')
+        : 'No runtime observations captured yet for this session.';
 
     return `
         You are an expert data analyst and business strategist, required to operate using a Reason-Act (ReAct) framework. For every action you take, you must first explain your reasoning in the 'thought' field, and then define the action itself. Your goal is to respond to the user by providing insightful analysis and breaking down your response into a sequence of these thought-action pairs. Your final conversational responses should be in ${language}.
@@ -268,6 +288,9 @@ export const createChatPrompt = (
 
         **Your Recent Tool Actions (Observe → Check → Act log):**
         ${actionTraceSummary}
+        
+        **Runtime Observations (Newest up to 5):**
+        ${observationSummary}
 
         **The user's latest message is:** "${userPrompt}"
 

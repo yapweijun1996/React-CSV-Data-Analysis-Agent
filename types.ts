@@ -64,7 +64,14 @@ export interface AppliedDataTransformRecord {
 export type ChartType = 'bar' | 'line' | 'pie' | 'doughnut' | 'scatter' | 'combo';
 export type AggregationType = 'sum' | 'count' | 'avg';
 
-export type AgentActionType = 'plan_creation' | 'text_response' | 'dom_action' | 'execute_js_code' | 'proceed_to_analysis' | 'filter_spreadsheet' | 'clarification_request';
+export type AgentActionType =
+    | 'plan_creation'
+    | 'text_response'
+    | 'dom_action'
+    | 'execute_js_code'
+    | 'proceed_to_analysis'
+    | 'filter_spreadsheet'
+    | 'clarification_request';
 export type AgentActionStatus = 'observing' | 'executing' | 'succeeded' | 'failed';
 export type AgentActionSource = 'chat' | 'pipeline' | 'system';
 
@@ -90,6 +97,23 @@ export interface AgentActionTrace {
     durationMs?: number;
     errorCode?: string;
     metadata?: Record<string, any>;
+}
+
+export type AgentObservationStatus = 'success' | 'error' | 'pending';
+
+export interface AgentObservation {
+    id: string;
+    actionId: string;
+    responseType: AgentActionType;
+    status: AgentObservationStatus;
+    timestamp: string;
+    outputs?: Record<string, any> | null;
+    errorCode?: string | null;
+    uiDelta?: string | null;
+}
+
+export interface PlannerSessionState {
+    observations: AgentObservation[];
 }
 
 export interface AnalysisPlan {
@@ -211,6 +235,7 @@ export interface AppState {
     lastAppliedDataTransform: AppliedDataTransformRecord | null;
     isLastAppliedDataTransformBannerDismissed: boolean;
     interactiveSelectionFilter: SelectionDrilldownFilter | null;
+    plannerSession: PlannerSessionState;
 }
 
 export interface DomAction {

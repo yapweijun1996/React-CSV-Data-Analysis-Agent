@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ProgressMessage, ChatMessage, AppView, AgentActionTrace } from '../types';
+import { ProgressMessage, ChatMessage, AppView, AgentActionTrace, AgentObservation, AgentObservationStatus } from '../types';
 import { useAppStore } from '../store/useAppStore';
 
 const HideIcon: React.FC = () => (
@@ -63,6 +63,7 @@ export const ChatPanel: React.FC = () => {
         toggleMemoryPreviewSelection,
         isMemoryPreviewLoading,
         agentTraces,
+        plannerObservations,
     } = useAppStore(state => ({
         progressMessages: state.progressMessages,
         chatHistory: state.chatHistory,
@@ -86,6 +87,7 @@ export const ChatPanel: React.FC = () => {
         toggleMemoryPreviewSelection: state.toggleMemoryPreviewSelection,
         isMemoryPreviewLoading: state.isMemoryPreviewLoading,
         agentTraces: state.agentActionTraces,
+        plannerObservations: state.plannerSession.observations,
     }));
 
     const [input, setInput] = useState('');
@@ -94,6 +96,7 @@ export const ChatPanel: React.FC = () => {
 
     const hasAwaitingClarification = pendingClarifications.some(req => req.status === 'pending');
     const recentAgentTraces = agentTraces.slice(-12).reverse();
+    const observationLog = plannerObservations.slice(-8).reverse();
 
     const timeline = [...progressMessages, ...chatHistory]
         .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
@@ -200,6 +203,105 @@ export const ChatPanel: React.FC = () => {
                                         <p className="text-xs text-slate-500 mt-1 leading-snug whitespace-pre-line">{trace.details}</p>
                                     )}
                                 </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+        );
+    };
+
+    const formatObservationTimestamp = (timestamp: string) => {
+        const date = new Date(timestamp);
+        if (Number.isNaN(date.getTime())) return '—';
+        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    };
+
+    const formatObservationDetail = (observation: AgentObservation) => {
+        const { outputs, uiDelta } = observation;
+        if (outputs) {
+            if (typeof outputs.summary === 'string') return outputs.summary;
+            if (typeof outputs.textPreview === 'string') return outputs.textPreview;
+            if (typeof outputs.reason === 'string') return outputs.reason;
+            const firstKey = Object.keys(outputs)[0];
+            if (firstKey) {
+                const value = outputs[firstKey];
+                const raw = typeof value === 'string' ? value : JSON.stringify(value);
+                return raw.length > 140 ? `${raw.slice(0, 140)}…` : raw;
+            }
+        }
+        if (uiDelta) {
+            return uiDelta;
+        }
+        return null;
+    };
+
+    const observationStatusChip: Record<AgentObservationStatus, string> = {
+        success: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+        error: 'bg-red-100 text-red-700 border-red-200',
+        pending: 'bg-amber-50 text-amber-700 border-amber-200',
+    };
+
+    const observationStatusLabel: Record<AgentObservationStatus, string> = {
+        success: 'Completed',
+        error: 'Failed',
+        pending: 'Pending',
+    };
+
+    const actionLabelMap: Record<string, string> = {
+        text_response: 'Shared response',
+        plan_creation: 'Created analysis plan',
+        dom_action: 'UI interaction',
+        execute_js_code: 'Data transform',
+        filter_spreadsheet: 'Spreadsheet filter',
+        clarification_request: 'Clarification request',
+        proceed_to_analysis: 'Pipeline continuation',
+    };
+
+    const renderObservationLog = () => {
+        if (observationLog.length === 0) return null;
+        return (
+            <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-sm">
+                <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                        <span className="text-lg">📋</span>
+                        <div>
+                            <h3 className="text-sm font-semibold text-slate-900">Live Agent Timeline</h3>
+                            <p className="text-xs text-slate-500">Newest events shown first</p>
+                        </div>
+                    </div>
+                    {isBusy && (
+                        <span className="text-xs uppercase tracking-wide text-blue-600 font-semibold">Running…</span>
+                    )}
+                </div>
+                <div className="space-y-3 max-h-64 overflow-y-auto pr-1">
+                    {observationLog.map(observation => {
+                        const detail = formatObservationDetail(observation);
+                        const status = observation.status ?? 'pending';
+                        const statusChip = observationStatusChip[status] ?? 'bg-slate-100 text-slate-600 border-slate-200';
+                        const label = observationStatusLabel[status] ?? status;
+                        return (
+                            <div key={observation.id} className="relative border-l-2 border-slate-100 pl-3">
+                                <span className={`absolute -left-[5px] top-2 w-2 h-2 rounded-full ${
+                                    status === 'success'
+                                        ? 'bg-emerald-500'
+                                        : status === 'error'
+                                            ? 'bg-red-500'
+                                            : 'bg-amber-400'
+                                }`}></span>
+                                <div className="flex items-center justify-between text-[11px] text-slate-500">
+                                    <span className="font-medium">{formatObservationTimestamp(observation.timestamp)}</span>
+                                    <span className={`px-2 py-0.5 rounded-full border ${statusChip}`}>{label}</span>
+                                </div>
+                                <p className="text-sm font-semibold text-slate-800 mt-1">
+                                    {actionLabelMap[observation.responseType] ?? 'Agent action'}
+                                </p>
+                                {detail && (
+                                    <p className="text-xs text-slate-600 mt-1 whitespace-pre-line">{detail}</p>
+                                )}
+                                {observation.errorCode && (
+                                    <p className="text-xs text-red-600 mt-1">Error code: {observation.errorCode}</p>
+                                )}
                             </div>
                         );
                     })}
@@ -420,6 +522,7 @@ export const ChatPanel: React.FC = () => {
             </div>
             <div className="flex-1 p-4 overflow-y-auto space-y-4">
                 {renderActionLog()}
+                {renderObservationLog()}
                 {timeline.map(renderMessage)}
                 <div ref={messagesEndRef} />
             </div>

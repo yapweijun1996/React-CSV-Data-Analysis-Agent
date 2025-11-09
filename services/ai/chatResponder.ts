@@ -1,5 +1,16 @@
 
-import { ColumnProfile, ChatMessage, CardContext, Settings, AppView, CsvRow, DataPreparationPlan, AiChatResponse, AgentActionTrace } from '../../types';
+import {
+    ColumnProfile,
+    ChatMessage,
+    CardContext,
+    Settings,
+    AppView,
+    CsvRow,
+    DataPreparationPlan,
+    AiChatResponse,
+    AgentActionTrace,
+    AgentObservation,
+} from '../../types';
 import { callGemini, callOpenAI } from './apiClient';
 import { multiActionChatResponseSchema, multiActionChatResponseJsonSchema } from './schemas';
 import { createChatPrompt } from '../promptTemplates';
@@ -26,6 +37,7 @@ export const generateChatResponse = async (
     currentView: AppView,
     rawDataSample: CsvRow[],
     longTermMemory: string[],
+    recentObservations: AgentObservation[],
     dataPreparationPlan: DataPreparationPlan | null,
     recentActionTraces: AgentActionTrace[],
     options?: ChatResponseOptions
@@ -37,8 +49,17 @@ export const generateChatResponse = async (
     
     try {
         const promptContent = createChatPrompt(
-            columns, chatHistory, userPrompt, cardContext, settings.language, 
-            aiCoreAnalysisSummary, rawDataSample, longTermMemory, dataPreparationPlan, recentActionTraces
+            columns,
+            chatHistory,
+            userPrompt,
+            cardContext,
+            settings.language,
+            aiCoreAnalysisSummary,
+            rawDataSample,
+            longTermMemory,
+            recentObservations,
+            dataPreparationPlan,
+            recentActionTraces,
         );
 
         const baseSystemPrompt = `You are an expert data analyst and business strategist, required to operate using a Reason-Act (ReAct) framework. For every action you take, you must first explain your reasoning in the 'thought' field, and then define the action itself. Your goal is to respond to the user by providing insightful analysis and breaking down your response into a sequence of these thought-action pairs. Your final conversational responses should be in ${settings.language}.

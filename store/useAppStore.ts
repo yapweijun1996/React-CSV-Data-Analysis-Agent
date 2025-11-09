@@ -1,7 +1,28 @@
 import { create } from 'zustand';
 // Fix: Import MouseEvent from React and alias it to resolve the type error.
 import type { MouseEvent as ReactMouseEvent } from 'react';
-import { AnalysisCardData, ChatMessage, ProgressMessage, CsvData, AnalysisPlan, AppState, CardContext, ChartType, DomAction, Settings, Report, ReportListItem, ClarificationRequest, ClarificationRequestPayload, ClarificationStatus, ColumnProfile, AgentActionStatus, AgentActionSource, ExternalCsvPayload } from '../types';
+import {
+    AnalysisCardData,
+    ChatMessage,
+    ProgressMessage,
+    CsvData,
+    AnalysisPlan,
+    AppState,
+    CardContext,
+    ChartType,
+    DomAction,
+    Settings,
+    Report,
+    ReportListItem,
+    ClarificationRequest,
+    ClarificationRequestPayload,
+    ClarificationStatus,
+    ColumnProfile,
+    AgentActionStatus,
+    AgentActionSource,
+    ExternalCsvPayload,
+    AgentObservation,
+} from '../types';
 import { executePlan, applyTopNWithOthers } from '../utils/dataProcessor';
 import { generateAnalysisPlans, generateSummary, generateFinalSummary, generateCoreAnalysisSummary, generateProactiveInsights } from '../services/aiService';
 import { getReportsList, getReport, deleteReport, getSettings, saveSettings, CURRENT_SESSION_KEY } from '../storageService';
@@ -87,6 +108,7 @@ const buildSerializableAppState = (state: AppStore): AppState => ({
     lastAppliedDataTransform: state.lastAppliedDataTransform,
     isLastAppliedDataTransformBannerDismissed: state.isLastAppliedDataTransformBannerDismissed,
     interactiveSelectionFilter: state.interactiveSelectionFilter,
+    plannerSession: state.plannerSession,
 });
 
 const buildFileNameFromHeader = (header?: string | null) => {
@@ -100,6 +122,7 @@ const MAX_ASIDE_WIDTH = 800;
 const MIN_MAIN_WIDTH = 600;
 
 const MAX_AGENT_TRACE_HISTORY = 40;
+const MAX_PLANNER_OBSERVATIONS = 12;
 
 const deriveAliasMap = (profiles: ColumnProfile[] = []) => buildColumnAliasMap(profiles.map(p => p.name));
 
@@ -134,6 +157,9 @@ const initialAppState: AppState = {
     lastAppliedDataTransform: null,
     isLastAppliedDataTransformBannerDismissed: false,
     interactiveSelectionFilter: null,
+    plannerSession: {
+        observations: [],
+    },
 };
 
 export const useAppStore = create<StoreState & StoreActions>((set, get) => {
@@ -472,6 +498,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 pendingDataTransform: null,
                 lastAppliedDataTransform: null,
                 interactiveSelectionFilter: null,
+                plannerSession: currentSession.appState.plannerSession ?? { observations: [] },
             });
             if (currentSession.appState.vectorStoreDocuments && vectorStore.getIsInitialized()) {
                 vectorStore.rehydrate(currentSession.appState.vectorStoreDocuments);
@@ -968,6 +995,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 isMemoryPreviewLoading: false,
                 agentActionTraces: report.appState.agentActionTraces ?? [],
                 columnAliasMap: report.appState.columnAliasMap ?? deriveAliasMap(report.appState.columnProfiles ?? []),
+                plannerSession: report.appState.plannerSession ?? { observations: [] },
             });
             if (report.appState.vectorStoreDocuments) {
                 vectorStore.rehydrate(report.appState.vectorStoreDocuments);
@@ -1036,6 +1064,15 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 };
             }),
         }));
+    },
+    appendPlannerObservation: (observation: AgentObservation) => {
+        set(state => {
+            const nextObservations = [...state.plannerSession.observations, observation].slice(-MAX_PLANNER_OBSERVATIONS);
+            return { plannerSession: { observations: nextObservations } };
+        });
+    },
+    resetPlannerObservations: () => {
+        set({ plannerSession: { observations: [] } });
     },
     focusDataPreview: () => {
         set({ isSpreadsheetVisible: true });
