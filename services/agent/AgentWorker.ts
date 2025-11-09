@@ -499,6 +499,65 @@ const validateDomActionPayload = (domAction: DomAction): string | null => {
     return null;
 };
 
+const describeNoOpDomAction = (runtime: PlannerRuntime, domAction: DomAction): string | null => {
+    const args = domAction.args ?? {};
+    const cardId = typeof args.cardId === 'string' ? args.cardId.trim() : '';
+    if (!cardId) return null;
+
+    const card = runtime.get().analysisCards.find(current => current.id === cardId);
+    if (!card) return null;
+    const cardLabel = card.plan?.title ?? 'this card';
+
+    switch (domAction.toolName) {
+        case 'changeCardChartType': {
+            const desiredType = typeof args.newType === 'string' ? args.newType : null;
+            const currentType = card.displayChartType ?? card.plan.chartType;
+            if (desiredType && desiredType === currentType) {
+                return `Skipped chart switch because "${cardLabel}" is already a ${desiredType} chart.`;
+            }
+            break;
+        }
+        case 'showCardData': {
+            if (typeof args.visible !== 'boolean') break;
+            if (card.isDataVisible === args.visible) {
+                return args.visible
+                    ? `Raw data for "${cardLabel}" is already visible.`
+                    : `Raw data for "${cardLabel}" is already hidden.`;
+            }
+            break;
+        }
+        case 'setTopN': {
+            if (args.topN === undefined) break;
+            const desiredTopN =
+                args.topN === 'all'
+                    ? null
+                    : Number(args.topN);
+            if (desiredTopN !== null && !Number.isFinite(desiredTopN)) {
+                break;
+            }
+            const currentTopN = typeof card.topN === 'number' ? card.topN : null;
+            if (currentTopN === desiredTopN) {
+                const label = desiredTopN === null ? 'all categories' : `Top ${desiredTopN}`;
+                return `Skipped Top N change because "${cardLabel}" already shows ${label}.`;
+            }
+            break;
+        }
+        case 'toggleHideOthers': {
+            if (typeof args.hide !== 'boolean') break;
+            if (card.hideOthers === args.hide) {
+                return args.hide
+                    ? `"${cardLabel}" already hides the "Others" bucket.`
+                    : `"${cardLabel}" is already showing the "Others" bucket.`;
+            }
+            break;
+        }
+        default:
+            break;
+    }
+
+    return null;
+};
+
 const validateFilterArgsPayload = (query: string): string | null => {
     const trimmed = query.trim();
     if (trimmed.length < 3) {
@@ -1001,6 +1060,31 @@ const handleDomAction: AgentActionExecutor = async ({ action, runtime, markTrace
             observation: {
                 status: 'error',
                 errorCode: ACTION_ERROR_CODES.DOM_PAYLOAD_MISSING,
+            },
+        };
+    }
+
+    const skipReason = describeNoOpDomAction(runtime, action.domAction);
+    if (skipReason) {
+        runtime.get().addProgress(skipReason);
+        const aiMessage: ChatMessage = {
+            sender: 'ai',
+            text: skipReason,
+            timestamp: new Date(),
+            type: 'ai_message',
+        };
+        runtime.set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
+        markTrace('succeeded', 'DOM action skipped (already satisfied).', {
+            metadata: { skipped: true, toolName: action.domAction.toolName },
+        });
+        return {
+            type: 'continue',
+            observation: {
+                status: 'success',
+                outputs: {
+                    skipped: true,
+                    reason: skipReason,
+                },
             },
         };
     }
