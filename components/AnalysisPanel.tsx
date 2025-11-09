@@ -1,21 +1,62 @@
-import React, { useMemo, useState } from 'react';
+import React, { useLayoutEffect, useRef, useState } from 'react';
 import Masonry from 'react-masonry-css';
 import { AnalysisCard } from './AnalysisCard';
 import { FinalSummary } from './FinalSummary';
 import { useAppStore } from '../store/useAppStore';
 
-const COLUMN_OPTIONS = [1, 2, 3] as const;
+const MAX_COLUMNS = 3;
+const MIN_CARD_WIDTH = 420;
+
+const getAutoColumnCount = (width: number) => {
+    if (!width) {
+        return 1;
+    }
+    const estimatedColumns = Math.floor(width / MIN_CARD_WIDTH);
+    return Math.max(1, Math.min(MAX_COLUMNS, estimatedColumns || 1));
+};
 
 export const AnalysisPanel: React.FC = () => {
     const cards = useAppStore(state => state.analysisCards);
     const finalSummary = useAppStore(state => state.finalSummary);
-    const [columnCount, setColumnCount] = useState<number>(2);
+    const panelRef = useRef<HTMLDivElement | null>(null);
+    const [columnCount, setColumnCount] = useState<number>(1);
 
-    const masonryBreakpoints = useMemo(() => ({
-        default: columnCount,
-        1024: Math.min(columnCount, 2),
-        640: 1,
-    }), [columnCount]);
+    useLayoutEffect(() => {
+        const node = panelRef.current;
+        if (!node) {
+            return;
+        }
+
+        const updateColumns = () => {
+            const width = node.getBoundingClientRect().width;
+            setColumnCount(prev => {
+                const next = getAutoColumnCount(width);
+                return prev === next ? prev : next;
+            });
+        };
+
+        updateColumns();
+
+        if (typeof ResizeObserver !== 'undefined') {
+            const observer = new ResizeObserver(entries => {
+                for (const entry of entries) {
+                    if (entry.target === node) {
+                        const width = entry.contentRect?.width ?? node.getBoundingClientRect().width;
+                        setColumnCount(prev => {
+                            const next = getAutoColumnCount(width);
+                            return prev === next ? prev : next;
+                        });
+                    }
+                }
+            });
+
+            observer.observe(node);
+            return () => observer.disconnect();
+        }
+
+        window.addEventListener('resize', updateColumns);
+        return () => window.removeEventListener('resize', updateColumns);
+    }, []);
 
     if (cards.length === 0) {
         return (
@@ -29,40 +70,20 @@ export const AnalysisPanel: React.FC = () => {
     }
 
     return (
-        <div className="p-1">
+        <div className="p-1" ref={panelRef}>
             <div className="mb-6 space-y-4">
                 {finalSummary && (
                     <div>
                         <FinalSummary summary={finalSummary} />
                     </div>
                 )}
-                <div className="flex items-center justify-end gap-3">
-                    <span className="text-sm text-slate-500">Cards per row</span>
-                    <div className="inline-flex overflow-hidden rounded-md border border-slate-200 bg-white shadow-sm">
-                        {COLUMN_OPTIONS.map(option => {
-                            const isActive = columnCount === option;
-                            return (
-                                <button
-                                    key={option}
-                                    type="button"
-                                    onClick={() => setColumnCount(option)}
-                                    className={`px-3 py-1.5 text-sm font-medium transition-colors ${
-                                        isActive
-                                            ? 'bg-slate-100 text-slate-900'
-                                            : 'text-slate-500 hover:bg-slate-50'
-                                    }`}
-                                    aria-pressed={isActive}
-                                >
-                                    {option}
-                                </button>
-                            );
-                        })}
-                    </div>
+                <div className="flex items-center justify-end">
+                    <span className="text-xs text-slate-400 uppercase tracking-wide">Layout auto-adjusts</span>
                 </div>
             </div>
             <div className="mt-6">
                 <Masonry
-                    breakpointCols={masonryBreakpoints}
+                    breakpointCols={columnCount}
                     className="flex w-auto -ml-6"
                     columnClassName="pl-6 space-y-6"
                 >
