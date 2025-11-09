@@ -397,4 +397,124 @@ await test('execute_js_code failure triggers auto-retry flow', async () => {
     );
 });
 
+await test('execute_js_code success queues pending data transform', async () => {
+    const transformAction = {
+        responseType: 'execute_js_code' as const,
+        thought: 'Normalize revenue columns',
+        code: {
+            explanation: 'Trim whitespace from columns',
+            jsFunctionBody: 'return data.map(row => ({ ...row, Revenue_total: Number(row.Revenue_total) * 1.05 }));',
+        },
+    };
+    const textResponseAction = {
+        responseType: 'text_response' as const,
+        thought: 'Inform user of pending transform',
+        text: 'I staged a data cleanup. Please review before applying.',
+    };
+
+    const { runtime, store } = createPlannerHarness();
+    await runPlannerWorkflow(
+        'Clean whitespace',
+        buildPlannerContext({ actions: [planStateAction, transformAction, textResponseAction] }),
+        runtime as any,
+    );
+
+    assert.ok(store.pendingDataTransform, 'pending transform should exist');
+    assert.strictEqual(store.pendingDataTransform?.summary?.includes('rows'), true);
+    assert.strictEqual(store.pendingDataTransform?.explanation, 'Trim whitespace from columns');
+    const lastMessage = store.chatHistory.at(-1);
+    assert.strictEqual(lastMessage?.text, 'I staged a data cleanup. Please review before applying.');
+});
+
+await test('approving pending transform updates dataset before next plan', async () => {
+    const transformAction = {
+        responseType: 'execute_js_code' as const,
+        thought: 'Scale revenue for inflation',
+        code: {
+            explanation: 'Increase revenue totals by 5%',
+            jsFunctionBody: 'return data.map(row => ({ ...row, Revenue_total: Number(row.Revenue_total) * 1.05 }));',
+        },
+    };
+    const planCreationAction = {
+        responseType: 'plan_creation' as const,
+        thought: 'Build chart using adjusted revenue',
+        plan: {
+            chartType: 'bar',
+            title: 'Adjusted Revenue Trend',
+            description: 'desc',
+            aggregation: 'sum',
+            groupByColumn: 'Month',
+            valueColumn: 'Revenue_total',
+        },
+    };
+
+    const { runtime, store } = createPlannerHarness();
+    await runPlannerWorkflow(
+        'Stage inflation adjustment',
+        buildPlannerContext({ actions: [planStateAction, transformAction] }),
+        runtime as any,
+    );
+
+    const pending = store.pendingDataTransform;
+    assert.ok(pending, 'pending transform should exist');
+
+    // Simulate user approving the pending transform
+    store.csvData = pending.nextData;
+    store.columnProfiles = pending.nextColumnProfiles;
+    store.columnAliasMap = pending.nextAliasMap;
+    store.pendingDataTransform = null;
+
+    await runPlannerWorkflow(
+        'Run adjusted chart',
+        buildPlannerContext({ actions: [planStateAction, planCreationAction] }),
+        runtime as any,
+    );
+
+    assert.deepStrictEqual(store.executedPlans, ['Adjusted Revenue Trend']);
+    assert.strictEqual(Number(store.csvData?.data[0].Revenue_total).toFixed(2), '105.00');
+});
+
+await test('discarding pending transform keeps dataset unchanged and planner continues', async () => {
+    const transformAction = {
+        responseType: 'execute_js_code' as const,
+        thought: 'Attempt risky transform',
+        code: {
+            explanation: 'Normalize totals',
+            jsFunctionBody: 'return data.map(row => ({ ...row, Revenue_total: Number(row.Revenue_total) * 2 }));',
+        },
+    };
+    const planCreationAction = {
+        responseType: 'plan_creation' as const,
+        thought: 'Proceed without prior transform',
+        plan: {
+            chartType: 'bar',
+            title: 'Original Revenue Trend',
+            description: 'desc',
+            aggregation: 'sum',
+            groupByColumn: 'Month',
+            valueColumn: 'Revenue_total',
+        },
+    };
+
+    const { runtime, store } = createPlannerHarness();
+    await runPlannerWorkflow(
+        'Propose aggressive transform',
+        buildPlannerContext({ actions: [planStateAction, transformAction] }),
+        runtime as any,
+    );
+    assert.ok(store.pendingDataTransform, 'pending transform must exist before discard');
+
+    // Simulate user discarding the pending transform
+    store.pendingDataTransform = null;
+
+    await runPlannerWorkflow(
+        'Skip transform and chart anyway',
+        buildPlannerContext({ actions: [planStateAction, planCreationAction] }),
+        runtime as any,
+    );
+
+    assert.deepStrictEqual(store.executedPlans, ['Original Revenue Trend']);
+    assert.strictEqual(Number(store.csvData?.data[0].Revenue_total), 100);
+});
+
 console.log('🎉 chatPlannerIntegration tests completed successfully.');
