@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { ProgressMessage, ChatMessage, AppView, AgentActionTrace, AgentObservation, AgentObservationStatus } from '../types';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { shallow } from 'zustand/shallow';
+import { ProgressMessage, ChatMessage, AgentActionTrace, AgentObservation, AgentObservationStatus } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { useAutosizeTextArea } from '../hooks/useAutosizeTextArea';
 
@@ -72,40 +73,35 @@ const MAX_CHAT_INPUT_HEIGHT = 240;
 
 
 const useChatCore = () =>
-    useAppStore(state => ({
-        progressMessages: state.progressMessages,
-        chatHistory: state.chatHistory,
-        isBusy: state.isBusy,
-        handleChatMessage: state.handleChatMessage,
-        isApiKeySet: state.isApiKeySet,
-        setIsAsideVisible: state.setIsAsideVisible,
-        setIsSettingsModalOpen: state.setIsSettingsModalOpen,
-        setIsMemoryPanelOpen: state.setIsMemoryPanelOpen,
-        handleShowCardFromChat: state.handleShowCardFromChat,
-        currentView: state.currentView,
-        pendingClarifications: state.pendingClarifications,
-        activeClarificationId: state.activeClarificationId,
-        handleClarificationResponse: state.handleClarificationResponse,
-        skipClarification: state.skipClarification,
-        focusDataPreview: state.focusDataPreview,
-        isCancellationRequested: state.isCancellationRequested,
-        chatMemoryPreview: state.chatMemoryPreview,
-        chatMemoryExclusions: state.chatMemoryExclusions,
-        previewChatMemories: state.previewChatMemories,
-        toggleMemoryPreviewSelection: state.toggleMemoryPreviewSelection,
-        isMemoryPreviewLoading: state.isMemoryPreviewLoading,
-    }));
-
-const useAgentTimeline = () =>
-    useAppStore(state => ({
-        agentTraces: state.agentActionTraces,
-        plannerObservations: state.plannerSession.observations,
-        plannerPlanState: state.plannerSession.planState,
-    }));
+    useAppStore(
+        state => ({
+            progressMessages: state.progressMessages,
+            chatHistory: state.chatHistory,
+            isBusy: state.isBusy,
+            handleChatMessage: state.handleChatMessage,
+            isApiKeySet: state.isApiKeySet,
+            setIsAsideVisible: state.setIsAsideVisible,
+            setIsSettingsModalOpen: state.setIsSettingsModalOpen,
+            setIsMemoryPanelOpen: state.setIsMemoryPanelOpen,
+            handleShowCardFromChat: state.handleShowCardFromChat,
+            currentView: state.currentView,
+            pendingClarifications: state.pendingClarifications,
+            activeClarificationId: state.activeClarificationId,
+            handleClarificationResponse: state.handleClarificationResponse,
+            skipClarification: state.skipClarification,
+            focusDataPreview: state.focusDataPreview,
+            isCancellationRequested: state.isCancellationRequested,
+            chatMemoryPreview: state.chatMemoryPreview,
+            chatMemoryExclusions: state.chatMemoryExclusions,
+            previewChatMemories: state.previewChatMemories,
+            toggleMemoryPreviewSelection: state.toggleMemoryPreviewSelection,
+            isMemoryPreviewLoading: state.isMemoryPreviewLoading,
+        }),
+        shallow,
+    );
 
 export const ChatPanel: React.FC = () => {
     const core = useChatCore();
-    const { agentTraces, plannerObservations, plannerPlanState } = useAgentTimeline();
 
     const {
         progressMessages,
@@ -137,11 +133,10 @@ export const ChatPanel: React.FC = () => {
     useAutosizeTextArea(textareaRef, input, { maxHeight: MAX_CHAT_INPUT_HEIGHT });
 
     const hasAwaitingClarification = pendingClarifications.some(req => req.status === 'pending');
-    const recentAgentTraces = agentTraces.slice(-12).reverse();
-    const observationLog = plannerObservations.slice(-8).reverse();
-
-    const timeline = [...progressMessages, ...chatHistory]
-        .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+    const timeline = useMemo(
+        () => [...progressMessages, ...chatHistory].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime()),
+        [progressMessages, chatHistory],
+    );
     
     const selectedMemoryCount = chatMemoryPreview.filter(mem => !chatMemoryExclusions.includes(mem.id)).length;
     const showMemoryPreview = chatMemoryPreview.length > 0;
@@ -300,193 +295,6 @@ export const ChatPanel: React.FC = () => {
             default:
                 return "Upload a file to begin chatting";
         }
-    };
-
-    const renderPlanState = () => {
-        if (!plannerPlanState) return null;
-        return <PlannerPlanStatePanel planState={plannerPlanState} />;
-    };
-
-    const PlannerPlanStatePanel = React.memo(({ planState }: { planState: any | null }) => {
-        if (!planState) return null;
-        const updatedAt = planState.updatedAt ? new Date(planState.updatedAt) : new Date();
-        return (
-            <div className="mb-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-                <div className="flex items-center justify-between mb-2">
-                    <h3 className="text-sm font-semibold text-slate-900">Agent Goal Tracker</h3>
-                    <span className="text-xs text-slate-500">Updated {updatedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                </div>
-                <p className="text-sm text-slate-800 mb-2"><span className="font-medium">Goal:</span> {planState.goal}</p>
-                {planState.progress && (
-                    <p className="text-sm text-slate-700 mb-2"><span className="font-medium">Progress:</span> {planState.progress}</p>
-                )}
-                {planState.nextSteps.length > 0 && (
-                    <div className="mb-2">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">Next steps</p>
-                        <ol className="list-decimal list-inside text-sm text-slate-700 space-y-0.5">
-                            {planState.nextSteps.map(step => (
-                                <li key={step}>{step}</li>
-                            ))}
-                        </ol>
-                    </div>
-                )}
-                {planState.blockedBy && (
-                    <p className="text-sm text-amber-600"><span className="font-medium">Blocked by:</span> {planState.blockedBy}</p>
-                )}
-            </div>
-        );
-    });
-
-    const renderActionLog = () => {
-        if (recentAgentTraces.length === 0) return null;
-        const statusColor: Record<AgentActionTrace['status'], string> = {
-            observing: 'bg-slate-400',
-            executing: 'bg-blue-500',
-            succeeded: 'bg-emerald-500',
-            failed: 'bg-red-500',
-        };
-        const sourceLabels: Record<AgentActionTrace['source'], string> = {
-            chat: 'Chat',
-            pipeline: 'Analysis Pipeline',
-            system: 'System',
-        };
-        const formatTimestamp = (timestamp: AgentActionTrace['timestamp']) => {
-            const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
-            return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        };
-        return (
-            <div className="mb-4">
-                <div className="flex items-center justify-between mb-2">
-                    <h3 className="text-sm font-semibold text-slate-900">AI Action Log</h3>
-                    <span className="text-xs text-slate-500">Last {recentAgentTraces.length} events</span>
-                </div>
-                <div className="space-y-3 max-h-56 overflow-y-auto pr-1">
-                    {recentAgentTraces.map(trace => {
-                        const source = trace.source ?? 'chat';
-                        const status = trace.status ?? 'observing';
-                        return (
-                            <div key={trace.id} className="flex items-start space-x-3 text-sm">
-                                <div className="flex flex-col items-center mt-1">
-                                    <span className={`w-2 h-2 rounded-full ${statusColor[status]}`}></span>
-                                </div>
-                                <div className="flex-1">
-                                    <div className="flex items-center text-xs text-slate-500 gap-2">
-                                        <span className="font-medium">{formatTimestamp(trace.timestamp)}</span>
-                                        <span>·</span>
-                                        <span>{sourceLabels[source] ?? 'AI'}</span>
-                                        <span>·</span>
-                                        <span className="capitalize">{status}</span>
-                                    </div>
-                                    <p className="text-slate-800 mt-0.5 leading-snug whitespace-pre-line">{trace.summary}</p>
-                                    {trace.details && (
-                                        <p className="text-xs text-slate-500 mt-1 leading-snug whitespace-pre-line">{trace.details}</p>
-                                    )}
-                                </div>
-                            </div>
-                        );
-                    })}
-                </div>
-            </div>
-        );
-    };
-
-    const formatObservationTimestamp = (timestamp: string) => {
-        const date = new Date(timestamp);
-        if (Number.isNaN(date.getTime())) return '—';
-        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    };
-
-    const formatObservationDetail = (observation: AgentObservation) => {
-        const { outputs, uiDelta } = observation;
-        if (outputs) {
-            if (typeof outputs.summary === 'string') return outputs.summary;
-            if (typeof outputs.textPreview === 'string') return outputs.textPreview;
-            if (typeof outputs.reason === 'string') return outputs.reason;
-            const firstKey = Object.keys(outputs)[0];
-            if (firstKey) {
-                const value = outputs[firstKey];
-                const raw = typeof value === 'string' ? value : JSON.stringify(value);
-                return raw.length > 140 ? `${raw.slice(0, 140)}…` : raw;
-            }
-        }
-        if (uiDelta) {
-            return uiDelta;
-        }
-        return null;
-    };
-
-    const observationStatusChip: Record<AgentObservationStatus, string> = {
-        success: 'bg-emerald-100 text-emerald-800 border-emerald-200',
-        error: 'bg-red-100 text-red-700 border-red-200',
-        pending: 'bg-amber-50 text-amber-700 border-amber-200',
-    };
-
-    const observationStatusLabel: Record<AgentObservationStatus, string> = {
-        success: 'Completed',
-        error: 'Failed',
-        pending: 'Pending',
-    };
-
-    const actionLabelMap: Record<string, string> = {
-        text_response: 'Shared response',
-        plan_creation: 'Created analysis plan',
-        dom_action: 'UI interaction',
-        execute_js_code: 'Data transform',
-        filter_spreadsheet: 'Spreadsheet filter',
-        clarification_request: 'Clarification request',
-        proceed_to_analysis: 'Pipeline continuation',
-    };
-
-    const renderObservationLog = () => {
-        if (observationLog.length === 0) return null;
-        return (
-            <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-sm">
-                <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-2">
-                        <span className="text-lg">📋</span>
-                        <div>
-                            <h3 className="text-sm font-semibold text-slate-900">Live Agent Timeline</h3>
-                            <p className="text-xs text-slate-500">Newest events shown first</p>
-                        </div>
-                    </div>
-                    {isBusy && (
-                        <span className="text-xs uppercase tracking-wide text-blue-600 font-semibold">Running…</span>
-                    )}
-                </div>
-                <div className="space-y-3 max-h-64 overflow-y-auto pr-1">
-                    {observationLog.map(observation => {
-                        const detail = formatObservationDetail(observation);
-                        const status = observation.status ?? 'pending';
-                        const statusChip = observationStatusChip[status] ?? 'bg-slate-100 text-slate-600 border-slate-200';
-                        const label = observationStatusLabel[status] ?? status;
-                        return (
-                            <div key={observation.id} className="relative border-l-2 border-slate-100 pl-3">
-                                <span className={`absolute -left-[5px] top-2 w-2 h-2 rounded-full ${
-                                    status === 'success'
-                                        ? 'bg-emerald-500'
-                                        : status === 'error'
-                                            ? 'bg-red-500'
-                                            : 'bg-amber-400'
-                                }`}></span>
-                                <div className="flex items-center justify-between text-[11px] text-slate-500">
-                                    <span className="font-medium">{formatObservationTimestamp(observation.timestamp)}</span>
-                                    <span className={`px-2 py-0.5 rounded-full border ${statusChip}`}>{label}</span>
-                                </div>
-                                <p className="text-sm font-semibold text-slate-800 mt-1">
-                                    {actionLabelMap[observation.responseType] ?? 'Agent action'}
-                                </p>
-                                {detail && (
-                                    <p className="text-xs text-slate-600 mt-1 whitespace-pre-line">{detail}</p>
-                                )}
-                                {observation.errorCode && (
-                                    <p className="text-xs text-red-600 mt-1">Error code: {observation.errorCode}</p>
-                                )}
-                            </div>
-                        );
-                    })}
-                </div>
-            </div>
-        );
     };
 
     const renderMessage = (item: ProgressMessage | ChatMessage, index: number) => {
@@ -707,9 +515,9 @@ export const ChatPanel: React.FC = () => {
                 </div>
             </div>
             <div className="flex-1 p-4 overflow-y-auto space-y-4">
-                {renderPlanState()}
-                {renderActionLog()}
-                {renderObservationLog()}
+                <PlannerGoalTracker />
+                <AgentActionLogPanel />
+                <AgentObservationTimeline />
                 {timeline.map(renderMessage)}
                 <div ref={messagesEndRef} />
             </div>
@@ -806,3 +614,212 @@ export const ChatPanel: React.FC = () => {
         </div>
     );
 };
+
+const PlannerGoalTracker = React.memo(() => {
+    const planState = useAppStore(state => state.plannerSession?.planState ?? null);
+    if (!planState) return null;
+    const nextSteps = planState.nextSteps ?? [];
+    const updatedAt = planState.updatedAt ? new Date(planState.updatedAt) : new Date();
+
+    return (
+        <div className="mb-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex items-center justify-between mb-2">
+                <h3 className="text-sm font-semibold text-slate-900">Agent Goal Tracker</h3>
+                <span className="text-xs text-slate-500">
+                    Updated {updatedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </span>
+            </div>
+            <p className="text-sm text-slate-800 mb-2">
+                <span className="font-medium">Goal:</span> {planState.goal}
+            </p>
+            {planState.progress && (
+                <p className="text-sm text-slate-700 mb-2">
+                    <span className="font-medium">Progress:</span> {planState.progress}
+                </p>
+            )}
+            {nextSteps.length > 0 && (
+                <div className="mb-2">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">Next steps</p>
+                    <ol className="list-decimal list-inside text-sm text-slate-700 space-y-0.5">
+                        {nextSteps.map(step => (
+                            <li key={step}>{step}</li>
+                        ))}
+                    </ol>
+                </div>
+            )}
+            {planState.blockedBy && (
+                <p className="text-sm text-amber-600">
+                    <span className="font-medium">Blocked by:</span> {planState.blockedBy}
+                </p>
+            )}
+        </div>
+    );
+});
+PlannerGoalTracker.displayName = 'PlannerGoalTracker';
+
+const actionStatusColor: Record<AgentActionTrace['status'], string> = {
+    observing: 'bg-slate-400',
+    executing: 'bg-blue-500',
+    succeeded: 'bg-emerald-500',
+    failed: 'bg-red-500',
+};
+
+const actionSourceLabels: Record<AgentActionTrace['source'], string> = {
+    chat: 'Chat',
+    pipeline: 'Analysis Pipeline',
+    system: 'System',
+};
+
+const formatActionTimestamp = (timestamp: AgentActionTrace['timestamp']) => {
+    const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+};
+
+const AgentActionLogPanel = React.memo(() => {
+    const agentTraces = useAppStore(state => state.agentActionTraces);
+    const recentAgentTraces = useMemo(() => agentTraces.slice(-12).reverse(), [agentTraces]);
+
+    if (recentAgentTraces.length === 0) return null;
+
+    return (
+        <div className="mb-4">
+            <div className="flex items-center justify-between mb-2">
+                <h3 className="text-sm font-semibold text-slate-900">AI Action Log</h3>
+                <span className="text-xs text-slate-500">Last {recentAgentTraces.length} events</span>
+            </div>
+            <div className="space-y-3 max-h-56 overflow-y-auto pr-1">
+                {recentAgentTraces.map(trace => {
+                    const source = trace.source ?? 'chat';
+                    const status = trace.status ?? 'observing';
+                    return (
+                        <div key={trace.id} className="flex items-start space-x-3 text-sm">
+                            <div className="flex flex-col items-center mt-1">
+                                <span className={`w-2 h-2 rounded-full ${actionStatusColor[status]}`}></span>
+                            </div>
+                            <div className="flex-1">
+                                <div className="flex items-center text-xs text-slate-500 gap-2">
+                                    <span className="font-medium">{formatActionTimestamp(trace.timestamp)}</span>
+                                    <span>·</span>
+                                    <span>{actionSourceLabels[source] ?? 'AI'}</span>
+                                    <span>·</span>
+                                    <span className="capitalize">{status}</span>
+                                </div>
+                                <p className="text-slate-800 mt-0.5 leading-snug whitespace-pre-line">{trace.summary}</p>
+                                {trace.details && (
+                                    <p className="text-xs text-slate-500 mt-1 leading-snug whitespace-pre-line">
+                                        {trace.details}
+                                    </p>
+                                )}
+                            </div>
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+    );
+});
+AgentActionLogPanel.displayName = 'AgentActionLogPanel';
+
+const observationStatusChip: Record<AgentObservationStatus, string> = {
+    success: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+    error: 'bg-red-100 text-red-700 border-red-200',
+    pending: 'bg-amber-50 text-amber-700 border-amber-200',
+};
+
+const observationStatusLabel: Record<AgentObservationStatus, string> = {
+    success: 'Completed',
+    error: 'Failed',
+    pending: 'Pending',
+};
+
+const actionLabelMap: Record<string, string> = {
+    text_response: 'Shared response',
+    plan_creation: 'Created analysis plan',
+    dom_action: 'UI interaction',
+    execute_js_code: 'Data transform',
+    filter_spreadsheet: 'Spreadsheet filter',
+    clarification_request: 'Clarification request',
+    proceed_to_analysis: 'Pipeline continuation',
+};
+
+const formatObservationTimestamp = (timestamp: string) => {
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) return '—';
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+};
+
+const formatObservationDetail = (observation: AgentObservation) => {
+    const { outputs, uiDelta } = observation;
+    if (outputs) {
+        if (typeof outputs.summary === 'string') return outputs.summary;
+        if (typeof outputs.textPreview === 'string') return outputs.textPreview;
+        if (typeof outputs.reason === 'string') return outputs.reason;
+        const firstKey = Object.keys(outputs)[0];
+        if (firstKey) {
+            const value = outputs[firstKey];
+            const raw = typeof value === 'string' ? value : JSON.stringify(value);
+            return raw.length > 140 ? `${raw.slice(0, 140)}…` : raw;
+        }
+    }
+    if (uiDelta) {
+        return uiDelta;
+    }
+    return null;
+};
+
+const AgentObservationTimeline = React.memo(() => {
+    const { observations, isBusy } = useAppStore(
+        state => ({
+            observations: state.plannerSession?.observations ?? [],
+            isBusy: state.isBusy,
+        }),
+        shallow,
+    );
+    const observationLog = useMemo(() => observations.slice(-8).reverse(), [observations]);
+
+    if (observationLog.length === 0) return null;
+
+    return (
+        <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-sm">
+            <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                    <span className="text-lg">📋</span>
+                    <div>
+                        <h3 className="text-sm font-semibold text-slate-900">Live Agent Timeline</h3>
+                        <p className="text-xs text-slate-500">Newest events shown first</p>
+                    </div>
+                </div>
+                {isBusy && <span className="text-xs uppercase tracking-wide text-blue-600 font-semibold">Running…</span>}
+            </div>
+            <div className="space-y-3 max-h-64 overflow-y-auto pr-1">
+                {observationLog.map(observation => {
+                    const detail = formatObservationDetail(observation);
+                    const status = observation.status ?? 'pending';
+                    const statusChip = observationStatusChip[status] ?? 'bg-slate-100 text-slate-600 border-slate-200';
+                    const label = observationStatusLabel[status] ?? status;
+                    return (
+                        <div key={observation.id} className="relative border-l-2 border-slate-100 pl-3">
+                            <span
+                                className={`absolute -left-[5px] top-2 w-2 h-2 rounded-full ${
+                                    status === 'success' ? 'bg-emerald-500' : status === 'error' ? 'bg-red-500' : 'bg-amber-400'
+                                }`}
+                            ></span>
+                            <div className="flex items-center justify-between text-[11px] text-slate-500">
+                                <span className="font-medium">{formatObservationTimestamp(observation.timestamp)}</span>
+                                <span className={`px-2 py-0.5 rounded-full border ${statusChip}`}>{label}</span>
+                            </div>
+                            <p className="text-sm font-semibold text-slate-800 mt-1">
+                                {actionLabelMap[observation.responseType] ?? 'Agent action'}
+                            </p>
+                            {detail && <p className="text-xs text-slate-600 mt-1 whitespace-pre-line">{detail}</p>}
+                            {observation.errorCode && (
+                                <p className="text-xs text-red-600 mt-1">Error code: {observation.errorCode}</p>
+                            )}
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+    );
+});
+AgentObservationTimeline.displayName = 'AgentObservationTimeline';
