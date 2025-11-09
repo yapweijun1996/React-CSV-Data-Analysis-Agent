@@ -1,7 +1,14 @@
 import React from 'react';
+import Masonry from 'react-masonry-css';
 import { AnalysisCard } from './AnalysisCard';
 import { FinalSummary } from './FinalSummary';
 import { useAppStore } from '../store/useAppStore';
+
+const masonryBreakpoints = {
+    default: 2,
+    1024: 2,
+    640: 1,
+};
 
 export const AnalysisPanel: React.FC = () => {
     const cards = useAppStore(state => state.analysisCards);
@@ -25,21 +32,23 @@ export const AnalysisPanel: React.FC = () => {
                     <FinalSummary summary={finalSummary} />
                 </div>
             )}
-            <div 
-                className="mt-6 columns-1 md:columns-2 2xl:columns-3"
-                style={{ columnGap: '1.5rem' }}
-            >
-                {cards.map((card) => (
-                    <div
-                        key={card.id}
-                        className="mb-6"
-                        style={{ breakInside: 'avoid', WebkitColumnBreakInside: 'avoid', pageBreakInside: 'avoid' }}
-                    >
-                        <AnalysisCard 
-                            cardId={card.id}
-                        />
-                    </div>
-                ))}
+            <div className="mt-6">
+                <Masonry
+                    breakpointCols={masonryBreakpoints}
+                    className="flex w-auto -ml-6"
+                    columnClassName="pl-6 space-y-6"
+                >
+                    {cards.map((card) => (
+                        <div
+                            key={card.id}
+                            className="analysis-card"
+                        >
+                            <AnalysisCard 
+                                cardId={card.id}
+                            />
+                        </div>
+                    ))}
+                </Masonry>
             </div>
         </div>
     );
