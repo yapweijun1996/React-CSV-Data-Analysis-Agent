@@ -40,6 +40,7 @@ import { createChatSlice } from './slices/chatSlice';
 import { createFileUploadSlice } from './slices/fileUploadSlice';
 import { createAiFilterSlice } from './slices/aiFilterSlice';
 import { AutoSaveManager, AutoSaveConfig, deriveAutoSaveConfig } from '../utils/autoSaveManager';
+import { computeDatasetHash } from '../utils/datasetHash';
 
 const createClarificationId = () =>
     typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -101,6 +102,7 @@ const buildSerializableAppState = (state: AppStore): AppState => ({
     aiCoreAnalysisSummary: state.aiCoreAnalysisSummary,
     dataPreparationPlan: state.dataPreparationPlan,
     initialDataSample: state.initialDataSample,
+    datasetHash: state.datasetHash,
     vectorStoreDocuments: vectorStore.getDocuments(),
     spreadsheetFilterFunction: state.spreadsheetFilterFunction,
     aiFilterExplanation: state.aiFilterExplanation,
@@ -125,6 +127,8 @@ const buildFileNameFromHeader = (header?: string | null) => {
 
 const restoreVectorMemoryFromSnapshot = async (
     documents: VectorStoreDocument[] | undefined | null,
+    snapshotDatasetHash: string | null | undefined,
+    currentDatasetHash: string | null,
     addProgress: AppStore['addProgress'],
     addToast: AppStore['addToast'],
     dismissToast: AppStore['dismissToast'],
@@ -133,6 +137,17 @@ const restoreVectorMemoryFromSnapshot = async (
     if (!documents || documents.length === 0) return;
     let loadingToastId: string | null = null;
     try {
+        const datasetsMatch =
+            !!snapshotDatasetHash &&
+            !!currentDatasetHash &&
+            snapshotDatasetHash === currentDatasetHash;
+
+        if (!datasetsMatch) {
+            vectorStore.clear();
+            addProgress('Skipped AI memory restore because the dataset changed since last session.');
+            addToast('AI memory reset for this dataset.', 'info', 5000);
+            return;
+        }
         const requiresInit = !vectorStore.getIsInitialized();
         if (requiresInit) {
             loadingToastId = addToast('Preparing AI memory from history...', 'info', 0);
@@ -189,6 +204,7 @@ const initialAppState: AppState = {
     aiCoreAnalysisSummary: null,
     dataPreparationPlan: null,
     initialDataSample: null,
+    datasetHash: null,
     vectorStoreDocuments: [],
     spreadsheetFilterFunction: null,
     aiFilterExplanation: null,
@@ -425,10 +441,12 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             const previousData = get().csvData;
             const previousProfiles = get().columnProfiles;
             const previousAliasMap = get().columnAliasMap;
+            const nextDatasetHash = computeDatasetHash(pending.nextData);
             set({
                 csvData: pending.nextData,
                 columnProfiles: pending.nextColumnProfiles,
                 columnAliasMap: pending.nextAliasMap,
+                datasetHash: nextDatasetHash,
                 pendingDataTransform: null,
                 isLastAppliedDataTransformBannerDismissed: false,
                 lastAppliedDataTransform: {
@@ -463,10 +481,12 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 get().addProgress('No AI data transformation is available to undo.', 'error');
                 return;
             }
+            const restoredHash = computeDatasetHash(last.previousData);
             set({
                 csvData: last.previousData,
                 columnProfiles: last.previousColumnProfiles,
                 columnAliasMap: last.previousAliasMap,
+                datasetHash: restoredHash,
                 lastAppliedDataTransform: null,
                 isLastAppliedDataTransformBannerDismissed: false,
             });
@@ -546,6 +566,8 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             });
             await restoreVectorMemoryFromSnapshot(
                 currentSession.appState.vectorStoreDocuments,
+                currentSession.appState.datasetHash,
+                get().datasetHash,
                 get().addProgress,
                 get().addToast,
                 get().dismissToast,
@@ -1055,6 +1077,8 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             });
             await restoreVectorMemoryFromSnapshot(
                 report.appState.vectorStoreDocuments,
+                report.appState.datasetHash,
+                get().datasetHash,
                 get().addProgress,
                 get().addToast,
                 get().dismissToast,

@@ -304,33 +304,38 @@ export const ChatPanel: React.FC = () => {
 
     const renderPlanState = () => {
         if (!plannerPlanState) return null;
-        const updatedAt = plannerPlanState.updatedAt ? new Date(plannerPlanState.updatedAt) : new Date();
+        return <PlannerPlanStatePanel planState={plannerPlanState} />;
+    };
+
+    const PlannerPlanStatePanel = React.memo(({ planState }: { planState: any | null }) => {
+        if (!planState) return null;
+        const updatedAt = planState.updatedAt ? new Date(planState.updatedAt) : new Date();
         return (
             <div className="mb-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
                 <div className="flex items-center justify-between mb-2">
                     <h3 className="text-sm font-semibold text-slate-900">Agent Goal Tracker</h3>
                     <span className="text-xs text-slate-500">Updated {updatedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                 </div>
-                <p className="text-sm text-slate-800 mb-2"><span className="font-medium">Goal:</span> {plannerPlanState.goal}</p>
-                {plannerPlanState.progress && (
-                    <p className="text-sm text-slate-700 mb-2"><span className="font-medium">Progress:</span> {plannerPlanState.progress}</p>
+                <p className="text-sm text-slate-800 mb-2"><span className="font-medium">Goal:</span> {planState.goal}</p>
+                {planState.progress && (
+                    <p className="text-sm text-slate-700 mb-2"><span className="font-medium">Progress:</span> {planState.progress}</p>
                 )}
-                {plannerPlanState.nextSteps.length > 0 && (
+                {planState.nextSteps.length > 0 && (
                     <div className="mb-2">
                         <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">Next steps</p>
                         <ol className="list-decimal list-inside text-sm text-slate-700 space-y-0.5">
-                            {plannerPlanState.nextSteps.map(step => (
+                            {planState.nextSteps.map(step => (
                                 <li key={step}>{step}</li>
                             ))}
                         </ol>
                     </div>
                 )}
-                {plannerPlanState.blockedBy && (
-                    <p className="text-sm text-amber-600"><span className="font-medium">Blocked by:</span> {plannerPlanState.blockedBy}</p>
+                {planState.blockedBy && (
+                    <p className="text-sm text-amber-600"><span className="font-medium">Blocked by:</span> {planState.blockedBy}</p>
                 )}
             </div>
         );
-    };
+    });
 
     const renderActionLog = () => {
         if (recentAgentTraces.length === 0) return null;

@@ -6,6 +6,7 @@ import { buildColumnAliasMap } from '../../utils/columnAliases';
 import { generateDataPreparationPlan } from '../../services/aiService';
 import { vectorStore } from '../../services/vectorStore';
 import { getReport, saveReport, deleteReport, CURRENT_SESSION_KEY } from '../../storageService';
+import { computeDatasetHash } from '../../utils/datasetHash';
 
 interface FileUploadSliceDependencies {
     initialAppState: AppState;
@@ -40,6 +41,7 @@ export const createFileUploadSlice = (
         set({
             ...deps.initialAppState,
             csvData: { fileName: file.name, data: [] },
+            datasetHash: null,
             busyRunId: null,
             isCancellationRequested: false,
             aiFilterRunId: null,
@@ -111,10 +113,12 @@ export const createFileUploadSlice = (
                 if (dataForAnalysis.data.length === 0) throw new Error('Dataset empty after transformation.');
 
                 const aliasMap = buildColumnAliasMap(profiles.map(p => p.name));
+                const datasetHash = computeDatasetHash(dataForAnalysis);
                 set({
                     csvData: dataForAnalysis,
                     columnProfiles: profiles,
                     columnAliasMap: aliasMap,
+                    datasetHash,
                     dataPreparationPlan: prepPlan,
                     currentView: 'analysis_dashboard',
                 });
@@ -124,7 +128,14 @@ export const createFileUploadSlice = (
                 get().setIsSettingsModalOpen(true);
                 profiles = profileData(dataForAnalysis.data);
                 const aliasMap = buildColumnAliasMap(profiles.map(p => p.name));
-                set({ csvData: dataForAnalysis, columnProfiles: profiles, columnAliasMap: aliasMap, currentView: 'analysis_dashboard' });
+                const datasetHash = computeDatasetHash(dataForAnalysis);
+                set({
+                    csvData: dataForAnalysis,
+                    columnProfiles: profiles,
+                    columnAliasMap: aliasMap,
+                    datasetHash,
+                    currentView: 'analysis_dashboard',
+                });
             }
         } catch (error) {
             if (!get().isRunCancellationRequested(runId)) {

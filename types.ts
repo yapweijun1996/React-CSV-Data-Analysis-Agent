@@ -247,6 +247,7 @@ export interface AppState {
     aiCoreAnalysisSummary: string | null; // AI's internal monologue/memory about the dataset
     dataPreparationPlan: DataPreparationPlan | null; // The plan used to clean the data
     initialDataSample: CsvRow[] | null; // Snapshot of raw data for debug view
+    datasetHash: string | null; // Fingerprint of the current dataset for memory gating
     vectorStoreDocuments: VectorStoreDocument[]; // For persisting AI memory
     spreadsheetFilterFunction: string | null; // For AI-powered spreadsheet filtering
     aiFilterExplanation: string | null; // Explanation for the AI filter
