@@ -13,6 +13,10 @@ const isValidPlan = (plan: any): plan is AnalysisPlan => {
         console.warn('Skipping invalid plan: missing chartType or title.', plan);
         return false;
     }
+    if (!plan.description || typeof plan.description !== 'string' || plan.description.trim().length < 8) {
+        console.warn('Skipping invalid plan: description missing or too short.', plan);
+        return false;
+    }
     if (plan.chartType === 'scatter') {
         if (!plan.xValueColumn || !plan.yValueColumn) {
             console.warn('Skipping invalid scatter plot plan: missing xValueColumn or yValueColumn.', plan);

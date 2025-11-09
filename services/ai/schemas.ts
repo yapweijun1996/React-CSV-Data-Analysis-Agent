@@ -7,7 +7,7 @@ export const planSchema = {
     properties: {
       chartType: { type: Type.STRING, enum: ['bar', 'line', 'pie', 'doughnut', 'scatter', 'combo'], description: 'Type of chart to generate.' },
       title: { type: Type.STRING, description: 'A concise title for the analysis.' },
-      description: { type: Type.STRING, description: 'A brief explanation of what the analysis shows.' },
+      description: { type: Type.STRING, minLength: 8, description: 'A brief explanation of what the analysis shows. Must be a full sentence with at least 8 characters.' },
       aggregation: { type: Type.STRING, enum: ['sum', 'count', 'avg'], description: 'The aggregation function to apply. Omit for scatter plots.' },
       groupByColumn: { type: Type.STRING, description: 'The column to group data by (categorical). Omit for scatter plots.' },
       valueColumn: { type: Type.STRING, description: 'The column for aggregation (numerical). Not needed for "count".' },

@@ -100,6 +100,7 @@ export const createCandidatePlansPrompt = (categoricalCols: string[], numericalC
     ${JSON.stringify(sampleData, null, 2)}
     
     Please generate up to ${numPlans} diverse analysis plans.
+    **MANDATORY COPY RULE**: Every plan MUST include a natural-language \`description\` (at least 8 characters) that states what the user will learn. Do not leave it blank or use placeholders.
     
     **CRITICAL: Think like a Business/ERP Analyst.**
     1.  **Identify Key Metrics**: First, find the columns that represent measurable values. Look for names like 'VALUE', 'AMOUNT', 'SALES', 'COST', 'QUANTITY', 'PRICE'. These are almost always the columns you should be aggregating (e.g., using 'sum' or 'avg').
@@ -126,6 +127,7 @@ export const createCandidatePlansPrompt = (categoricalCols: string[], numericalC
     - For 'combo' charts, you MUST provide 'groupByColumn', 'valueColumn', 'aggregation', 'secondaryValueColumn', and 'secondaryAggregation'.
     - **CRITICAL**: Only use one of the following aggregation types: 'sum', 'count', 'avg'. Do NOT use other statistical measures like 'stddev', 'variance', 'median', etc.
     - Do not create plans that are too granular (e.g., grouping by a unique ID column if there are thousands of them).
+    - Never leave the \`description\` empty; summarize the business takeaway in a sentence.
 `;
 
 export const createRefinePlansPrompt = (plansWithData: { plan: any; aggregatedSample: CsvRow[] }[]): string => `
@@ -138,7 +140,8 @@ export const createRefinePlansPrompt = (plansWithData: { plan: any; aggregatedSa
     2.  **Discard Unreadable Charts**: If a chart groups by a high-cardinality column resulting in too many categories to be readable (e.g., more than 50 tiny bars), discard it unless it's a clear time-series line chart.
     3.  **Configure for Readability**: For good, insightful charts that have a moderate number of categories (e.g., 15 to 50), you MUST add default settings to make them readable. Set \`defaultTopN\` to 8 and \`defaultHideOthers\` to \`true\`.
     4.  **Keep Good Charts**: If a chart is insightful and has a reasonable number of categories (e.g., under 15), keep it as is without adding default settings.
-    5.  **Return the Result**: Your final output must be an array of ONLY the good, configured plan objects. Do not include the discarded plans.
+    5.  **Copy Quality Gate**: Reject any plan whose \`description\` is blank, shorter than 8 characters, or not an explanatory sentence.
+    6.  **Return the Result**: Your final output must be an array of ONLY the good, configured plan objects. Do not include the discarded plans.
     
     **Proposed Plans and Data Samples:**
     ${JSON.stringify(plansWithData, null, 2)}
