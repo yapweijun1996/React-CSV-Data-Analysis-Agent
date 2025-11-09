@@ -49,12 +49,14 @@ class VectorStore {
             this.isInitializing = true; 
             const { pipeline, env } = await loadTransformers();
 
-            // Force CDN usage: skip local model lookup and rely on remote downloads only.
+            // Prefer remote download the first time, but allow IndexedDB/OPFS caching for reuse.
             env.allowRemoteModels = true;
-            env.allowLocalModels = false;
-            env.localModelPath = ''; // leave as empty string so downstream .replace calls stay safe
+            env.allowLocalModels = true;
+            env.useBrowserCache = true;
+            env.cacheDir = env.cacheDir || 'indexeddb://ai-memory-models';
+            env.localModelPath = env.localModelPath || 'indexeddb://ai-memory-models';
             
-            progressCallback?.("Downloading AI memory model (~34MB)...");
+            progressCallback?.("Loading AI memory model (~34MB). We'll cache it locally after the first download.");
             this.embedder = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', {
                 progress_callback: (progress: any) => {
                      if (progress.status === 'progress' && progress.total > 0) {
@@ -64,7 +66,7 @@ class VectorStore {
                      }
                 }
             });
-            progressCallback?.("AI memory model loaded.");
+            progressCallback?.("AI memory model ready (cached locally for future sessions).");
             this.isInitialized = true;
         } catch (error) {
             console.error("Failed to initialize vector store:", error);

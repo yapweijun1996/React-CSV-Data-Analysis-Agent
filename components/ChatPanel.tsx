@@ -71,7 +71,42 @@ const helperToneIcon: Record<HelperTone, string> = {
 const MAX_CHAT_INPUT_HEIGHT = 240;
 
 
+const useChatCore = () =>
+    useAppStore(state => ({
+        progressMessages: state.progressMessages,
+        chatHistory: state.chatHistory,
+        isBusy: state.isBusy,
+        handleChatMessage: state.handleChatMessage,
+        isApiKeySet: state.isApiKeySet,
+        setIsAsideVisible: state.setIsAsideVisible,
+        setIsSettingsModalOpen: state.setIsSettingsModalOpen,
+        setIsMemoryPanelOpen: state.setIsMemoryPanelOpen,
+        handleShowCardFromChat: state.handleShowCardFromChat,
+        currentView: state.currentView,
+        pendingClarifications: state.pendingClarifications,
+        activeClarificationId: state.activeClarificationId,
+        handleClarificationResponse: state.handleClarificationResponse,
+        skipClarification: state.skipClarification,
+        focusDataPreview: state.focusDataPreview,
+        isCancellationRequested: state.isCancellationRequested,
+        chatMemoryPreview: state.chatMemoryPreview,
+        chatMemoryExclusions: state.chatMemoryExclusions,
+        previewChatMemories: state.previewChatMemories,
+        toggleMemoryPreviewSelection: state.toggleMemoryPreviewSelection,
+        isMemoryPreviewLoading: state.isMemoryPreviewLoading,
+    }));
+
+const useAgentTimeline = () =>
+    useAppStore(state => ({
+        agentTraces: state.agentActionTraces,
+        plannerObservations: state.plannerSession.observations,
+        plannerPlanState: state.plannerSession.planState,
+    }));
+
 export const ChatPanel: React.FC = () => {
+    const core = useChatCore();
+    const { agentTraces, plannerObservations, plannerPlanState } = useAgentTimeline();
+
     const {
         progressMessages,
         chatHistory,
@@ -94,35 +129,7 @@ export const ChatPanel: React.FC = () => {
         previewChatMemories,
         toggleMemoryPreviewSelection,
         isMemoryPreviewLoading,
-        agentTraces,
-        plannerObservations,
-        plannerPlanState,
-    } = useAppStore(state => ({
-        progressMessages: state.progressMessages,
-        chatHistory: state.chatHistory,
-        isBusy: state.isBusy,
-        handleChatMessage: state.handleChatMessage,
-        isApiKeySet: state.isApiKeySet,
-        setIsAsideVisible: state.setIsAsideVisible,
-        setIsSettingsModalOpen: state.setIsSettingsModalOpen,
-        setIsMemoryPanelOpen: state.setIsMemoryPanelOpen,
-        handleShowCardFromChat: state.handleShowCardFromChat,
-        currentView: state.currentView,
-        pendingClarifications: state.pendingClarifications,
-        activeClarificationId: state.activeClarificationId,
-        handleClarificationResponse: state.handleClarificationResponse,
-        skipClarification: state.skipClarification,
-        focusDataPreview: state.focusDataPreview,
-        isCancellationRequested: state.isCancellationRequested,
-        chatMemoryPreview: state.chatMemoryPreview,
-        chatMemoryExclusions: state.chatMemoryExclusions,
-        previewChatMemories: state.previewChatMemories,
-        toggleMemoryPreviewSelection: state.toggleMemoryPreviewSelection,
-        isMemoryPreviewLoading: state.isMemoryPreviewLoading,
-        agentTraces: state.agentActionTraces,
-        plannerObservations: state.plannerSession.observations,
-        plannerPlanState: state.plannerSession.planState,
-    }));
+    } = core;
 
     const [input, setInput] = useState('');
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -179,6 +186,8 @@ export const ChatPanel: React.FC = () => {
     };
 
     const helperDescriptor: HelperDescriptor = (() => {
+        const lastProgress = progressMessages[progressMessages.length - 1]?.text ?? '';
+        const continuationMatch = lastProgress.startsWith('Continuing plan');
         if (!isApiKeySet) {
             return {
                 tone: 'warning',
@@ -207,6 +216,14 @@ export const ChatPanel: React.FC = () => {
                           },
                       ]
                     : undefined,
+            };
+        }
+        if (continuationMatch) {
+            return {
+                tone: 'muted',
+                icon: '🔁',
+                message: lastProgress,
+                helperText: 'The agent is automatically continuing the plan. You can relax or cancel if needed.',
             };
         }
         if (currentView === 'file_upload') {
@@ -278,7 +295,7 @@ export const ChatPanel: React.FC = () => {
         if (hasAwaitingClarification) return "Please resolve or skip the clarification above";
         switch (currentView) {
             case 'analysis_dashboard':
-                return "Ask for a new analysis or data transformation...";
+                return "New analysis or transformation?";
             case 'file_upload':
             default:
                 return "Upload a file to begin chatting";
@@ -509,7 +526,12 @@ export const ChatPanel: React.FC = () => {
                                 {statusLabel}
                             </span>
                         </div>
-                        <p className="text-sm text-slate-700 mb-3">{msg.clarificationRequest.question}</p>
+                        <p className="text-sm text-slate-700 mb-1">{msg.clarificationRequest.question}</p>
+                        {msg.clarificationRequest.columnHints && msg.clarificationRequest.columnHints.length > 0 && (
+                            <p className="text-xs text-slate-500 mb-2">
+                                Column context: {msg.clarificationRequest.columnHints.join(', ')}
+                            </p>
+                        )}
                         <div className="flex flex-col space-y-2">
                             {msg.clarificationRequest.options.map(option => (
                                 <button
@@ -726,7 +748,7 @@ export const ChatPanel: React.FC = () => {
                             placeholder={getPlaceholder()}
                             disabled={!isApiKeySet || currentView === 'file_upload' || hasAwaitingClarification}
                             aria-describedby="chat-input-char-count"
-                            className="w-full bg-white border border-slate-300 rounded-md py-2 pl-3 pr-14 text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 resize-none"
+                            className="w-full bg-white border border-slate-300 rounded-md py-2 pl-3 pr-14 text-sm leading-5 text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 resize-none"
                             style={{ maxHeight: `${MAX_CHAT_INPUT_HEIGHT}px`, overflowY: 'hidden' }}
                         />
                         <span

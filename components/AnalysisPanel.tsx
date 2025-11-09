@@ -9,7 +9,7 @@ const MAX_COLUMNS = COLUMN_OPTIONS[COLUMN_OPTIONS.length - 1];
 
 const CARD_LAYOUT_BREAKPOINTS: Array<{ minWidth: number; columns: (typeof COLUMN_OPTIONS)[number] }> = [
     { minWidth: 1280, columns: 3 },
-    { minWidth: 920, columns: 2 },
+    { minWidth: 720, columns: 2 },
     { minWidth: 0, columns: 1 },
 ];
 

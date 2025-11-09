@@ -244,9 +244,10 @@ await test('runPlannerWorkflow executes plan_state then reply', async () => {
     );
 
     assert.strictEqual(store.plannerSession.planState?.goal, 'Increase ARR by 10%');
+    // Continuation should trigger because nextSteps remain and no tool action executed.
     assert.deepStrictEqual(
         store.agentActionTraces.map(t => t.actionType),
-        ['plan_state_update', 'text_response'],
+        ['plan_state_update', 'text_response', 'plan_state_update', 'text_response', 'plan_state_update', 'text_response', 'plan_state_update', 'text_response'],
     );
     const lastMessage = store.chatHistory.at(-1);
     assert.strictEqual(lastMessage?.text, 'Plan noted. Starting with cohort analysis.');
@@ -281,7 +282,7 @@ await test('missing plan_state_update triggers validation retry', async () => {
     assert.strictEqual(store.validationEvents[0].actionType, 'text_response');
     assert.deepStrictEqual(
         store.agentActionTraces.map(t => t.actionType),
-        ['text_response', 'plan_state_update', 'text_response'],
+        ['text_response', 'plan_state_update', 'text_response', 'plan_state_update', 'text_response', 'plan_state_update', 'text_response', 'plan_state_update', 'text_response'],
     );
     const lastMessage = store.chatHistory.at(-1);
     assert.strictEqual(lastMessage?.text, 'On it.');
@@ -621,6 +622,37 @@ await test('planner continues when plan_state next steps remain', async () => {
     assert.strictEqual(plannerContext.getRequestCount(), 2);
 });
 
+await test('planner halts continuation when stateTag is blocked', async () => {
+    const blockedPlanState = {
+        responseType: 'plan_state_update' as const,
+        thought: 'Waiting on user input',
+        planState: {
+            goal: 'Await clarification',
+            contextSummary: 'Need user to confirm column',
+            progress: 'Asked user for more info',
+            nextSteps: ['Resume plan after user replies'],
+            blockedBy: 'Clarification required',
+            observationIds: [],
+            confidence: 0.4,
+            updatedAt: new Date().toISOString(),
+            stateTag: 'awaiting_clarification' as const,
+        },
+    };
+
+    const { runtime, store } = createPlannerHarness();
+    await runPlannerWorkflow(
+        'Hold request',
+        buildPlannerContext({ actions: [blockedPlanState, blockedPlanState, blockedPlanState] }),
+        runtime as any,
+    );
+
+    assert.strictEqual(store.executedPlans.length, 0, 'No continuation should be triggered');
+    assert.ok(
+        store.agentActionTraces.every(trace => trace.actionType === 'plan_state_update'),
+        'Only plan_state_update actions should run',
+    );
+});
+
 await test('execute_js_code failure triggers auto-retry flow', async () => {
     const failingTransformAction = {
         responseType: 'execute_js_code' as const,
@@ -653,7 +685,18 @@ await test('execute_js_code failure triggers auto-retry flow', async () => {
     assert.ok(store.progressLog.some(msg => msg.includes('Auto-retrying data transformation (attempt 2)...')));
     assert.deepStrictEqual(
         store.agentActionTraces.map(t => t.actionType),
-        ['plan_state_update', 'execute_js_code', 'plan_state_update', 'text_response'],
+        [
+            'plan_state_update',
+            'execute_js_code',
+            'plan_state_update',
+            'text_response',
+            'plan_state_update',
+            'text_response',
+            'plan_state_update',
+            'text_response',
+            'plan_state_update',
+            'text_response',
+        ],
     );
 });
 

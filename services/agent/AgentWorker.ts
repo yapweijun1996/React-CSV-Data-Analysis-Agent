@@ -88,7 +88,8 @@ const STATE_TAG_WARNING_THROTTLE_MS = 5000;
 const THOUGHTLESS_TOAST_THROTTLE_MS = 8000;
 const PLAN_PRIMER_INSTRUCTION =
     'Begin every response with a plan_state_update that lists your goal, context, progress, next steps, blockers (or null), referenced observations, confidence, and updatedAt before any other action.';
-const MAX_PLAN_CONTINUATIONS = 2;
+const MAX_PLAN_CONTINUATIONS = 3;
+const CONTINUATION_STATE_TAG_DENYLIST = new Set<AgentStateTag>(['awaiting_clarification', 'blocked']);
 
 let lastStateTagWarningAt = 0;
 let lastThoughtlessToastAt = 0;
@@ -249,13 +250,20 @@ const extractPendingPlanColumns = (plan?: PendingPlan | null): string[] => {
         .filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
 };
 
-const plannerHasPendingSteps = (runtime: PlannerRuntime): boolean => {
+const plannerHasPendingSteps = (
+    runtime: PlannerRuntime,
+): { hasPendingSteps: boolean; stateTag?: AgentStateTag; hasBlocker: boolean } => {
     const planState = runtime.get().plannerSession.planState;
-    return !!(
+    const hasSteps = !!(
         planState &&
         Array.isArray(planState.nextSteps) &&
         planState.nextSteps.some(step => typeof step === 'string' && step.trim().length > 0)
     );
+    return {
+        hasPendingSteps: hasSteps,
+        stateTag: planState?.stateTag as AgentStateTag | undefined,
+        hasBlocker: !!(planState?.blockedBy && planState.blockedBy.trim().length > 0),
+    };
 };
 
 const buildChatPlannerContext = async (
@@ -760,7 +768,14 @@ const runPlannerWorkflow = async (
         }
 
         const remainingAutoRetries = MAX_AUTO_RETRIES - retryAttempts;
-        const currentResponseHadOnlyPlanState = response.actions.every(action => action.responseType === 'plan_state_update');
+        const containsToolActions = response.actions.some(action =>
+            action.responseType === 'plan_creation' ||
+            action.responseType === 'execute_js_code' ||
+            action.responseType === 'filter_spreadsheet' ||
+            action.responseType === 'dom_action' ||
+            action.responseType === 'clarification_request' ||
+            action.responseType === 'proceed_to_analysis'
+        );
         const dispatchResult = await dispatchAgentActions(response, runtime, remainingAutoRetries);
 
         if (dispatchResult.type === 'halt') {
@@ -788,12 +803,16 @@ const runPlannerWorkflow = async (
             continue;
         }
 
+        const { hasPendingSteps, stateTag, hasBlocker } = plannerHasPendingSteps(runtime);
+        const isStateTagBlocked = stateTag ? CONTINUATION_STATE_TAG_DENYLIST.has(stateTag) : false;
         if (
             dispatchResult.type === 'complete' &&
             continuationAttempts < MAX_PLAN_CONTINUATIONS &&
-            plannerHasPendingSteps(runtime) &&
+            hasPendingSteps &&
+            !isStateTagBlocked &&
+            !hasBlocker &&
             !runtime.get().isRunCancellationRequested(runtime.runId) &&
-            currentResponseHadOnlyPlanState
+            !containsToolActions
         ) {
             continuationAttempts++;
             const planState = runtime.get().plannerSession.planState;
@@ -806,11 +825,13 @@ const runPlannerWorkflow = async (
             ]
                 .filter(Boolean)
                 .join('\n');
+            const continuationLabel = continuationAttempts === 1 ? 'Continuing plan' : `Continuing plan (cycle ${continuationAttempts}/${MAX_PLAN_CONTINUATIONS})`;
+            runtime.get().addProgress(continuationLabel);
             response = await planAgentActions(
                 continuationPrompt,
                 plannerContext.requestAiResponse,
                 updateBusyStatus,
-                continuationAttempts === 1 ? 'Continuing plan...' : `Continuing plan (cycle ${continuationAttempts + 1})...`,
+                continuationAttempts === 1 ? 'Continuing plan...' : `Continuing plan (cycle ${continuationAttempts})...`,
             );
             continue;
         }
