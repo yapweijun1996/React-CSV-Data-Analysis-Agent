@@ -6,6 +6,13 @@ export interface CsvData {
     data: CsvRow[];
 }
 
+export interface ExternalCsvPayload {
+    csv: string;
+    header?: string;
+    fileName?: string;
+    receivedAt?: number;
+}
+
 export interface ColumnProfile {
     name: string;
     type: 'numerical' | 'categorical' | 'date' | 'time' | 'currency' | 'percentage';

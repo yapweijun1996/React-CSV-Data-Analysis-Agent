@@ -7,6 +7,7 @@ import type {
     ChartType,
     ClarificationOption,
     CsvData,
+    ExternalCsvPayload,
     DomAction,
     MemoryReference,
     Report,
@@ -64,6 +65,7 @@ export interface StoreActions {
     runAnalysisPipeline: (plans: AnalysisPlan[], data: CsvData, options?: { isChatRequest?: boolean; runId?: string }) => Promise<AnalysisCardData[]>;
     handleInitialAnalysis: (dataForAnalysis: CsvData, options?: { runId?: string }) => Promise<void>;
     handleFileUpload: (file: File) => Promise<void>;
+    handleExternalCsvPayload: (payload: ExternalCsvPayload) => Promise<void>;
     regenerateAnalyses: (newData: CsvData) => Promise<void>;
     executeDomAction: (action: DomAction) => void;
     handleChatMessage: (message: string) => Promise<void>;

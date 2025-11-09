@@ -12,6 +12,13 @@ import { BusyStatusBar } from './components/BusyStatusBar';
 import { ToastStack } from './components/ToastStack';
 import { DataTransformGuard } from './components/DataTransformGuard';
 import { useAppStore } from './store/useAppStore';
+import { ExternalCsvPayload } from './types';
+
+declare global {
+    interface Window {
+        __getNextCsvPayload?: () => ExternalCsvPayload | null;
+    }
+}
 
 
 const App: React.FC = () => {
@@ -42,10 +49,40 @@ const App: React.FC = () => {
     }));
     
     const setIsAsideVisible = useAppStore(state => state.setIsAsideVisible);
+    const handleExternalCsvPayload = useAppStore(state => state.handleExternalCsvPayload);
 
     useEffect(() => {
         init();
     }, [init]);
+
+    useEffect(() => {
+        const consumePayload = (payload?: ExternalCsvPayload | null) => {
+            if (!payload || typeof payload.csv !== 'string') return;
+            handleExternalCsvPayload(payload).catch(error => {
+                console.error('Failed to process external CSV payload.', error);
+            });
+        };
+
+        const flushQueue = () => {
+            if (typeof window === 'undefined' || typeof window.__getNextCsvPayload !== 'function') return;
+            let next: ExternalCsvPayload | null;
+            do {
+                next = window.__getNextCsvPayload();
+                if (next) consumePayload(next);
+            } while (next);
+        };
+
+        const handleEvent = (event: Event) => {
+            const customEvent = event as CustomEvent<ExternalCsvPayload>;
+            consumePayload(customEvent.detail || null);
+        };
+
+        flushQueue();
+        window.addEventListener('ai-table-csv', handleEvent as EventListener);
+        return () => {
+            window.removeEventListener('ai-table-csv', handleEvent as EventListener);
+        };
+    }, [handleExternalCsvPayload]);
 
     const renderMainContent = () => {
         if (currentView === 'file_upload' || !csvData) {

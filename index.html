@@ -48,9 +48,71 @@
   }
 }
 </script>
-</head>
+  </head>
   <body class="bg-slate-50 text-slate-800">
     <div id="root"></div>
-  <script type="module" src="/index.tsx"></script>
-</body>
+    <script>
+      (function () {
+        const TARGET_ORIGIN = window.location.origin;
+        const queue = [];
+
+        function sanitizeFileStem(rawHeader) {
+          if (!rawHeader) return 'report';
+          const firstLine = rawHeader
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .find(Boolean);
+          if (!firstLine) return 'report';
+          return firstLine
+            .replace(/[^a-z0-9-_]+/gi, '-')
+            .replace(/-+/g, '-')
+            .replace(/^-|-$/g, '')
+            .slice(0, 60) || 'report';
+        }
+
+        function enqueuePayload(payload) {
+          queue.push(payload);
+          window.dispatchEvent(new CustomEvent('ai-table-csv', { detail: payload }));
+        }
+
+        window.__getNextCsvPayload = function () {
+          return queue.length ? queue.shift() : null;
+        };
+
+        window.addEventListener('message', (event) => {
+          if (event.origin !== TARGET_ORIGIN || !event.data) return;
+          const { type, csv, header } = event.data;
+          if (type !== 'table_csv' || typeof csv !== 'string') return;
+
+          const sanitizedHeader = typeof header === 'string' ? header : '';
+          const fileStem = sanitizeFileStem(sanitizedHeader);
+          const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+          const fileName = `${fileStem}-${timestamp}.csv`;
+
+          enqueuePayload({
+            csv,
+            header: sanitizedHeader,
+            fileName,
+            receivedAt: Date.now(),
+          });
+        });
+
+        function notifyOpenerReady() {
+          if (!window.opener) return;
+          try {
+            window.opener.postMessage({ type: 'ready' }, TARGET_ORIGIN);
+          } catch (error) {
+            console.warn('Unable to notify opener about readiness.', error);
+          }
+        }
+
+        if (document.readyState === 'complete') {
+          notifyOpenerReady();
+        } else {
+          window.addEventListener('load', notifyOpenerReady);
+        }
+      })();
+    </script>
+    <script type="module" src="/index.tsx"></script>
+  </body>
 </html>

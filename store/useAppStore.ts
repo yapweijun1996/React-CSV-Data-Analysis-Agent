@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 // Fix: Import MouseEvent from React and alias it to resolve the type error.
 import type { MouseEvent as ReactMouseEvent } from 'react';
-import { AnalysisCardData, ChatMessage, ProgressMessage, CsvData, AnalysisPlan, AppState, CardContext, ChartType, DomAction, Settings, Report, ReportListItem, ClarificationRequest, ClarificationRequestPayload, ClarificationStatus, ColumnProfile, AgentActionStatus, AgentActionSource } from '../types';
+import { AnalysisCardData, ChatMessage, ProgressMessage, CsvData, AnalysisPlan, AppState, CardContext, ChartType, DomAction, Settings, Report, ReportListItem, ClarificationRequest, ClarificationRequestPayload, ClarificationStatus, ColumnProfile, AgentActionStatus, AgentActionSource, ExternalCsvPayload } from '../types';
 import { executePlan, applyTopNWithOthers } from '../utils/dataProcessor';
 import { generateAnalysisPlans, generateSummary, generateFinalSummary, generateCoreAnalysisSummary, generateProactiveInsights } from '../services/aiService';
 import { getReportsList, saveReport, getReport, deleteReport, getSettings, saveSettings, CURRENT_SESSION_KEY } from '../storageService';
@@ -25,6 +25,26 @@ const createToastId = () => `toast-${Date.now()}-${Math.random().toString(36).sl
 
 const getNextAwaitingClarificationId = (clarifications: ClarificationRequest[]): string | null =>
     clarifications.find(c => c.status === 'pending')?.id ?? null;
+
+const sanitizeFileStemFromHeader = (header?: string | null) => {
+    if (!header) return 'report';
+    const firstLine = header
+        .split(/\r?\n/)
+        .map(line => line.trim())
+        .find(Boolean);
+    if (!firstLine) return 'report';
+    const sanitized = firstLine
+        .replace(/[^a-z0-9-_]+/gi, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '');
+    return sanitized || 'report';
+};
+
+const buildFileNameFromHeader = (header?: string | null) => {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const stem = sanitizeFileStemFromHeader(header);
+    return `${stem}-${timestamp}.csv`;
+};
 
 const MIN_ASIDE_WIDTH = 320;
 const MAX_ASIDE_WIDTH = 800;
@@ -797,6 +817,28 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         }
     },
 
+
+    handleExternalCsvPayload: async (payload: ExternalCsvPayload) => {
+        if (!payload || typeof payload.csv !== 'string' || !payload.csv.trim()) {
+            get().addToast('Received empty CSV payload from source page.', 'error');
+            return;
+        }
+        const fileName = payload.fileName?.trim() || buildFileNameFromHeader(payload.header);
+        const blob = new Blob([payload.csv], { type: 'text/csv' });
+        let file: File;
+        try {
+            file = new File([blob], fileName, { type: 'text/csv' });
+        } catch {
+            file = Object.assign(blob, { name: fileName, lastModified: Date.now() }) as File;
+        }
+
+        try {
+            await get().handleFileUpload(file);
+        } catch (error) {
+            console.error('Failed to import CSV payload from opener.', error);
+            get().addToast('Failed to import CSV from report page.', 'error');
+        }
+    },
 
     handleChartTypeChange: (cardId, newType) => {
         set(state => ({
