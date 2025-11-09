@@ -8,6 +8,7 @@ import { runWithBusyState } from '../../utils/runWithBusy';
 import { buildColumnAliasMap, cloneRowsWithAliases, normalizeRowsFromAliases } from '../../utils/columnAliases';
 import type {
     AiAction,
+    AiChatResponse,
     AnalysisCardData,
     AnalysisPlan,
     CardContext,
@@ -17,6 +18,7 @@ import type {
     ClarificationRequestPayload,
     ClarificationStatus,
     CsvData,
+    DomAction,
     MemoryReference,
     AgentActionStatus,
 } from '../../types';
@@ -29,32 +31,524 @@ interface ChatSliceDependencies {
     runPlanWithChatLifecycle: (plan: AnalysisPlan, data: CsvData, runId?: string) => Promise<AnalysisCardData[]>;
 }
 
+interface PlannerRuntime {
+    set: SetState<AppStore>;
+    get: GetState<AppStore>;
+    deps: ChatSliceDependencies;
+    runId: string;
+    userMessage: string;
+    memorySnapshot: MemoryReference[];
+    memoryTagAttached: boolean;
+}
+
+interface ChatPlannerContext {
+    memorySnapshot: MemoryReference[];
+    requestAiResponse: (prompt: string) => Promise<AiChatResponse>;
+}
+
+type ActionStepResult =
+    | { type: 'continue' }
+    | { type: 'retry'; reason: string }
+    | { type: 'halt' };
+
+type DispatchResult =
+    | { type: 'complete' }
+    | { type: 'retry'; reason: string }
+    | { type: 'halt' };
+
+const ACTION_STEP_CONTINUE: ActionStepResult = { type: 'continue' };
+
+const summarizeAction = (action: AiAction): string => {
+    switch (action.responseType) {
+        case 'text_response':
+            return action.text ? action.text.slice(0, 120) : 'AI text response';
+        case 'plan_creation':
+            return action.plan?.title ? `Create analysis "${action.plan.title}"` : 'Create new analysis card';
+        case 'dom_action':
+            return action.domAction ? `DOM action: ${action.domAction.toolName}` : 'DOM action';
+        case 'execute_js_code':
+            return action.code?.explanation || 'Execute data transformation';
+        case 'filter_spreadsheet':
+            return action.args?.query ? `Filter spreadsheet by "${action.args.query}"` : 'Filter spreadsheet';
+        case 'clarification_request':
+            return action.clarification?.question || 'Ask user for clarification';
+        case 'proceed_to_analysis':
+            return 'Proceed to analysis pipeline';
+        default:
+            return 'Agent action';
+    }
+};
+
+const hasTextPayload = (action: AiAction): action is AiAction & { text: string } => {
+    return typeof action.text === 'string' && action.text.trim().length > 0;
+};
+
+const hasPlanPayload = (action: AiAction): action is AiAction & { plan: AnalysisPlan } => {
+    return !!action.plan;
+};
+
+const hasDomActionPayload = (action: AiAction): action is AiAction & { domAction: DomAction } => {
+    return !!action.domAction;
+};
+
+const hasExecutableCodePayload = (action: AiAction): action is AiAction & {
+    code: { explanation: string; jsFunctionBody: string };
+} => {
+    return (
+        !!action.code &&
+        typeof action.code.jsFunctionBody === 'string' &&
+        action.code.jsFunctionBody.trim().length > 0
+    );
+};
+
+const hasFilterArgsPayload = (action: AiAction): action is AiAction & { args: { query: string } } => {
+    return typeof action.args?.query === 'string' && action.args.query.trim().length > 0;
+};
+
+const hasClarificationPayload = (
+    action: AiAction,
+): action is AiAction & { clarification: ClarificationRequestPayload } => {
+    return !!action.clarification;
+};
+
+const buildChatPlannerContext = async (
+    message: string,
+    get: GetState<AppStore>,
+    deps: ChatSliceDependencies,
+    runId?: string,
+): Promise<ChatPlannerContext> => {
+    const cardContext: CardContext[] = get().analysisCards.map(c => ({
+        id: c.id,
+        title: c.plan.title,
+        aggregatedDataSample: c.aggregatedData.slice(0, 100),
+    }));
+
+    const getSelectedMemories = (): MemoryReference[] => {
+        const { chatMemoryPreview, chatMemoryExclusions } = get();
+        return chatMemoryPreview.filter(mem => !chatMemoryExclusions.includes(mem.id));
+    };
+
+    let selectedMemories = getSelectedMemories();
+    if (selectedMemories.length === 0 && vectorStore.getDocumentCount() > 0) {
+        try {
+            selectedMemories = await vectorStore.search(message, 3, { signal: deps.getRunSignal(runId) });
+        } catch (error) {
+            if (!(error instanceof DOMException && error.name === 'AbortError')) {
+                console.error('Fallback memory search failed:', error);
+            }
+        }
+    }
+
+    const memorySnapshot = selectedMemories;
+    const memoryPayload = memorySnapshot.map(mem => mem.text);
+
+    const requestAiResponse = (prompt: string) =>
+        generateChatResponse(
+            get().columnProfiles,
+            get().chatHistory,
+            prompt,
+            cardContext,
+            get().settings,
+            get().aiCoreAnalysisSummary,
+            get().currentView,
+            (get().csvData?.data || []).slice(0, 20),
+            memoryPayload,
+            get().dataPreparationPlan,
+            get().agentActionTraces.slice(-10),
+            { signal: deps.getRunSignal(runId) },
+        );
+
+    return {
+        memorySnapshot,
+        requestAiResponse,
+    };
+};
+
+const planAgentActions = async (
+    prompt: string,
+    requestAiResponse: (prompt: string) => Promise<AiChatResponse>,
+    updateBusyStatus: (message: string) => void,
+    statusMessage: string,
+): Promise<AiChatResponse> => {
+    updateBusyStatus(statusMessage);
+    return requestAiResponse(prompt);
+};
+
+const runPlannerWorkflow = async (
+    originalPrompt: string,
+    plannerContext: ChatPlannerContext,
+    runtime: PlannerRuntime,
+): Promise<void> => {
+    const MAX_AUTO_RETRIES = 1;
+    let retryAttempts = 0;
+    const updateBusyStatus = runtime.get().updateBusyStatus;
+    let response = await planAgentActions(
+        originalPrompt,
+        plannerContext.requestAiResponse,
+        updateBusyStatus,
+        'Thinking through your question...',
+    );
+
+    while (response) {
+        if (runtime.get().isRunCancellationRequested(runtime.runId)) {
+            runtime.get().addProgress('Stopped processing request.');
+            return;
+        }
+
+        const remainingAutoRetries = MAX_AUTO_RETRIES - retryAttempts;
+        const dispatchResult = await dispatchAgentActions(response, runtime, remainingAutoRetries);
+
+        if (dispatchResult.type === 'halt') {
+            return;
+        }
+
+        if (dispatchResult.type === 'retry') {
+            const nextAttemptNumber = retryAttempts + 2;
+            retryAttempts++;
+            const retryMessage: ChatMessage = {
+                sender: 'ai',
+                text: `The previous data transformation failed (${dispatchResult.reason}). I'll try again automatically (attempt ${nextAttemptNumber}).`,
+                timestamp: new Date(),
+                type: 'ai_message',
+                isError: true,
+            };
+            runtime.set(prev => ({ chatHistory: [...prev.chatHistory, retryMessage] }));
+            runtime.get().addProgress(`Auto-retrying data transformation (attempt ${nextAttemptNumber})...`);
+            response = await planAgentActions(
+                `${runtime.userMessage}\n\nSYSTEM NOTE: Previous data transformation failed because ${dispatchResult.reason}. Please adjust the code and try again.`,
+                plannerContext.requestAiResponse,
+                updateBusyStatus,
+                'Retrying data transformation...',
+            );
+            continue;
+        }
+
+        break;
+    }
+};
+
+const dispatchAgentActions = async (
+    response: AiChatResponse,
+    runtime: PlannerRuntime,
+    remainingAutoRetries: number,
+): Promise<DispatchResult> => {
+    for (const action of response.actions) {
+        if (runtime.get().isRunCancellationRequested(runtime.runId)) {
+            runtime.get().addProgress('Cancelled remaining actions.');
+            return { type: 'halt' };
+        }
+
+        const traceSummary = summarizeAction(action);
+        const traceId = runtime.get().beginAgentActionTrace(action.responseType, traceSummary, 'chat');
+        const markTrace = (status: AgentActionStatus, details?: string) => {
+            runtime.get().updateAgentActionTrace(traceId, status, details);
+        };
+        markTrace('executing');
+
+        const stepResult = await executeActionByType(action, runtime, remainingAutoRetries, markTrace);
+        if (stepResult.type === 'retry') {
+            return { type: 'retry', reason: stepResult.reason };
+        }
+        if (stepResult.type === 'halt') {
+            return { type: 'halt' };
+        }
+    }
+
+    return { type: 'complete' };
+};
+
+const executeActionByType = async (
+    action: AiAction,
+    runtime: PlannerRuntime,
+    remainingAutoRetries: number,
+    markTrace: (status: AgentActionStatus, details?: string) => void,
+): Promise<ActionStepResult> => {
+    if (action.thought) runtime.get().addProgress(`AI Thought: ${action.thought}`);
+
+    switch (action.responseType) {
+        case 'text_response':
+            return handleTextResponseAction(action, runtime, markTrace);
+        case 'plan_creation':
+            return handlePlanCreationAction(action, runtime, markTrace);
+        case 'dom_action':
+            return handleDomAction(action, runtime, markTrace);
+        case 'execute_js_code':
+            return handleExecuteCodeAction(action, runtime, remainingAutoRetries, markTrace);
+        case 'filter_spreadsheet':
+            return handleFilterSpreadsheetAction(action, runtime, markTrace);
+        case 'clarification_request':
+            return handleClarificationRequestAction(action, runtime, markTrace);
+        case 'proceed_to_analysis':
+            return handleProceedToAnalysisAction(markTrace);
+        default:
+            markTrace('failed', 'Unsupported action type.');
+            return ACTION_STEP_CONTINUE;
+    }
+};
+
+const handleTextResponseAction = async (
+    action: AiAction,
+    runtime: PlannerRuntime,
+    markTrace: (status: AgentActionStatus, details?: string) => void,
+): Promise<ActionStepResult> => {
+    if (!hasTextPayload(action)) {
+        markTrace('failed', 'No AI text response provided.');
+        return ACTION_STEP_CONTINUE;
+    }
+
+    const shouldAttachMemory = !runtime.memoryTagAttached && runtime.memorySnapshot.length > 0;
+    const aiMessage: ChatMessage = {
+        sender: 'ai',
+        text: action.text,
+        timestamp: new Date(),
+        type: 'ai_message',
+        cardId: action.cardId,
+        usedMemories: shouldAttachMemory ? runtime.memorySnapshot : undefined,
+    };
+
+    runtime.set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
+    if (shouldAttachMemory) {
+        runtime.memoryTagAttached = true;
+    }
+    markTrace('succeeded', 'Shared response with user.');
+    return ACTION_STEP_CONTINUE;
+};
+
+const handlePlanCreationAction = async (
+    action: AiAction,
+    runtime: PlannerRuntime,
+    markTrace: (status: AgentActionStatus, details?: string) => void,
+): Promise<ActionStepResult> => {
+    const dataset = runtime.get().csvData;
+    if (!hasPlanPayload(action) || !dataset) {
+        markTrace('failed', 'Missing plan payload or dataset.');
+        return ACTION_STEP_CONTINUE;
+    }
+
+    await runtime.deps.runPlanWithChatLifecycle(action.plan, dataset, runtime.runId);
+    markTrace('succeeded', `Executed plan for "${action.plan.title ?? 'analysis'}".`);
+    return ACTION_STEP_CONTINUE;
+};
+
+const handleDomAction = async (
+    action: AiAction,
+    runtime: PlannerRuntime,
+    markTrace: (status: AgentActionStatus, details?: string) => void,
+): Promise<ActionStepResult> => {
+    if (!hasDomActionPayload(action)) {
+        markTrace('failed', 'Missing DOM action payload.');
+        return ACTION_STEP_CONTINUE;
+    }
+
+    runtime.get().executeDomAction(action.domAction);
+    markTrace('succeeded', `DOM action ${action.domAction.toolName} completed.`);
+    return ACTION_STEP_CONTINUE;
+};
+
+const handleExecuteCodeAction = async (
+    action: AiAction,
+    runtime: PlannerRuntime,
+    remainingAutoRetries: number,
+    markTrace: (status: AgentActionStatus, details?: string) => void,
+): Promise<ActionStepResult> => {
+    const dataset = runtime.get().csvData;
+    const jsBody = action.code?.jsFunctionBody?.trim();
+
+    if (!dataset) {
+        const warning = 'Dataset unavailable for transformation.';
+        runtime.get().addProgress(warning, 'error');
+        const aiMessage: ChatMessage = {
+            sender: 'ai',
+            text: `${warning} I could not run the requested update.`,
+            timestamp: new Date(),
+            type: 'ai_message',
+            isError: true,
+        };
+        runtime.set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
+        markTrace('failed', warning);
+        return ACTION_STEP_CONTINUE;
+    }
+
+    if (!hasExecutableCodePayload(action)) {
+        const warning = 'AI requested a data transformation but did not include executable code, so no changes were applied.';
+        runtime.get().addProgress(warning, 'error');
+        const aiMessage: ChatMessage = {
+            sender: 'ai',
+            text: warning,
+            timestamp: new Date(),
+            type: 'ai_message',
+            isError: true,
+        };
+        runtime.set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
+        markTrace('failed', 'Missing jsFunctionBody in execute_js_code payload.');
+        return ACTION_STEP_CONTINUE;
+    }
+
+    if (runtime.get().pendingDataTransform) {
+        const warning =
+            'A previous AI transformation is still awaiting your approval. Please confirm or discard it before running another one.';
+        runtime.get().addProgress(warning, 'error');
+        const aiMessage: ChatMessage = {
+            sender: 'ai',
+            text: `${warning} You can review it in the Data Change banner above the dashboard.`,
+            timestamp: new Date(),
+            type: 'ai_message',
+            isError: true,
+        };
+        runtime.set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
+        markTrace('failed', warning);
+        return ACTION_STEP_CONTINUE;
+    }
+
+    try {
+        const aliasMap = runtime.get().columnAliasMap;
+        const dataForTransform = cloneRowsWithAliases(dataset.data, aliasMap);
+        const transformResult = executeJavaScriptDataTransform(dataForTransform, action.code.jsFunctionBody.trim());
+        const normalizedRows = normalizeRowsFromAliases(transformResult.data, aliasMap);
+        const newData: CsvData = { ...dataset, data: normalizedRows };
+        const updatedProfiles = profileData(newData.data);
+        const updatedAliasMap = buildColumnAliasMap(updatedProfiles.map(p => p.name));
+        const { rowsBefore, rowsAfter, removedRows, addedRows, modifiedRows } = transformResult.meta;
+        const summaryParts = [
+            `${rowsBefore} → ${rowsAfter} rows`,
+            removedRows ? `${removedRows} removed` : null,
+            addedRows ? `${addedRows} added` : null,
+            modifiedRows ? `${modifiedRows} modified` : null,
+        ].filter(Boolean);
+        const summaryDescription = summaryParts.length > 0 ? summaryParts.join(', ') : 'changes detected';
+        runtime.get().queuePendingDataTransform({
+            id: `transform-${Date.now()}`,
+            summary: summaryDescription,
+            explanation: action.code.explanation,
+            meta: transformResult.meta,
+            previewRows: normalizedRows.slice(0, 5),
+            nextData: newData,
+            nextColumnProfiles: updatedProfiles,
+            nextAliasMap: updatedAliasMap,
+            sourceCode: action.code.jsFunctionBody.trim(),
+            createdAt: new Date().toISOString(),
+        });
+        const aiMessage: ChatMessage = {
+            sender: 'ai',
+            text: `I drafted a data transformation (${summaryDescription}). Please review the banner above the dashboard to confirm or discard it.`,
+            timestamp: new Date(),
+            type: 'ai_message',
+            cardId: action.cardId,
+        };
+        runtime.set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
+        markTrace('succeeded', `${summaryDescription} (awaiting confirmation)`);
+        return ACTION_STEP_CONTINUE;
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        runtime.get().addProgress(`AI data transformation failed: ${errorMessage}`, 'error');
+        const failureMessage: ChatMessage = {
+            sender: 'ai',
+            text: `I couldn't apply that data transformation: ${errorMessage}`,
+            timestamp: new Date(),
+            type: 'ai_message',
+            isError: true,
+        };
+        runtime.set(prev => ({ chatHistory: [...prev.chatHistory, failureMessage] }));
+        markTrace('failed', errorMessage);
+        return remainingAutoRetries > 0 ? { type: 'retry', reason: errorMessage } : { type: 'halt' };
+    }
+};
+
+const handleFilterSpreadsheetAction = async (
+    action: AiAction,
+    runtime: PlannerRuntime,
+    markTrace: (status: AgentActionStatus, details?: string) => void,
+): Promise<ActionStepResult> => {
+    if (!hasFilterArgsPayload(action)) {
+        markTrace('failed', 'Missing filter query.');
+        return ACTION_STEP_CONTINUE;
+    }
+
+    runtime.get().addProgress('AI is filtering the data explorer based on your request.');
+    await runtime.get().handleNaturalLanguageQuery(action.args.query);
+    runtime.set({ isSpreadsheetVisible: true });
+    setTimeout(() => {
+        document.getElementById('raw-data-explorer')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 100);
+    markTrace('succeeded', `Filter query: ${action.args.query}`);
+    return ACTION_STEP_CONTINUE;
+};
+
+const handleClarificationRequestAction = async (
+    action: AiAction,
+    runtime: PlannerRuntime,
+    markTrace: (status: AgentActionStatus, details?: string) => void,
+): Promise<ActionStepResult> => {
+    if (!hasClarificationPayload(action)) {
+        markTrace('failed', 'Clarification payload missing.');
+        return ACTION_STEP_CONTINUE;
+    }
+
+    const filteredClarification = filterClarificationOptions(
+        action.clarification,
+        runtime.get().csvData?.data,
+        runtime.get().columnProfiles.map(p => p.name),
+    );
+
+    if (!filteredClarification) {
+        const warning =
+            'I could not find any usable columns for that question. Try inspecting the data preview to pick a different column.';
+        runtime.get().addProgress(warning, 'error');
+        const aiMessage: ChatMessage = {
+            sender: 'ai',
+            text: `${warning}\nYou can also open the Data Preview to double-check column names.`,
+            timestamp: new Date(),
+            type: 'ai_message',
+            isError: true,
+            cta: {
+                type: 'open_data_preview',
+                label: 'Open Data Preview',
+                helperText: 'Review the raw columns before asking again.',
+            },
+        };
+        runtime.set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
+        markTrace('failed', 'Unable to find usable clarification options.');
+        return ACTION_STEP_CONTINUE;
+    }
+
+    const enrichedClarification = runtime.deps.registerClarification(filteredClarification);
+
+    if (enrichedClarification.options.length === 1) {
+        const autoOption = enrichedClarification.options[0];
+        runtime.get().addProgress(`AI inferred you meant "${autoOption.label}" (${autoOption.value}).`);
+        await runtime.get().handleClarificationResponse(enrichedClarification.id, autoOption);
+        markTrace('succeeded', 'Auto-resolved clarification based on single option.');
+        return ACTION_STEP_CONTINUE;
+    }
+
+    const clarificationMessage: ChatMessage = {
+        sender: 'ai',
+        text: enrichedClarification.question,
+        timestamp: new Date(),
+        type: 'ai_clarification',
+        clarificationRequest: enrichedClarification,
+    };
+    runtime.set(prev => ({
+        chatHistory: [...prev.chatHistory, clarificationMessage],
+    }));
+    runtime.set({ activeClarificationId: enrichedClarification.id });
+    runtime.get().endBusy(runtime.runId);
+    markTrace('succeeded', 'Requested user clarification.');
+    return { type: 'halt' };
+};
+
+const handleProceedToAnalysisAction = (
+    markTrace: (status: AgentActionStatus, details?: string) => void,
+): ActionStepResult => {
+    markTrace('succeeded', 'Proceed to analysis acknowledged.');
+    return ACTION_STEP_CONTINUE;
+};
+
 export const createChatSlice = (
     set: SetState<AppStore>,
     get: GetState<AppStore>,
     deps: ChatSliceDependencies,
 ): ChatSlice => {
-    const summarizeAction = (action: AiAction): string => {
-        switch (action.responseType) {
-            case 'text_response':
-                return action.text ? action.text.slice(0, 120) : 'AI text response';
-            case 'plan_creation':
-                return action.plan?.title ? `Create analysis "${action.plan.title}"` : 'Create new analysis card';
-            case 'dom_action':
-                return action.domAction ? `DOM action: ${action.domAction.toolName}` : 'DOM action';
-            case 'execute_js_code':
-                return action.code?.explanation || 'Execute data transformation';
-            case 'filter_spreadsheet':
-                return action.args?.query ? `Filter spreadsheet by "${action.args.query}"` : 'Filter spreadsheet';
-            case 'clarification_request':
-                return action.clarification?.question || 'Ask user for clarification';
-            case 'proceed_to_analysis':
-                return 'Proceed to analysis pipeline';
-            default:
-                return 'Agent action';
-        }
-    };
-
     return {
         chatMemoryPreview: [],
         chatMemoryExclusions: [],
@@ -68,345 +562,46 @@ export const createChatSlice = (
                 return;
             }
 
-        const runId = get().beginBusy('Working on your request...', { cancellable: true });
-        const newChatMessage: ChatMessage = { sender: 'user', text: message, timestamp: new Date(), type: 'user_message' };
-        set(prev => ({ chatHistory: [...prev.chatHistory, newChatMessage] }));
+            const runId = get().beginBusy('Working on your request...', { cancellable: true });
+            const newChatMessage: ChatMessage = { sender: 'user', text: message, timestamp: new Date(), type: 'user_message' };
+            set(prev => ({ chatHistory: [...prev.chatHistory, newChatMessage] }));
 
-        try {
-            const cardContext: CardContext[] = get().analysisCards.map(c => ({
-                id: c.id,
-                title: c.plan.title,
-                aggregatedDataSample: c.aggregatedData.slice(0, 100),
-            }));
-            const getSelectedMemories = (): MemoryReference[] => {
-                const { chatMemoryPreview, chatMemoryExclusions } = get();
-                return chatMemoryPreview.filter(mem => !chatMemoryExclusions.includes(mem.id));
-            };
-            let selectedMemories = getSelectedMemories();
-            if (selectedMemories.length === 0 && vectorStore.getDocumentCount() > 0) {
-                try {
-                    selectedMemories = await vectorStore.search(message, 3, { signal: deps.getRunSignal(runId) });
-                } catch (error) {
-                    if (!(error instanceof DOMException && error.name === 'AbortError')) {
-                        console.error('Fallback memory search failed:', error);
-                    }
-                }
-            }
-            const memorySnapshot = selectedMemories;
-            const memoryPayload = selectedMemories.map(mem => mem.text);
-            const requestAiResponse = (prompt: string) => generateChatResponse(
-                get().columnProfiles,
-                get().chatHistory,
-                prompt,
-                cardContext,
-                get().settings,
-                get().aiCoreAnalysisSummary,
-                get().currentView,
-                (get().csvData?.data || []).slice(0, 20),
-                memoryPayload,
-                get().dataPreparationPlan,
-                get().agentActionTraces.slice(-10),
-                { signal: deps.getRunSignal(runId) }
-            );
-
-            get().updateBusyStatus('Thinking through your question...');
-            let response = await requestAiResponse(message);
-
-            if (get().isRunCancellationRequested(runId)) {
-                get().addProgress('Stopped processing request.');
-                return;
-            }
-
-            let memoryTagAttached = false;
-            let retryAttempts = 0;
-            const MAX_AUTO_RETRIES = 1;
-            const beginTrace = get().beginAgentActionTrace;
-            const completeTrace = get().updateAgentActionTrace;
-
-            while (response) {
-                let retryRequest: { type: 'execute_js_code'; reason: string } | null = null;
-                let abortActionLoop = false;
-
-                for (const action of response.actions) {
-                    if (get().isRunCancellationRequested(runId)) {
-                        get().addProgress('Cancelled remaining actions.');
-                        return;
-                    }
-
-                    const traceSummary = summarizeAction(action);
-                    const traceId = beginTrace(action.responseType, traceSummary, 'chat');
-                    const markTrace = (status: AgentActionStatus, details?: string) => completeTrace(traceId, status, details);
-                    markTrace('executing');
-
-                    if (action.thought) get().addProgress(`AI Thought: ${action.thought}`);
-                    switch (action.responseType) {
-                        case 'text_response':
-                            if (action.text) {
-                                const shouldAttachMemory = !memoryTagAttached && memorySnapshot.length > 0;
-                                const aiMessage: ChatMessage = {
-                                    sender: 'ai',
-                                    text: action.text,
-                                    timestamp: new Date(),
-                                    type: 'ai_message',
-                                    cardId: action.cardId,
-                                    usedMemories: shouldAttachMemory ? memorySnapshot : undefined,
-                                };
-                                if (shouldAttachMemory) {
-                                    memoryTagAttached = true;
-                                }
-                                set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
-                                markTrace('succeeded', 'Shared response with user.');
-                            } else {
-                                markTrace('failed', 'No AI text response provided.');
-                            }
-                            break;
-                    case 'plan_creation':
-                        if (action.plan && get().csvData) {
-                            await deps.runPlanWithChatLifecycle(action.plan, get().csvData!, runId);
-                            markTrace('succeeded', `Executed plan for "${action.plan.title ?? 'analysis'}".`);
-                        } else {
-                            markTrace('failed', 'Missing plan payload or dataset.');
-                        }
-                        break;
-                    case 'dom_action':
-                        if (action.domAction) {
-                            get().executeDomAction(action.domAction);
-                            markTrace('succeeded', `DOM action ${action.domAction.toolName} completed.`);
-                        } else {
-                            markTrace('failed', 'Missing DOM action payload.');
-                        }
-                        break;
-                    case 'execute_js_code': {
-                        const dataset = get().csvData;
-                        const jsBody = action.code?.jsFunctionBody?.trim();
-
-                        if (!dataset) {
-                            const warning = 'Dataset unavailable for transformation.';
-                            get().addProgress(warning, 'error');
-                            const aiMessage: ChatMessage = {
-                                sender: 'ai',
-                                text: `${warning} I could not run the requested update.`,
-                                timestamp: new Date(),
-                                type: 'ai_message',
-                                isError: true,
-                            };
-                            set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
-                            markTrace('failed', warning);
-                            break;
-                        }
-
-                        if (!jsBody) {
-                            const warning = 'AI requested a data transformation but did not include executable code, so no changes were applied.';
-                            get().addProgress(warning, 'error');
-                            const aiMessage: ChatMessage = {
-                                sender: 'ai',
-                                text: warning,
-                                timestamp: new Date(),
-                                type: 'ai_message',
-                                isError: true,
-                            };
-                            set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
-                            markTrace('failed', 'Missing jsFunctionBody in execute_js_code payload.');
-                            break;
-                        }
-
-                        if (get().pendingDataTransform) {
-                            const warning = 'A previous AI transformation is still awaiting your approval. Please confirm or discard it before running another one.';
-                            get().addProgress(warning, 'error');
-                            const aiMessage: ChatMessage = {
-                                sender: 'ai',
-                                text: `${warning} You can review it in the Data Change banner above the dashboard.`,
-                                timestamp: new Date(),
-                                type: 'ai_message',
-                                isError: true,
-                            };
-                            set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
-                            markTrace('failed', warning);
-                            break;
-                        }
-
-                        try {
-                            const aliasMap = get().columnAliasMap;
-                            const dataForTransform = cloneRowsWithAliases(dataset.data, aliasMap);
-                            const transformResult = executeJavaScriptDataTransform(dataForTransform, jsBody);
-                            const normalizedRows = normalizeRowsFromAliases(transformResult.data, aliasMap);
-                            const newData: CsvData = { ...dataset, data: normalizedRows };
-                            const updatedProfiles = profileData(newData.data);
-                            const updatedAliasMap = buildColumnAliasMap(updatedProfiles.map(p => p.name));
-                            const { rowsBefore, rowsAfter, removedRows, addedRows, modifiedRows } = transformResult.meta;
-                            const summaryParts = [
-                                `${rowsBefore} → ${rowsAfter} rows`,
-                                removedRows ? `${removedRows} removed` : null,
-                                addedRows ? `${addedRows} added` : null,
-                                modifiedRows ? `${modifiedRows} modified` : null,
-                            ].filter(Boolean);
-                            const summaryDescription = summaryParts.length > 0 ? summaryParts.join(', ') : 'changes detected';
-                            get().queuePendingDataTransform({
-                                id: `transform-${Date.now()}`,
-                                summary: summaryDescription,
-                                explanation: action.code?.explanation,
-                                meta: transformResult.meta,
-                                previewRows: normalizedRows.slice(0, 5),
-                                nextData: newData,
-                                nextColumnProfiles: updatedProfiles,
-                                nextAliasMap: updatedAliasMap,
-                                sourceCode: jsBody,
-                                createdAt: new Date().toISOString(),
-                            });
-                            const aiMessage: ChatMessage = {
-                                sender: 'ai',
-                                text: `I drafted a data transformation (${summaryDescription}). Please review the banner above the dashboard to confirm or discard it.`,
-                                timestamp: new Date(),
-                                type: 'ai_message',
-                                cardId: action.cardId,
-                            };
-                            set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
-                            markTrace('succeeded', `${summaryDescription} (awaiting confirmation)`);
-                        } catch (error) {
-                            const errorMessage = error instanceof Error ? error.message : String(error);
-                            get().addProgress(`AI data transformation failed: ${errorMessage}`, 'error');
-                            const failureMessage: ChatMessage = {
-                                sender: 'ai',
-                                text: `I couldn't apply that data transformation: ${errorMessage}`,
-                                timestamp: new Date(),
-                                type: 'ai_message',
-                                isError: true,
-                            };
-                            set(prev => ({ chatHistory: [...prev.chatHistory, failureMessage] }));
-                            if (retryAttempts < MAX_AUTO_RETRIES) {
-                                retryRequest = { type: 'execute_js_code', reason: errorMessage };
-                            }
-                            markTrace('failed', errorMessage);
-                            abortActionLoop = true;
-                            break;
-                        }
-                        break;
-                    }
-                    case 'filter_spreadsheet':
-                        if (action.args?.query) {
-                            get().addProgress('AI is filtering the data explorer based on your request.');
-                            await get().handleNaturalLanguageQuery(action.args.query);
-                            set({ isSpreadsheetVisible: true });
-                            setTimeout(() => {
-                                document.getElementById('raw-data-explorer')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                            }, 100);
-                            markTrace('succeeded', `Filter query: ${action.args.query}`);
-                        } else {
-                            markTrace('failed', 'Missing filter query.');
-                        }
-                        break;
-                    case 'clarification_request':
-                        if (action.clarification) {
-                            const filteredClarification = filterClarificationOptions(
-                                action.clarification,
-                                get().csvData?.data,
-                                get().columnProfiles.map(p => p.name)
-                            );
-
-                            if (!filteredClarification) {
-                                const warning =
-                                    'I could not find any usable columns for that question. Try inspecting the data preview to pick a different column.';
-                                get().addProgress(warning, 'error');
-                                const aiMessage: ChatMessage = {
-                                    sender: 'ai',
-                                    text: `${warning}\nYou can also open the Data Preview to double-check column names.`,
-                                    timestamp: new Date(),
-                                    type: 'ai_message',
-                                    isError: true,
-                                    cta: {
-                                        type: 'open_data_preview',
-                                        label: 'Open Data Preview',
-                                        helperText: 'Review the raw columns before asking again.',
-                                    },
-                                };
-                                set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
-                                break;
-                            }
-
-                            const enrichedClarification = deps.registerClarification(filteredClarification);
-
-                            if (enrichedClarification.options.length === 1) {
-                                const autoOption = enrichedClarification.options[0];
-                                get().addProgress(`AI inferred you meant "${autoOption.label}" (${autoOption.value}).`);
-                                await get().handleClarificationResponse(enrichedClarification.id, autoOption);
-                                markTrace('succeeded', 'Auto-resolved clarification based on single option.');
-                                break;
-                            }
-
-                            const clarificationMessage: ChatMessage = {
-                                sender: 'ai',
-                                text: enrichedClarification.question,
-                                timestamp: new Date(),
-                                type: 'ai_clarification',
-                                clarificationRequest: enrichedClarification,
-                            };
-                            set(prev => ({
-                                chatHistory: [...prev.chatHistory, clarificationMessage],
-                            }));
-                            set({ activeClarificationId: enrichedClarification.id });
-                            get().endBusy(runId);
-                            markTrace('succeeded', 'Requested user clarification.');
-                            return;
-                        }
-                        markTrace('failed', 'Clarification payload missing.');
-                        break;
-                    case 'proceed_to_analysis':
-                        markTrace('succeeded', 'Proceed to analysis acknowledged.');
-                        break;
-                    default:
-                        markTrace('failed', 'Unsupported action type.');
-                        break;
-                    }
-
-                    if (abortActionLoop) {
-                        break;
-                    }
+            try {
+                const plannerContext = await buildChatPlannerContext(message, get, deps, runId);
+                if (get().isRunCancellationRequested(runId)) {
+                    get().addProgress('Stopped processing request.');
+                    return;
                 }
 
-                if (retryRequest && retryRequest.type === 'execute_js_code' && retryAttempts < MAX_AUTO_RETRIES) {
-                    const nextAttemptNumber = retryAttempts + 2;
-                    retryAttempts++;
-                    const retryMessage: ChatMessage = {
+                await runPlannerWorkflow(message, plannerContext, {
+                    set,
+                    get,
+                    deps,
+                    runId,
+                    userMessage: message,
+                    memorySnapshot: plannerContext.memorySnapshot,
+                    memoryTagAttached: false,
+                });
+            } catch (error) {
+                if (!get().isRunCancellationRequested(runId)) {
+                    const errorMessage = error instanceof Error ? error.message : String(error);
+                    get().addProgress(`Error: ${errorMessage}`, 'error');
+                    const aiMessage: ChatMessage = {
                         sender: 'ai',
-                        text: `The previous data transformation failed (${retryRequest.reason}). I'll try again automatically (attempt ${nextAttemptNumber}).`,
+                        text: `Sorry, an error occurred: ${errorMessage}`,
                         timestamp: new Date(),
                         type: 'ai_message',
                         isError: true,
                     };
-                    set(prev => ({ chatHistory: [...prev.chatHistory, retryMessage] }));
-                    get().addProgress(`Auto-retrying data transformation (attempt ${nextAttemptNumber})...`);
-                    get().updateBusyStatus('Retrying data transformation...');
-                    const retryPrompt = `${message}\n\nSYSTEM NOTE: Previous data transformation failed because ${retryRequest.reason}. Please adjust the code and try again.`;
-                    response = await requestAiResponse(retryPrompt);
-                    if (get().isRunCancellationRequested(runId)) {
-                        get().addProgress('Stopped processing request.');
-                        return;
-                    }
-                    continue;
+                    set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
                 }
-
-                break;
+            } finally {
+                if (!get().pendingClarifications.some(req => req.status === 'pending' || req.status === 'resolving')) {
+                    get().endBusy(runId);
+                }
+                get().clearChatMemoryPreview();
             }
-        } catch (error) {
-            if (!get().isRunCancellationRequested(runId)) {
-                const errorMessage = error instanceof Error ? error.message : String(error);
-                get().addProgress(`Error: ${errorMessage}`, 'error');
-                const aiMessage: ChatMessage = {
-                    sender: 'ai',
-                    text: `Sorry, an error occurred: ${errorMessage}`,
-                    timestamp: new Date(),
-                    type: 'ai_message',
-                    isError: true,
-                };
-                set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
-            }
-        } finally {
-            if (!get().pendingClarifications.some(req => req.status === 'pending' || req.status === 'resolving')) {
-                get().endBusy(runId);
-            }
-            get().clearChatMemoryPreview();
-        }
-    },
+        },
 
     previewChatMemories: async (query: string) => {
         const trimmed = query.trim();
