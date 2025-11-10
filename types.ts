@@ -108,6 +108,7 @@ export const AGENT_STATE_TAGS = [
     'context_ready',
     'needs_clarification',
     'transform_drafted',
+    'transform_ready',
     'analysis_shared',
     'awaiting_data',
     'error_retrying',

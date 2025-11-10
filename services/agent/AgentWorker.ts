@@ -97,14 +97,23 @@ interface ActionObservationPayload {
     uiDelta?: string | null;
 }
 
+type RetryMetadata = {
+    retryPrompt?: string;
+    userFacingMessage?: string;
+    progressMessage?: string;
+    phaseMessage?: string;
+    statusMessage?: string;
+    promptMode?: ChatResponseOptions['mode'];
+};
+
 type ActionStepResult =
     | { type: 'continue'; observation?: ActionObservationPayload }
-    | { type: 'retry'; reason: string; observation?: ActionObservationPayload }
+    | ({ type: 'retry'; reason: string; observation?: ActionObservationPayload } & RetryMetadata)
     | { type: 'halt'; observation?: ActionObservationPayload };
 
 type DispatchResult =
     | { type: 'complete' }
-    | { type: 'retry'; reason: string }
+    | ({ type: 'retry'; reason: string } & RetryMetadata)
     | { type: 'halt' };
 
 const STATE_TAG_SET = new Set<AgentStateTag>(AGENT_STATE_TAGS);
@@ -1464,9 +1473,16 @@ const stateConsistencyMiddleware: ActionMiddleware = async (context, next) => {
             errorCode: ACTION_ERROR_CODES.PLAN_STEP_OUT_OF_ORDER,
             metadata: { expectedStepId: expectedStep.id, expectedStepLabel: expectedStep.label },
         });
+        const retryPrompt = `SYSTEM NOTE: You attempted to skip the plan step ${stepLabel}. Reference it explicitly and set stepId="${expectedStep.id}" before taking other actions.`;
         return {
             type: 'retry',
-            reason: `You attempted to skip the step ${stepLabel}. Focus on it before moving on.`,
+            reason: `Plan step enforcement triggered for ${stepLabel}.`,
+            retryPrompt,
+            userFacingMessage: `Plan step enforcement triggered for ${stepLabel}. I'll restate the pending step and try again.`,
+            progressMessage: `Refocusing on pending step ${stepLabel}...`,
+            phaseMessage: 'Reordering plan execution after a failed attempt...',
+            statusMessage: 'Refocusing on the pending step...',
+            promptMode: 'full',
             observation: {
                 status: 'error',
                 errorCode: ACTION_ERROR_CODES.PLAN_STEP_OUT_OF_ORDER,
@@ -2226,25 +2242,35 @@ const runPlannerWorkflow = async (
             }
 
             if (dispatchResult.type === 'retry') {
-                enterAgentPhase(runtime, 'retrying', 'Retrying the last action automatically...');
                 const nextAttemptNumber = retryAttempts + 2;
                 retryAttempts++;
+                const attemptLabel = `attempt ${nextAttemptNumber}`;
+                const retryPhaseMessage = dispatchResult.phaseMessage ?? 'Retrying the last action automatically...';
+                enterAgentPhase(runtime, 'retrying', retryPhaseMessage);
+                const chatMessageText =
+                    dispatchResult.userFacingMessage ??
+                    `The previous action failed (${dispatchResult.reason}). I'll try again automatically (${attemptLabel}).`;
                 const retryMessage: ChatMessage = {
                     sender: 'ai',
-                    text: `The previous data transformation failed (${dispatchResult.reason}). I'll try again automatically (attempt ${nextAttemptNumber}).`,
+                    text: chatMessageText,
                     timestamp: new Date(),
                     type: 'ai_message',
                     isError: true,
                 };
                 runtime.set(prev => ({ chatHistory: [...prev.chatHistory, retryMessage] }));
-                runtime.get().addProgress(`Auto-retrying data transformation (attempt ${nextAttemptNumber})...`);
-                enterAgentPhase(runtime, 'planning', 'Adjusting the plan after a failed attempt...');
+                const progressMessage =
+                    dispatchResult.progressMessage ?? `Auto-retrying last action (${attemptLabel})...`;
+                runtime.get().addProgress(progressMessage);
+                const planningStatusMessage = dispatchResult.statusMessage ?? 'Adjusting the plan after a failed attempt...';
+                enterAgentPhase(runtime, 'planning', planningStatusMessage);
+                const retryPrompt =
+                    dispatchResult.retryPrompt ??
+                    `SYSTEM NOTE: Previous action failed because ${dispatchResult.reason}. Please adjust and try again.`;
+                const retryPromptMode = dispatchResult.promptMode ?? 'full';
                 ({ response, meta: responseMeta } = await requestAgentResponse(
-                    withIntentNotes(
-                        `${runtime.userMessage}\n\nSYSTEM NOTE: Previous data transformation failed because ${dispatchResult.reason}. Please adjust the code and try again.`,
-                    ),
-                    'Retrying data transformation...',
-                    { mode: 'full' },
+                    withIntentNotes(`${runtime.userMessage}\n\n${retryPrompt}`),
+                    planningStatusMessage,
+                    { mode: retryPromptMode },
                 ));
                 continue;
             }
@@ -2414,7 +2440,16 @@ const dispatchAgentActions = async (
             });
         }
         if (stepResult.type === 'retry') {
-            return { type: 'retry', reason: stepResult.reason };
+            return {
+                type: 'retry',
+                reason: stepResult.reason,
+                retryPrompt: stepResult.retryPrompt,
+                userFacingMessage: stepResult.userFacingMessage,
+                progressMessage: stepResult.progressMessage,
+                phaseMessage: stepResult.phaseMessage,
+                statusMessage: stepResult.statusMessage,
+                promptMode: stepResult.promptMode,
+            };
         }
         if (stepResult.type === 'halt') {
             return { type: 'halt' };

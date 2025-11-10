@@ -1048,7 +1048,7 @@ await test('execute_js_code failure triggers auto-retry flow', async () => {
 
     const errorMessage = store.chatHistory.find(msg => msg.isError)?.text ?? '';
     assert.ok(errorMessage.includes("couldn't apply that data transformation"));
-    assert.ok(store.progressLog.some(msg => msg.includes('Auto-retrying data transformation (attempt 2)...')));
+    assert.ok(store.progressLog.some(msg => msg.includes('Auto-retrying last action (attempt 2)...')));
     assert.deepStrictEqual(
         store.agentActionTraces.map(t => t.actionType),
         [
@@ -1113,7 +1113,7 @@ await test('execute_js_code intent stays unsatisfied until a successful tool run
         runtime as any,
     );
 
-    assert.ok(store.progressLog.some(msg => msg.includes('Auto-retrying data transformation (attempt 2)...')));
+    assert.ok(store.progressLog.some(msg => msg.includes('Auto-retrying last action (attempt 2)...')));
     assert.strictEqual(store.validationEvents.length, 1);
     assert.strictEqual(store.validationEvents[0].reason, 'Required tool execute_js_code missing.');
     assert.ok(store.pendingDataTransform, 'Successful final transform should queue preview data.');
