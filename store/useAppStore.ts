@@ -32,8 +32,16 @@ import {
     AgentPromptMetric,
     CsvRow,
 } from '../types';
-import { executePlan, applyTopNWithOthers } from '../utils/dataProcessor';
-import { generateAnalysisPlans, generateSummary, generateFinalSummary, generateCoreAnalysisSummary, generateProactiveInsights } from '../services/aiService';
+import { executePlan, applyTopNWithOthers, PlanExecutionError } from '../utils/dataProcessor';
+import {
+    generateAnalysisPlans,
+    generateSummary,
+    generateFinalSummary,
+    generateCoreAnalysisSummary,
+    generateProactiveInsights,
+    PlanGenerationFatalError,
+    type PlanGenerationWarning,
+} from '../services/aiService';
 import { getReportsList, getReport, deleteReport, getSettings, saveSettings, CURRENT_SESSION_KEY } from '../storageService';
 import { vectorStore } from '../services/vectorStore';
 import { runWithBusyState } from '../utils/runWithBusy';
@@ -846,6 +854,21 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         const beginTrace = get().beginAgentActionTrace;
         const completeTrace = get().updateAgentActionTrace;
         const datasetId = get().datasetHash;
+        const markTimelineStep = () => {
+            if (isChatRequest) return;
+            set(state => {
+                const total = state.analysisTimeline.totalCards || 0;
+                const completed = Math.min(total, state.analysisTimeline.completedCards + 1);
+                const shouldPromoteStage = state.analysisTimeline.stage === 'persisting' || state.analysisTimeline.stage === 'profiling';
+                return {
+                    analysisTimeline: {
+                        ...state.analysisTimeline,
+                        completedCards: completed,
+                        stage: shouldPromoteStage ? 'insight' : state.analysisTimeline.stage,
+                    },
+                };
+            });
+        };
 
         const buildAggregatePayload = (plan: AnalysisPlan): AggregatePayload | null => {
             if (!datasetId) return null;
@@ -928,17 +951,31 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 const preparedPlan = preparation.plan;
                 let aggregateResult: AggregateResult | null = null;
                 let aggregatedData: CsvRow[] = [];
-                if (datasetId) {
-                    aggregateResult = await aggregateWithWorker(preparedPlan);
-                }
-                if (aggregateResult) {
-                    aggregatedData = aggregateResult.rows;
-                } else {
-                    aggregatedData = executePlan(data, preparedPlan);
+                try {
+                    if (datasetId) {
+                        aggregateResult = await aggregateWithWorker(preparedPlan);
+                    }
+                    if (aggregateResult) {
+                        aggregatedData = aggregateResult.rows;
+                    } else {
+                        aggregatedData = executePlan(data, preparedPlan);
+                    }
+                } catch (error) {
+                    if (error instanceof PlanExecutionError && error.code === 'no_rows') {
+                        const filterMessage = preparedPlan.rowFilter
+                            ? `${preparedPlan.rowFilter.column} → ${preparedPlan.rowFilter.values.join(', ')}`
+                            : 'the requested filter';
+                        addProgress(`Skipping "${plan.title}" because ${filterMessage} returned no rows.`, 'error');
+                        finalizeTrace('failed', error.message);
+                        markTimelineStep();
+                        return null;
+                    }
+                    throw error;
                 }
                 if (aggregatedData.length === 0) {
                     addProgress(`Skipping "${plan.title}" due to empty result.`, 'error');
                     finalizeTrace('failed', 'Aggregation returned 0 rows.');
+                    markTimelineStep();
                     return null;
                 }
 
@@ -989,20 +1026,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 };
 
                 set(prev => ({ analysisCards: [...prev.analysisCards, newCard] }));
-                if (!isChatRequest) {
-                    set(state => {
-                        const completed = state.analysisTimeline.completedCards + 1;
-                        const nextStage =
-                            state.analysisTimeline.stage === 'profiling' ? 'insight' : state.analysisTimeline.stage;
-                        return {
-                            analysisTimeline: {
-                                ...state.analysisTimeline,
-                                completedCards: completed,
-                                stage: nextStage,
-                            },
-                        };
-                    });
-                }
+                markTimelineStep();
 
                 const cardMemoryText = `[Chart: ${preparedPlan.title}] Description: ${preparedPlan.description}. AI Summary: ${summary.split('---')[0]}`;
                 await vectorStore.addDocument({ id: newCard.id, text: cardMemoryText });
@@ -1016,12 +1040,14 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 if (shouldAbort()) {
                     addProgress(`Cancelled "${plan.title}" before completion.`);
                     completeTrace(planTraceId, 'failed', 'Cancelled before completion.');
+                    markTimelineStep();
                     return null;
                 }
                 console.error('Error executing plan:', plan.title, error);
                 const errorMessage = error instanceof Error ? error.message : String(error);
                 addProgress(`Error executing plan "${plan.title}": ${errorMessage}`, 'error');
                 finalizeTrace('failed', errorMessage);
+                markTimelineStep();
                 return null;
             }
         };
@@ -1096,12 +1122,18 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 try {
                     get().addProgress('AI is generating analysis plans...');
                     get().updateBusyStatus('Drafting analysis plans...');
-                    const plans = await generateAnalysisPlans(
+                    const planResult = await generateAnalysisPlans(
                         get().columnProfiles,
                         dataForAnalysis.data.slice(0, 5),
                         get().settings,
                         { signal: getRunSignal(runId) }
                     );
+                    planResult.warnings.forEach((warning: PlanGenerationWarning) => {
+                        const warningMessage = `Plan generator warning: ${warning.message}`;
+                        get().addProgress(warningMessage, 'error');
+                        get().addToast(warning.message, 'error', 6000);
+                    });
+                    const plans = planResult.plans;
 
                     if (runId && get().isRunCancellationRequested(runId)) {
                         get().addProgress('Analysis cancelled before execution.');
@@ -1114,12 +1146,42 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                         await get().runAnalysisPipeline(plans, dataForAnalysis, { runId });
                     } else {
                         get().addProgress('AI did not propose any analysis plans.', 'error');
+                        set(state => ({
+                            analysisTimeline: { ...state.analysisTimeline, stage: 'idle', totalCards: 0, completedCards: 0 },
+                        }));
                     }
                 } catch (error) {
-                    if (!(runId && get().isRunCancellationRequested(runId))) {
+                    if (error instanceof PlanGenerationFatalError) {
+                        error.warnings.forEach(warning => {
+                            get().addProgress(`Plan generator warning: ${warning.message}`, 'error');
+                            get().addToast(warning.message, 'error', 7000);
+                        });
+                        get().addProgress('Plan generation failed. Please retry analysis or adjust your prompt.', 'error');
+                        get().addToast('Plan generation failed. Retry?', 'error', 0, {
+                            label: 'Retry analysis',
+                            onClick: () => {
+                                const latestData = get().csvData;
+                                if (latestData) {
+                                    get().handleInitialAnalysis(latestData);
+                                }
+                            },
+                        });
+                        set(state => ({
+                            analysisTimeline: { ...state.analysisTimeline, stage: 'idle' },
+                        }));
+                    } else if (!(runId && get().isRunCancellationRequested(runId))) {
                         console.error('Analysis pipeline error:', error);
                         const errorMessage = error instanceof Error ? error.message : String(error);
                         get().addProgress(`Error during analysis: ${errorMessage}`, 'error');
+                        get().addToast('Analysis failed. Retry?', 'error', 0, {
+                            label: 'Retry',
+                            onClick: () => {
+                                const latestData = get().csvData;
+                                if (latestData) {
+                                    get().handleInitialAnalysis(latestData);
+                                }
+                            },
+                        });
                     }
                 } finally {
                     if (runId && get().isRunCancellationRequested(runId)) {

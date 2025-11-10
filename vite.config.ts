@@ -18,6 +18,14 @@ export default defineConfig(({ mode }) => {
         alias: {
           '@': path.resolve(__dirname, '.'),
         }
-      }
+      },
+      build: {
+        rollupOptions: {
+          output: {
+            entryFileNames: chunk => `agent_csv_${chunk.name ?? 'entry'}.js`,
+            chunkFileNames: chunk => `agent_csv_${chunk.name ?? 'chunk'}.js`,
+          },
+        },
+      },
     };
 });

@@ -30,6 +30,44 @@ export const withRetry = async <T>(fn: () => Promise<T>, retries = 2, signal?: A
  * @param responseText The raw text response from the AI.
  * @returns A parsed array of objects.
  */
+export class PlanParsingError extends Error {
+    readonly rawContent: string;
+    constructor(message: string, rawContent: string) {
+        super(message);
+        this.name = 'PlanParsingError';
+        this.rawContent = rawContent;
+    }
+}
+
+const tryJsonParse = (text: string): any | null => {
+    try {
+        return JSON.parse(text);
+    } catch {
+        return null;
+    }
+};
+
+const extractJsonSegment = (content: string): string | null => {
+    const delimiters: Array<[string, string]> = [
+        ['[', ']'],
+        ['{', '}'],
+    ];
+    for (const [startChar, endChar] of delimiters) {
+        const start = content.indexOf(startChar);
+        const end = content.lastIndexOf(endChar);
+        if (start !== -1 && end !== -1 && end > start) {
+            const segment = content.slice(start, end + 1).trim();
+            if (segment) {
+                const parsed = tryJsonParse(segment);
+                if (parsed !== null) {
+                    return segment;
+                }
+            }
+        }
+    }
+    return null;
+};
+
 export const robustlyParseJsonArray = (responseText: string): any[] => {
     let content = responseText.trim();
 
@@ -39,33 +77,38 @@ export const robustlyParseJsonArray = (responseText: string): any[] => {
         content = markdownMatch[1];
     }
 
-    try {
-        const resultObject = JSON.parse(content);
+    const initialParse = tryJsonParse(content);
+    let parsedContent = initialParse;
+    if (parsedContent === null) {
+        const extractedSegment = extractJsonSegment(content);
+        if (extractedSegment) {
+            parsedContent = tryJsonParse(extractedSegment);
+        }
+    }
 
-        // Case 1: The result is already an array.
+    if (parsedContent !== null) {
+        const resultObject = parsedContent;
+
         if (Array.isArray(resultObject)) {
             return resultObject;
         }
 
         if (typeof resultObject === 'object' && resultObject !== null) {
-            // Case 2: The result is an object containing an array.
-            // Find the first value that is an array and return it.
             const nestedArray = Object.values(resultObject).find(v => Array.isArray(v));
             if (nestedArray && Array.isArray(nestedArray)) {
                 return nestedArray;
             }
-            
-            // Case 3: The result is a single plan object, not in an array.
             if ('chartType' in resultObject && 'title' in resultObject) {
                 return [resultObject];
             }
         }
-    } catch (e) {
-        console.error("Failed to parse AI response as JSON:", e, "Content:", content);
-        throw new Error(`AI response could not be parsed as JSON. Content starts with: "${content.substring(0, 150)}..."`);
     }
 
-    throw new Error("Response did not contain a recognizable JSON array or object of plans.");
+    console.error("Failed to parse AI response as JSON. Content:", content);
+    throw new PlanParsingError(
+        `AI response could not be parsed as JSON. Content starts with: "${content.substring(0, 150)}..."`,
+        content,
+    );
 };
 
 

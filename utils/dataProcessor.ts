@@ -1,5 +1,16 @@
 import { CsvData, CsvRow, AnalysisPlan, ColumnProfile, AggregationType, DataTransformMeta, AnalysisPlanRowFilter } from '../types';
 
+export type PlanExecutionErrorCode = 'no_rows' | 'invalid_configuration' | 'unknown';
+
+export class PlanExecutionError extends Error {
+    code: PlanExecutionErrorCode;
+    constructor(message: string, code: PlanExecutionErrorCode = 'unknown') {
+        super(message);
+        this.name = 'PlanExecutionError';
+        this.code = code;
+    }
+}
+
 declare const Papa: any;
 
 // CSV formula injection prevention
@@ -599,8 +610,9 @@ export const executePlan = (data: CsvData, plan: AnalysisPlan): CsvRow[] => {
         scopedRows.length === 0
     ) {
         const valuesPreview = plan.rowFilter.values.map(value => `"${String(value)}"`).join(', ');
-        throw new Error(
+        throw new PlanExecutionError(
             `No rows matched the filter ${plan.rowFilter.column} → ${valuesPreview}. Remove or adjust the filter and try again.`,
+            'no_rows',
         );
     }
 

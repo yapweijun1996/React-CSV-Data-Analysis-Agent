@@ -1,6 +1,6 @@
 
 import { CsvData, ColumnProfile, Settings, AnalysisPlan, CsvRow, AggregationType } from '../../types';
-import { callGemini, callOpenAI, robustlyParseJsonArray } from './apiClient';
+import { callGemini, callOpenAI, robustlyParseJsonArray, PlanParsingError } from './apiClient';
 import { planSchema, planJsonSchema } from './schemas';
 import { createCandidatePlansPrompt, createRefinePlansPrompt } from '../promptTemplates';
 import { executePlan } from '../../utils/dataProcessor';
@@ -117,7 +117,7 @@ interface AnalysisPlanOptions {
     signal?: AbortSignal;
 }
 
-export const generateAnalysisPlans = async (
+const generatePlansWithQualityGate = async (
     columns: ColumnProfile[], 
     sampleData: CsvData['data'],
     settings: Settings,
@@ -126,55 +126,101 @@ export const generateAnalysisPlans = async (
     const isApiKeySet = (settings.provider === 'google' && !!settings.geminiApiKey) || (settings.provider === 'openai' && !!settings.openAIApiKey);
     if (!isApiKeySet) throw new Error("API Key not provided.");
 
-    try {
-        // Step 1: Generate a broad list of candidate plans (already validated inside the function)
-        const candidatePlans = await generateCandidatePlans(columns, sampleData, settings, 12, options?.signal);
-        if (candidatePlans.length === 0) return [];
+    // Step 1: Generate a broad list of candidate plans (already validated inside the function)
+    const candidatePlans = await generateCandidatePlans(columns, sampleData, settings, 12, options?.signal);
+    if (candidatePlans.length === 0) return [];
 
-        // Step 2: Execute plans on sample data to get data for the AI to review
-        const sampleCsvData = { fileName: 'sample', data: sampleData };
-        const plansWithDataForReview = candidatePlans.map(plan => {
-            try {
-                const aggregatedSample = executePlan(sampleCsvData, plan);
-                // A plan is only viable for review if it produces data.
-                if (aggregatedSample.length > 0) {
-                    return { plan, aggregatedSample: aggregatedSample.slice(0, 20) }; // Limit sample size for the prompt
-                }
-                return null;
-            } catch (e) {
-                // This catch is a safeguard, but isValidPlan should prevent most errors.
-                console.warn(`Execution of plan "${plan.title}" failed during review stage:`, e);
-                return null;
-            }
-        }).filter((p): p is { plan: AnalysisPlan; aggregatedSample: CsvRow[] } => p !== null);
-        
-        if (plansWithDataForReview.length === 0) {
-            console.warn("No candidate plans produced data for AI review, returning initial valid candidates.");
-            return candidatePlans.slice(0, 4);
-        }
-        
-        // Step 3: AI Quality Gate - Ask AI to review and refine the plans (already validated inside the function)
-        const refinedPlans = await refineAndConfigurePlans(plansWithDataForReview, settings, options?.signal);
-
-        // Ensure we have a minimum number of plans
-        let finalPlans = refinedPlans;
-        if (finalPlans.length < 4 && candidatePlans.length > finalPlans.length) {
-            const refinedPlanTitles = new Set(finalPlans.map(p => p.title));
-            const fallbackPlans = candidatePlans.filter(p => !refinedPlanTitles.has(p.title));
-            const needed = 4 - finalPlans.length;
-            finalPlans.push(...fallbackPlans.slice(0, needed));
-        }
-
-        return finalPlans.slice(0, 12); // Return between 4 and 12 of the best plans
-
-    } catch (error) {
-        console.error("Error during two-step analysis plan generation:", error);
-        // Fallback to simpler generation if the complex one fails
+    // Step 2: Execute plans on sample data to get data for the AI to review
+    const sampleCsvData = { fileName: 'sample', data: sampleData };
+    const plansWithDataForReview = candidatePlans.map(plan => {
         try {
-            return await generateCandidatePlans(columns, sampleData, settings, 8, options?.signal);
+            const aggregatedSample = executePlan(sampleCsvData, plan);
+            // A plan is only viable for review if it produces data.
+            if (aggregatedSample.length > 0) {
+                return { plan, aggregatedSample: aggregatedSample.slice(0, 20) }; // Limit sample size for the prompt
+            }
+            return null;
+        } catch (e) {
+            // This catch is a safeguard, but isValidPlan should prevent most errors.
+            console.warn(`Execution of plan "${plan.title}" failed during review stage:`, e);
+            return null;
+        }
+    }).filter((p): p is { plan: AnalysisPlan; aggregatedSample: CsvRow[] } => p !== null);
+    
+    if (plansWithDataForReview.length === 0) {
+        console.warn("No candidate plans produced data for AI review, returning initial valid candidates.");
+        return candidatePlans.slice(0, 4);
+    }
+    
+    // Step 3: AI Quality Gate - Ask AI to review and refine the plans (already validated inside the function)
+    const refinedPlans = await refineAndConfigurePlans(plansWithDataForReview, settings, options?.signal);
+
+    // Ensure we have a minimum number of plans
+    let finalPlans = refinedPlans;
+    if (finalPlans.length < 4 && candidatePlans.length > finalPlans.length) {
+        const refinedPlanTitles = new Set(finalPlans.map(p => p.title));
+        const fallbackPlans = candidatePlans.filter(p => !refinedPlanTitles.has(p.title));
+        const needed = 4 - finalPlans.length;
+        finalPlans.push(...fallbackPlans.slice(0, needed));
+    }
+
+    return finalPlans.slice(0, 12); // Return between 4 and 12 of the best plans
+};
+
+export interface PlanGenerationWarning {
+    code: 'plan_parse_error' | 'plan_generation_error';
+    message: string;
+    hint?: string;
+}
+
+export class PlanGenerationFatalError extends Error {
+    readonly warnings: PlanGenerationWarning[];
+    constructor(message: string, warnings: PlanGenerationWarning[], cause?: unknown) {
+        super(message);
+        this.name = 'PlanGenerationFatalError';
+        this.warnings = warnings;
+        if (cause) {
+            this.cause = cause;
+        }
+    }
+}
+
+export interface PlanGenerationResult {
+    plans: AnalysisPlan[];
+    warnings: PlanGenerationWarning[];
+}
+
+export const generateAnalysisPlans = async (
+    columns: ColumnProfile[], 
+    sampleData: CsvData['data'],
+    settings: Settings,
+    options?: AnalysisPlanOptions
+): Promise<PlanGenerationResult> => {
+    const isApiKeySet = (settings.provider === 'google' && !!settings.geminiApiKey) || (settings.provider === 'openai' && !!settings.openAIApiKey);
+    if (!isApiKeySet) throw new Error("API Key not provided.");
+
+    const warnings: PlanGenerationWarning[] = [];
+
+    try {
+        const plans = await generatePlansWithQualityGate(columns, sampleData, settings, options);
+        return { plans, warnings };
+    } catch (error) {
+        const isParsingError = error instanceof PlanParsingError;
+        const warningMessage = isParsingError
+            ? 'AI plan response was not valid JSON. Retrying with a simpler generator.'
+            : 'AI plan generator failed on the first attempt. Retrying with a simpler prompt.';
+        warnings.push({
+            code: isParsingError ? 'plan_parse_error' : 'plan_generation_error',
+            message: warningMessage,
+            hint: 'If this happens repeatedly, ask the assistant to retry with fewer plans.',
+        });
+        console.warn("Plan generation warning:", error);
+        try {
+            const fallbackPlans = await generateCandidatePlans(columns, sampleData, settings, 8, options?.signal);
+            return { plans: fallbackPlans, warnings };
         } catch (fallbackError) {
-             console.error("Fallback plan generation also failed:", fallbackError);
-             throw new Error("Failed to generate any analysis plans from AI.");
+            console.error("Fallback plan generation also failed:", fallbackError);
+            throw new PlanGenerationFatalError("Failed to generate any analysis plans from AI.", warnings, fallbackError);
         }
     }
 };
