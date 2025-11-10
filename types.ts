@@ -111,6 +111,7 @@ export const AGENT_STATE_TAGS = [
     'analysis_shared',
     'awaiting_data',
     'error_retrying',
+    'awaiting_clarification',
 ] as const;
 
 export type AgentStateTag = string;
