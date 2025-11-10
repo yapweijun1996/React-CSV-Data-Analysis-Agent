@@ -591,6 +591,19 @@ const calculateAggregation = (values: number[], aggregation: AggregationType): n
 export const executePlan = (data: CsvData, plan: AnalysisPlan): CsvRow[] => {
     const scopedRows = applyPlanRowFilter(data.data, plan.rowFilter);
 
+    if (
+        plan.rowFilter &&
+        plan.rowFilter.column &&
+        Array.isArray(plan.rowFilter.values) &&
+        plan.rowFilter.values.length > 0 &&
+        scopedRows.length === 0
+    ) {
+        const valuesPreview = plan.rowFilter.values.map(value => `"${String(value)}"`).join(', ');
+        throw new Error(
+            `No rows matched the filter ${plan.rowFilter.column} → ${valuesPreview}. Remove or adjust the filter and try again.`,
+        );
+    }
+
     // Handle scatter plots separately as they don't aggregate data
     if (plan.chartType === 'scatter') {
         const { xValueColumn, yValueColumn } = plan;

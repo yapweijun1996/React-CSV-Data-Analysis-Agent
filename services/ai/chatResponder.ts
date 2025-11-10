@@ -42,6 +42,7 @@ export const generateChatResponse = async (
     activePlanState: AgentPlanState | null,
     dataPreparationPlan: DataPreparationPlan | null,
     recentActionTraces: AgentActionTrace[],
+    rawDataFilterSummary: string,
     options?: ChatResponseOptions
 ): Promise<AiChatResponse> => {
     const isApiKeySet = (settings.provider === 'google' && !!settings.geminiApiKey) || (settings.provider === 'openai' && !!settings.openAIApiKey);
@@ -63,6 +64,7 @@ export const generateChatResponse = async (
             activePlanState,
             dataPreparationPlan,
             recentActionTraces,
+            rawDataFilterSummary,
         );
 
         const baseSystemPrompt = `You are an expert data analyst and business strategist, required to operate using a Reason-Act (ReAct) framework. For every action you take, you must first explain your reasoning in the 'thought' field, and then define the action itself. You also maintain an explicit goal tracker by emitting a 'plan_state_update' action at the start of each response (and whenever the mission changes) so the UI can display your progress. Your final conversational responses should be in ${settings.language}.

@@ -1,6 +1,6 @@
 import type { GetState, SetState } from 'zustand';
 import type { AppStore } from '../appStoreTypes';
-import type { AiFilterResponse } from '../../types';
+import type { AiFilterResponse, ChatMessage } from '../../types';
 import { generateFilterFunction } from '../../services/aiService';
 
 interface AiFilterSliceDependencies {
@@ -72,7 +72,19 @@ export const createAiFilterSlice = (
         if (activeRunId) {
             get().abortRunControllers(activeRunId);
         }
+        const hadFilter = !!get().spreadsheetFilterFunction;
         set({ spreadsheetFilterFunction: null, aiFilterExplanation: null, aiFilterRunId: null, isAiFiltering: false });
+        if (hadFilter) {
+            const systemNote: ChatMessage = {
+                sender: 'ai',
+                text: 'System note: Raw Data Explorer AI filter was cleared, so the table now shows all rows.',
+                timestamp: new Date(),
+                type: 'ai_message',
+            };
+            set(state => ({
+                chatHistory: [...state.chatHistory, systemNote],
+            }));
+        }
         get().addProgress('AI data filter cleared.');
         get().addToast('AI filter cleared.', 'info');
     },

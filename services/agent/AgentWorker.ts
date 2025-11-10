@@ -317,6 +317,35 @@ const buildChatPlannerContext = async (
     const memorySnapshot = selectedMemories;
     const memoryPayload = memorySnapshot.map(mem => mem.text);
 
+    const getRawDataExplorerSummary = (): string => {
+        const {
+            spreadsheetFilterFunction,
+            aiFilterExplanation,
+            interactiveSelectionFilter,
+        } = get();
+
+        const parts: string[] = [];
+
+        if (spreadsheetFilterFunction) {
+            const explanation = aiFilterExplanation?.trim();
+            parts.push(
+                explanation
+                    ? `AI filter active: ${explanation}`
+                    : 'AI filter active via natural-language query (no explanation available).',
+            );
+        }
+
+        if (interactiveSelectionFilter) {
+            const { label, column, values } = interactiveSelectionFilter;
+            const valueStrings = values.map(value => String(value));
+            const preview = valueStrings.slice(0, 4).map(value => `"${value}"`).join(', ');
+            const remainder = valueStrings.length > 4 ? ` +${valueStrings.length - 4}` : '';
+            parts.push(`Chart drilldown "${label}" (${column}) → ${preview}${remainder}.`);
+        }
+
+        return parts.length > 0 ? parts.join(' ') : 'No filters active; explorer shows every row.';
+    };
+
     const requestAiResponse = (prompt: string) =>
         generateChatResponse(
             get().columnProfiles,
@@ -332,6 +361,7 @@ const buildChatPlannerContext = async (
             get().plannerSession.planState,
             get().dataPreparationPlan,
             get().agentActionTraces.slice(-10),
+            getRawDataExplorerSummary(),
             { signal: deps.getRunSignal(runId) },
         );
 

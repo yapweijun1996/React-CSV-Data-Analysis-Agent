@@ -237,16 +237,18 @@ export const createChatPrompt = (
     planState: AgentPlanState | null,
     dataPreparationPlan: DataPreparationPlan | null,
     recentActionTraces: AgentActionTrace[],
+    rawDataFilterSummary: string,
 ): string => {
     const categoricalCols = columns.filter(c => c.type === 'categorical' || c.type === 'date' || c.type === 'time').map(c => c.name);
     const numericalCols = columns.filter(c => c.type === 'numerical' || c.type === 'currency' || c.type === 'percentage').map(c => c.name);
     const recentHistory = chatHistory.slice(-10).map(m => `${m.sender === 'ai' ? 'You' : 'User'}: ${m.text}`).join('\n');
-    const actionTraceSummary = recentActionTraces.length > 0
+    const actionTraceHistory = recentActionTraces.length > 0
         ? recentActionTraces
             .slice(-5)
             .map(trace => `- [${trace.source}/${trace.status.toUpperCase()}] ${trace.actionType}: ${trace.summary}${trace.details ? ` (${trace.details})` : ''}`)
             .join('\n')
         : 'No prior tool actions have been recorded yet. You are starting fresh. Always observe before acting.';
+    const actionTraceSummary = `${actionTraceHistory}\n- [DATA_VIEW] Raw Data Explorer filter: ${rawDataFilterSummary}`;
     const observationSummary = recentObservations.length > 0
         ? recentObservations
             .slice(-5)
@@ -306,7 +308,7 @@ export const createChatPrompt = (
         **Your Available Actions & Tools:**
         You MUST respond by creating a sequence of one or more actions in a JSON object.
         1.  **text_response**: For conversation. If your text explains a specific card, you MUST include its 'cardId'.
-        2.  **plan_creation**: To create a NEW chart. Use a 'defaultTopN' of 8 for readability on high-cardinality columns. When the user limits the analysis to a specific entity/segment (e.g., “only Allylink Pte Ltd”), populate \`plan.rowFilter\` with \`{ column, values[] }\` so the dataset is sliced *before* aggregation. Matching values must use the exact text that appears in the spreadsheet; include every relevant alias if there are multiple spellings. Always inspect the raw rows/cards to confirm the spelling; when multiple candidates exist, list them explicitly and, if you still cannot decide, issue a \`clarification_request\` with those concrete values instead of guessing.
+        2.  **plan_creation**: To create a NEW chart. Use a 'defaultTopN' of 8 for readability on high-cardinality columns. When the user limits the analysis to a specific entity/segment (e.g., “only Allylink Pte Ltd”), populate \`plan.rowFilter\` with \`{ column, values[] }\` so the dataset is sliced *before* aggregation. Matching values must use the exact text that appears in the spreadsheet; include every relevant alias if there are multiple spellings. Always inspect the raw rows/cards to confirm the spelling; when multiple candidates exist, list them explicitly and, if you still cannot decide, issue a \`clarification_request\` with those concrete values instead of guessing. **Important**: if the user does NOT re-affirm the previous filter when they switch topics (for example, they now want a global Project Code view after looking at a single Account), you must reset \`plan.rowFilter\` to \`null\` so the new card covers the full dataset by default.
         3.  **dom_action**: To INTERACT with an EXISTING card. Available tools: 
             - \`highlightCard\`: Scroll and spotlight a chart.
             - \`changeCardChartType\`: Switch among bar/line/pie/doughnut/scatter/combo.

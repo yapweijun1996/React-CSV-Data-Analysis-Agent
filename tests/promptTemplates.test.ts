@@ -13,6 +13,7 @@ const baseArgs = {
     recentObservations: [],
     dataPreparationPlan: null,
     recentActionTraces: [],
+    rawDataFilterSummary: 'No filters active; explorer shows every row.',
 };
 
 const run = (name: string, fn: () => void) => {
@@ -39,6 +40,7 @@ run('prompt instructs plan-state loop when no plan state present', () => {
         null,
         baseArgs.dataPreparationPlan,
         baseArgs.recentActionTraces,
+        baseArgs.rawDataFilterSummary,
     );
     assert.ok(prompt.includes('Plan-State Loop'), 'should mention Plan-State Loop instructions');
     assert.ok(prompt.includes('No structured goal has been recorded yet'), 'should instruct agent to emit plan_state_update first');
@@ -68,6 +70,7 @@ run('prompt embeds current plan state snapshot when available', () => {
         planState,
         baseArgs.dataPreparationPlan,
         baseArgs.recentActionTraces,
+        baseArgs.rawDataFilterSummary,
     );
     assert.ok(prompt.includes('Goal: Cut churn by 5%'), 'should echo plan goal');
     assert.ok(prompt.includes('Blocked By: Need latest retention data'), 'should include blocker details');
