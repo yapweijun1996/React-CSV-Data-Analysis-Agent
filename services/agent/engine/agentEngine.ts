@@ -9,11 +9,17 @@ const latencyWeight: Record<string, number> = { short: 0.1, medium: 0.3, long: 0
 
 class StateTagFactory {
     private seq = 0;
+    private lastEpoch = 0;
 
-    mint(now: number, hint?: string): string {
+    mint(now: number, _hint?: string): string {
+        const epoch = now > this.lastEpoch ? now : this.lastEpoch;
+        if (epoch !== this.lastEpoch) {
+            this.seq = 0;
+            this.lastEpoch = epoch;
+        }
         this.seq += 1;
-        const base = now + this.seq;
-        return `${base}-${this.seq}${hint ? `-${hint}` : ''}`;
+        const paddedEpoch = epoch.toString().padStart(13, '0');
+        return `${paddedEpoch}-${this.seq}`;
     }
 }
 

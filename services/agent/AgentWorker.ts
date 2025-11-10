@@ -144,11 +144,7 @@ const parseMintedStateTag = (tag: string): MintedStateTagInfo | null => {
     };
 };
 
-const createValidationStateTag = (): string => {
-    const epoch = Date.now();
-    const seq = Math.floor(Math.random() * 9000) + 1000;
-    return `${epoch}-${seq}-autofill`;
-};
+const createValidationStateTag = (): string => mintRuntimeStateTag();
 
 const messageRequestsPlanReset = (message: string): boolean => {
     const normalized = message.trim().toLowerCase();
@@ -181,6 +177,42 @@ const ACTION_TYPE_ALIAS_MAP: Record<string, AgentActionType> = {
 };
 
 const LOW_INTENT_INTENTS = new Set<AgentIntent>(['greeting', 'smalltalk', 'ask_user_choice']);
+const MULTIPLE_CHOICE_LINE_REGEX = /(^|\n)\s*(?:\d+[\.\)]|[A-Z][\.\)]|[-•]\s*(?:option|choice)\s*\d+)/i;
+const QUESTION_PROMPT_HINT_REGEX = /\b(option|choice|選項|請選|Type a custom answer)\b/i;
+const PROMPT_ID_REGEX = /prompt[-\s]*([A-Za-z0-9_-]+)/i;
+
+const textResponseLooksLikeQuestion = (text?: string | null): boolean => {
+    if (!text) return false;
+    const normalized = text.trim();
+    if (!normalized) return false;
+    if (MULTIPLE_CHOICE_LINE_REGEX.test(normalized)) return true;
+    if (QUESTION_PROMPT_HINT_REGEX.test(normalized) && normalized.includes('?')) return true;
+    if (/Type a custom answer/i.test(normalized)) return true;
+    return false;
+};
+
+const applyAwaitUserMetaSignal = (actions: AiAction[]): boolean => {
+    if (!Array.isArray(actions) || actions.length === 0) {
+        return false;
+    }
+    const candidate = [...actions]
+        .reverse()
+        .find(action => action.responseType === 'text_response' && typeof action.text === 'string' && action.text.trim().length > 0);
+    if (!candidate) {
+        return false;
+    }
+    if (!textResponseLooksLikeQuestion(candidate.text)) {
+        return false;
+    }
+    const meta = candidate.meta ?? (candidate.meta = {});
+    meta.awaitUser = true;
+    meta.haltAfter = true;
+    if (!meta.promptId) {
+        const match = (candidate.text ?? '').match(PROMPT_ID_REGEX);
+        meta.promptId = match?.[1] ?? createPromptInteractionId();
+    }
+    return true;
+};
 
 interface IntentExecutionPolicy {
     maxValidationRetries: number;
@@ -191,8 +223,16 @@ interface IntentExecutionPolicy {
 const DEFAULT_INTENT_EXECUTION_POLICY: IntentExecutionPolicy = {
     maxValidationRetries: MAX_VALIDATION_RETRIES,
     allowPlanFallbackPrompt: true,
-    allowAutoContinuation: true,
+    allowAutoContinuation: false,
 };
+
+const AUTO_CONTINUE_INTENTS = new Set<AgentIntent>(['chart_request', 'data_filter', 'data_transform']);
+const PIPELINE_CONTINUATION_ACTIONS = new Set<AgentActionType>([
+    'plan_creation',
+    'execute_js_code',
+    'filter_spreadsheet',
+    'proceed_to_analysis',
+]);
 
 const resolveIntentExecutionPolicy = (detectedIntent?: DetectedIntent | null): IntentExecutionPolicy => {
     if (detectedIntent && LOW_INTENT_INTENTS.has(detectedIntent.intent)) {
@@ -200,6 +240,13 @@ const resolveIntentExecutionPolicy = (detectedIntent?: DetectedIntent | null): I
             maxValidationRetries: 0,
             allowPlanFallbackPrompt: false,
             allowAutoContinuation: false,
+        };
+    }
+    if (detectedIntent && AUTO_CONTINUE_INTENTS.has(detectedIntent.intent)) {
+        return {
+            maxValidationRetries: MAX_VALIDATION_RETRIES,
+            allowPlanFallbackPrompt: true,
+            allowAutoContinuation: true,
         };
     }
     return DEFAULT_INTENT_EXECUTION_POLICY;
@@ -240,9 +287,7 @@ const applyResponseEnvelopeAutoHeal = (response: AiChatResponse, runtime: Planne
         response.actions = [];
         return;
     }
-    const mintedBase = Date.now();
-    let mintedSeq = 0;
-    const mintTag = (hint?: string) => `${mintedBase + ++mintedSeq}-${mintedSeq}${hint ? `-${hint}` : ''}`;
+    const mintTag = () => mintRuntimeStateTag();
     const healed: AiAction[] = [];
     for (const rawAction of response.actions) {
         if (!rawAction) continue;
@@ -257,7 +302,7 @@ const applyResponseEnvelopeAutoHeal = (response: AiChatResponse, runtime: Planne
             responseType: canonicalType,
         };
         const normalizedTag = normalizeStateTag(nextAction.stateTag);
-        nextAction.stateTag = normalizedTag ?? mintTag(canonicalType);
+        nextAction.stateTag = normalizedTag ?? mintTag();
         if (typeof nextAction.stepId !== 'string' || nextAction.stepId.trim().length < 3) {
             nextAction.stepId = pickPlannerStepIdForAutoAction(runtime);
         } else {
@@ -270,8 +315,30 @@ const applyResponseEnvelopeAutoHeal = (response: AiChatResponse, runtime: Planne
         return;
     }
     const clipped = clipActionsToPolicy(healed);
+    const awaitingMetaApplied = applyAwaitUserMetaSignal(clipped);
     if (clipped.length < healed.length) {
         runtime.get().addProgress('Trimmed extra actions to keep this turn atomic.', 'system');
+    }
+    const isLowIntent = runtime.detectedIntent?.intent ? LOW_INTENT_INTENTS.has(runtime.detectedIntent.intent) : false;
+    if (isLowIntent && !clipped.some(action => action.responseType === 'text_response')) {
+        clipped.push({
+            type: 'text_response',
+            responseType: 'text_response',
+            stepId: clipped[0]?.stepId ?? pickPlannerStepIdForAutoAction(runtime),
+            thought: 'Auto-generated greeting reply so the assistant can acknowledge the user.',
+            text: '嗨 hi～很高興見到你！告訴我想分析什麼資料吧。',
+        });
+    }
+    if (isLowIntent) {
+        const textAction = clipped.find(action => action.responseType === 'text_response');
+        if (textAction) {
+            const meta = textAction.meta ?? (textAction.meta = {});
+            if (!awaitingMetaApplied) {
+                meta.awaitUser = true;
+                meta.haltAfter = true;
+                meta.promptId = meta.promptId ?? createPromptInteractionId();
+            }
+        }
     }
     response.actions = clipped;
 };
@@ -311,9 +378,9 @@ const markAwaitingUserInput = (runtime: PlannerRuntime, promptId?: string | null
         agentAwaitingPromptId: promptId ?? null,
     }));
     const store = runtime.get();
-    store.addProgress('Paused the plan – waiting for your input to continue.');
+    store.addProgress('Waiting for your choice to continue.');
     if (typeof store.setAgentPhase === 'function') {
-        store.setAgentPhase('idle', 'Waiting for your input...');
+        store.setAgentPhase('idle', 'Waiting for your choice...');
     }
 };
 
@@ -342,7 +409,7 @@ const pausePlannerForUser = (runtime: PlannerRuntime, signal: PlannerMetaSignal)
         ...planState,
         steps: updatedSteps ?? planState.steps,
         nextSteps: [],
-        blockedBy: planState.blockedBy ?? 'Waiting for user input',
+        blockedBy: planState.blockedBy ?? 'Waiting for your choice',
     });
 };
 
@@ -469,6 +536,24 @@ type ActionErrorCode = (typeof ACTION_ERROR_CODES)[keyof typeof ACTION_ERROR_COD
 
 const createObservationId = () =>
     `obs-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const createPromptInteractionId = () =>
+    `prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+const mintRuntimeStateTag = (() => {
+    let lastEpoch = 0;
+    let seq = 0;
+    const format = (epoch: number, sequence: number) => `${epoch.toString().padStart(13, '0')}-${sequence}`;
+    return () => {
+        const now = Date.now();
+        const epoch = now > lastEpoch ? now : lastEpoch;
+        if (epoch !== lastEpoch) {
+            lastEpoch = epoch;
+            seq = 0;
+        }
+        seq += 1;
+        return format(lastEpoch, seq);
+    };
+})();
 
 interface RawDataExplorerSnapshot {
     summary: string;
@@ -1989,18 +2074,16 @@ const runPlannerWorkflow = async (
             }
 
             const remainingAutoRetries = MAX_AUTO_RETRIES - retryAttempts;
-            const containsToolActions = response.actions.some(action =>
-                action.responseType === 'plan_creation' ||
-                action.responseType === 'execute_js_code' ||
-                action.responseType === 'filter_spreadsheet' ||
-                action.responseType === 'dom_action' ||
-                action.responseType === 'clarification_request' ||
-                action.responseType === 'proceed_to_analysis'
+            const containsOperationalActions = response.actions.some(
+                action => !['plan_state_update', 'text_response'].includes(action.responseType),
+            );
+            const containsPipelineActions = response.actions.some(action =>
+                PIPELINE_CONTINUATION_ACTIONS.has(action.responseType),
             );
             enterAgentPhase(
                 runtime,
                 'acting',
-                containsToolActions ? 'Executing the next step of the plan...' : 'Delivering the latest reasoning step...',
+                containsOperationalActions ? 'Executing the next step of the plan...' : 'Delivering the latest reasoning step...',
             );
             const dispatchResult = await dispatchAgentActions(response, runtime, remainingAutoRetries);
 
@@ -2048,12 +2131,13 @@ const runPlannerWorkflow = async (
             if (
                 dispatchResult.type === 'complete' &&
                 allowAutoContinuation &&
+                containsPipelineActions &&
                 continuationAttempts < MAX_PLAN_CONTINUATIONS &&
                 hasPendingSteps &&
                 !isStateTagBlocked &&
                 !hasBlocker &&
                 !runtime.get().isRunCancellationRequested(runtime.runId) &&
-                !containsToolActions
+                !containsOperationalActions
             ) {
                 continuationAttempts++;
                 const planState = runtime.get().plannerSession.planState;

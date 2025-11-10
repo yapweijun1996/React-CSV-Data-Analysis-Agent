@@ -701,7 +701,7 @@ export const ChatPanel: React.FC = () => {
                                     promptId={msg.meta.promptId}
                                     message={msg.text}
                                     onSubmit={value => handlePromptResponse(msg.meta!.promptId!, value)}
-                                    disabled={isBusy || !isApiKeySet}
+                                    disabled={!isApiKeySet || (isBusy && !agentAwaitingUserInput)}
                                     isActive={!agentAwaitingPromptId || agentAwaitingPromptId === msg.meta.promptId}
                                 />
                             </div>
