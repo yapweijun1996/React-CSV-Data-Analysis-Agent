@@ -57,6 +57,8 @@ export const SpreadsheetPanel: React.FC<SpreadsheetPanelProps> = ({ isVisible })
         cancelAiFilterRequest,
         interactiveSelectionFilter,
         chatHistory,
+        datasetHash,
+        addToast,
     } = useAppStore(state => ({
         csvData: state.csvData,
         spreadsheetFilterFunction: state.spreadsheetFilterFunction,
@@ -67,6 +69,8 @@ export const SpreadsheetPanel: React.FC<SpreadsheetPanelProps> = ({ isVisible })
         cancelAiFilterRequest: state.cancelAiFilterRequest,
         interactiveSelectionFilter: state.interactiveSelectionFilter,
         chatHistory: state.chatHistory,
+        datasetHash: state.datasetHash,
+        addToast: state.addToast,
     }));
     const onToggleVisibility = () => useAppStore.getState().setIsSpreadsheetVisible(!isVisible);
 
@@ -117,6 +121,39 @@ export const SpreadsheetPanel: React.FC<SpreadsheetPanelProps> = ({ isVisible })
         document.body.style.cursor = 'col-resize';
         document.addEventListener('mousemove', handleMouseMove);
         document.addEventListener('mouseup', handleMouseUp);
+    };
+
+    const handleDownloadOriginal = () => {
+        if (!csvData || csvData.data.length === 0 || headers.length === 0) return;
+        const escapeValue = (value: unknown): string => {
+            const text = value === null || value === undefined ? '' : String(value);
+            if (/[",\n]/.test(text)) {
+                return `"${text.replace(/"/g, '""')}"`;
+            }
+            return text;
+        };
+        const csvLines = [
+            headers.join(','),
+            ...csvData.data.map(row => headers.map(header => escapeValue(row[header])).join(',')),
+        ];
+        const blob = new Blob([csvLines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = csvData.fileName || 'dataset.csv';
+        link.click();
+        URL.revokeObjectURL(url);
+    };
+
+    const handleCopyChecksum = async () => {
+        if (!datasetHash) return;
+        try {
+            await navigator.clipboard.writeText(datasetHash);
+            addToast('Checksum copied.', 'success', 2000);
+        } catch (error) {
+            console.error('Failed to copy checksum:', error);
+            addToast('Copy failed. Please copy manually.', 'error', 3000);
+        }
     };
 
     const handleQuerySubmit = () => {
@@ -214,6 +251,24 @@ export const SpreadsheetPanel: React.FC<SpreadsheetPanelProps> = ({ isVisible })
                 <div>
                     <h3 className="text-lg font-bold text-slate-900">Raw Data Explorer</h3>
                     <p className="text-sm text-slate-500">File: {csvData.fileName}</p>
+                    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                        <button
+                            type="button"
+                            onClick={handleDownloadOriginal}
+                            className="underline decoration-dotted hover:text-slate-700"
+                        >
+                            Download Original
+                        </button>
+                        <span className="text-slate-300">·</span>
+                        <button
+                            type="button"
+                            onClick={handleCopyChecksum}
+                            disabled={!datasetHash}
+                            className={`underline decoration-dotted ${datasetHash ? 'hover:text-slate-700' : 'text-slate-300 cursor-not-allowed'}`}
+                        >
+                            Copy checksum
+                        </button>
+                    </div>
                 </div>
                 <ChevronIcon isOpen={isVisible} />
             </button>

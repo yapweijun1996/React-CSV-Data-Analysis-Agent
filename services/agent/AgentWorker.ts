@@ -214,6 +214,19 @@ const applyAwaitUserMetaSignal = (actions: AiAction[]): boolean => {
     return true;
 };
 
+const enforceClarificationAwaitSignal = (actions: AiAction[]): void => {
+    if (!Array.isArray(actions) || actions.length === 0) return;
+    actions.forEach(action => {
+        if (action.responseType !== 'clarification_request') return;
+        const meta = action.meta ?? (action.meta = {});
+        meta.awaitUser = true;
+        meta.haltAfter = true;
+        if (!meta.promptId) {
+            meta.promptId = createPromptInteractionId();
+        }
+    });
+};
+
 interface IntentExecutionPolicy {
     maxValidationRetries: number;
     allowPlanFallbackPrompt: boolean;
@@ -302,7 +315,9 @@ const applyResponseEnvelopeAutoHeal = (response: AiChatResponse, runtime: Planne
             responseType: canonicalType,
         };
         const normalizedTag = normalizeStateTag(nextAction.stateTag);
-        nextAction.stateTag = normalizedTag ?? mintTag();
+        const isSpecialLabel =
+            normalizedTag && STATE_TAG_SET.has(normalizedTag as AgentStateTag) ? normalizedTag : null;
+        nextAction.stateTag = isSpecialLabel ?? mintTag();
         if (typeof nextAction.stepId !== 'string' || nextAction.stepId.trim().length < 3) {
             nextAction.stepId = pickPlannerStepIdForAutoAction(runtime);
         } else {
@@ -315,10 +330,11 @@ const applyResponseEnvelopeAutoHeal = (response: AiChatResponse, runtime: Planne
         return;
     }
     const clipped = clipActionsToPolicy(healed);
-    const awaitingMetaApplied = applyAwaitUserMetaSignal(clipped);
     if (clipped.length < healed.length) {
         runtime.get().addProgress('Trimmed extra actions to keep this turn atomic.', 'system');
     }
+    const awaitingMetaApplied = applyAwaitUserMetaSignal(clipped);
+    enforceClarificationAwaitSignal(clipped);
     const isLowIntent = runtime.detectedIntent?.intent ? LOW_INTENT_INTENTS.has(runtime.detectedIntent.intent) : false;
     if (isLowIntent && !clipped.some(action => action.responseType === 'text_response')) {
         clipped.push({
@@ -411,6 +427,37 @@ const pausePlannerForUser = (runtime: PlannerRuntime, signal: PlannerMetaSignal)
         nextSteps: [],
         blockedBy: planState.blockedBy ?? 'Waiting for your choice',
     });
+};
+
+const shareObservationSummary = (runtime: PlannerRuntime, response: AiChatResponse): boolean => {
+    const alreadyResponded = response.actions.some(action => action.responseType === 'text_response');
+    if (alreadyResponded) {
+        return true;
+    }
+    const planAction = response.actions.find(action => action.responseType === 'plan_state_update');
+    const planState = planAction && hasPlanStatePayload(planAction) ? planAction.planState : runtime.get().plannerSession.planState;
+    if (!planState) return false;
+    const summaryParts: string[] = [];
+    if (planState.progress) {
+        summaryParts.push(`Progress: ${planState.progress}`);
+    }
+    if (planState.nextSteps && planState.nextSteps.length > 0) {
+        summaryParts.push(`Next: ${planState.nextSteps[0].label}`);
+    }
+    if (planState.blockedBy) {
+        summaryParts.push(`Blocked by: ${planState.blockedBy}`);
+    }
+    if (summaryParts.length === 0) {
+        return false;
+    }
+    const aiMessage: ChatMessage = {
+        sender: 'ai',
+        text: `Status update:\n${summaryParts.join('\n')}`,
+        timestamp: new Date(),
+        type: 'ai_message',
+    };
+    runtime.set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
+    return true;
 };
 
 const buildIntentNotes = (detectedIntent: DetectedIntent | null | undefined, store: AppStore): string[] => {
@@ -979,6 +1026,56 @@ const resolveCardIdFromArgs = (runtime: PlannerRuntime, domAction: DomAction): v
     }
 };
 
+const promptUserForCardSelection = (runtime: PlannerRuntime, domAction: DomAction): string | null => {
+    const store = runtime.get();
+    const cards = store.analysisCards ?? [];
+    if (!Array.isArray(cards) || cards.length === 0) {
+        const warning = 'There are no charts available yet. Create one before using this action.';
+        store.addProgress(warning, 'error');
+        const aiMessage: ChatMessage = {
+            sender: 'ai',
+            text: warning,
+            timestamp: new Date(),
+            type: 'ai_message',
+            isError: true,
+        };
+        runtime.set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
+        return null;
+    }
+    const intent = domAction.toolName === 'removeCard' ? 'Which chart should I remove?' : 'Which chart should I update?';
+    const clarificationPayload: ClarificationRequestPayload = {
+        question: intent,
+        options: cards.slice(0, 9).map((card, index) => ({
+            label: card?.plan?.title?.trim() || `Chart ${index + 1}`,
+            value: card.id,
+        })),
+        pendingPlan: {
+            domActionContext: {
+                toolName: domAction.toolName,
+                args: { ...(domAction.args ?? {}) },
+            },
+        },
+        targetProperty: 'title',
+        contextType: 'dom_action',
+    };
+    const clarification = runtime.deps.registerClarification(clarificationPayload);
+    const clarificationMessage: ChatMessage = {
+        sender: 'ai',
+        text: clarification.question,
+        timestamp: new Date(),
+        type: 'ai_clarification',
+        clarificationRequest: clarification,
+    };
+    runtime.set(prev => ({
+        chatHistory: [...prev.chatHistory, clarificationMessage],
+    }));
+    runtime.set({ activeClarificationId: clarification.id });
+    enterAgentPhase(runtime, 'clarifying', 'Need your input to keep going...');
+    runtime.get().endBusy(runtime.runId);
+    markAwaitingUserInput(runtime, clarification.id);
+    return clarification.id;
+};
+
 const isMeaningfulFilterQuery = (query: string): boolean => {
     const trimmed = query.trim();
     if (trimmed.length < 3) return false;
@@ -1114,6 +1211,38 @@ const buildRequiredToolFallbackAction = (
                 stepId,
                 stateTag: createValidationStateTag(),
                 args: { query },
+            };
+        }
+        case 'execute_js_code': {
+            const store = runtime.get();
+            const userMessage = runtime.userMessage?.toLowerCase() ?? '';
+            const columnProfiles = store.columnProfiles ?? [];
+            const matchedColumn =
+                hint.payloadHints?.column ??
+                columnProfiles.find(profile => userMessage.includes(profile.name.toLowerCase()))?.name ??
+                null;
+            if (!matchedColumn) {
+                return null;
+            }
+            const safeColumnName = matchedColumn.replace(/"/g, '\\"');
+            const jsFunctionBody = `
+const result = data.map(row => {
+    const next = { ...row };
+    delete next["${safeColumnName}"];
+    return next;
+});
+return result;
+            `.trim();
+            return {
+                type: 'execute_js_code',
+                responseType: 'execute_js_code',
+                thought: `Auto-inserted data transform to remove the column "${matchedColumn}".`,
+                stepId,
+                stateTag: createValidationStateTag(),
+                code: {
+                    explanation: `Removes the column "${matchedColumn}" from every row of the dataset.`,
+                    jsFunctionBody,
+                },
             };
         }
         default:
@@ -2086,6 +2215,10 @@ const runPlannerWorkflow = async (
                 containsOperationalActions ? 'Executing the next step of the plan...' : 'Delivering the latest reasoning step...',
             );
             const dispatchResult = await dispatchAgentActions(response, runtime, remainingAutoRetries);
+            let observationSatisfied = response.actions.some(action => action.responseType === 'text_response');
+            if (dispatchResult.type === 'complete' && !observationSatisfied) {
+                observationSatisfied = shareObservationSummary(runtime, response);
+            }
 
             if (dispatchResult.type === 'halt') {
                 return;
@@ -2130,6 +2263,7 @@ const runPlannerWorkflow = async (
             const isStateTagBlocked = stateTag ? CONTINUATION_STATE_TAG_DENYLIST.has(stateTag) : false;
             if (
                 dispatchResult.type === 'complete' &&
+                observationSatisfied &&
                 allowAutoContinuation &&
                 containsPipelineActions &&
                 continuationAttempts < MAX_PLAN_CONTINUATIONS &&
@@ -2484,6 +2618,33 @@ const handleDomAction: AgentActionExecutor = async ({ action, runtime, markTrace
                 outputs: {
                     skipped: true,
                     reason: skipReason,
+                },
+            },
+        };
+    }
+
+    const domArgs = action.domAction.args ?? (action.domAction.args = {});
+    if (typeof domArgs.cardId !== 'string' || domArgs.cardId.trim().length === 0) {
+        const clarificationId = promptUserForCardSelection(runtime, action.domAction);
+        markTrace('succeeded', 'Requested card selection before executing DOM action.', {
+            metadata: { clarificationId },
+        });
+        if (!clarificationId) {
+            return {
+                type: 'halt',
+                observation: {
+                    status: 'error',
+                    errorCode: ACTION_ERROR_CODES.DOM_PAYLOAD_MISSING,
+                },
+            };
+        }
+        return {
+            type: 'halt',
+            observation: {
+                status: 'pending',
+                outputs: {
+                    clarificationId,
+                    awaitingCardSelection: true,
                 },
             },
         };

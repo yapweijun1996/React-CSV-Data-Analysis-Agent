@@ -7,6 +7,9 @@ import { generateDataPreparationPlan } from '../../services/aiService';
 import { vectorStore } from '../../services/vectorStore';
 import { getReport, saveReport, deleteReport, CURRENT_SESSION_KEY } from '../../storageService';
 import { computeDatasetHash } from '../../utils/datasetHash';
+import { persistCleanDataset } from '../../services/csvAgentDb';
+import { dataTools } from '../../services/dataTools';
+import { rememberDatasetId, forgetDatasetId } from '../../utils/datasetCache';
 
 interface FileUploadSliceDependencies {
     initialAppState: AppState;
@@ -55,6 +58,62 @@ export const createFileUploadSlice = (
         const runId = get().beginBusy(`Processing ${file.name}...`, { cancellable: true });
 
         try {
+            const hydrateDatasetProfile = async (datasetId: string) => {
+                try {
+                    const profileResult = await dataTools.profile(datasetId);
+                    if (profileResult.ok) {
+                        set({ datasetProfile: profileResult.data });
+                    } else {
+                        get().addProgress(`Profiling failed: ${profileResult.reason}`, 'error');
+                    }
+                } catch (error) {
+                    console.error('Failed to profile dataset via worker:', error);
+                    get().addProgress('Profiling worker failed—retry later from chat.', 'error');
+                }
+            };
+
+            const hydrateDatasetSample = async (datasetId: string) => {
+                try {
+                    const sampleResult = await dataTools.sample(datasetId, { n: 200 });
+                    if (sampleResult.ok) {
+                        set({ initialDataSample: sampleResult.data.rows });
+                    }
+                } catch (error) {
+                    console.error('Failed to sample dataset via worker:', error);
+                }
+            };
+
+            const persistCleanSnapshot = async (datasetId: string, columns: ColumnProfile[]) => {
+                try {
+                    set(state => ({
+                        analysisTimeline: { ...state.analysisTimeline, stage: 'persisting', totalCards: 0, completedCards: 0 },
+                    }));
+                    get().addProgress('Persisting cleaned dataset for offline reuse…');
+                    const result = await persistCleanDataset({
+                        datasetId,
+                        rows: dataForAnalysis.data,
+                        columns,
+                        provenance: {
+                            fileName: file.name,
+                            bytes: file.size,
+                            checksum: datasetId,
+                            cleanedAt: new Date().toISOString(),
+                        },
+                    });
+                    rememberDatasetId(datasetId);
+                    get().addProgress(`Cached ${result.rowCount} rows in ${result.chunkCount} chunks.`);
+                    set(state => ({
+                        analysisTimeline: { ...state.analysisTimeline, stage: 'profiling' },
+                    }));
+                    await Promise.all([hydrateDatasetProfile(datasetId), hydrateDatasetSample(datasetId)]);
+                } catch (persistError) {
+                    console.error('Failed to persist cleaned dataset:', persistError);
+                    get().addProgress('IndexedDB cache failed—refreshing may lose progress.', 'error');
+                    set(state => ({
+                        analysisTimeline: { ...state.analysisTimeline, stage: 'idle' },
+                    }));
+                }
+            };
             get().updateBusyStatus('Parsing CSV file...');
             const parsedData = await processCsv(file);
             get().addProgress(`Parsed ${parsedData.data.length} rows.`);
@@ -114,6 +173,10 @@ export const createFileUploadSlice = (
 
                 const aliasMap = buildColumnAliasMap(profiles.map(p => p.name));
                 const datasetHash = computeDatasetHash(dataForAnalysis);
+                if (!datasetHash) {
+                    throw new Error('无法为当前数据集生成唯一 fingerprint。');
+                }
+                await persistCleanSnapshot(datasetHash, profiles);
                 set({
                     csvData: dataForAnalysis,
                     columnProfiles: profiles,
@@ -129,6 +192,10 @@ export const createFileUploadSlice = (
                 profiles = profileData(dataForAnalysis.data);
                 const aliasMap = buildColumnAliasMap(profiles.map(p => p.name));
                 const datasetHash = computeDatasetHash(dataForAnalysis);
+                if (!datasetHash) {
+                    throw new Error('无法识别数据集指纹，无法缓存。');
+                }
+                await persistCleanSnapshot(datasetHash, profiles);
                 set({
                     csvData: dataForAnalysis,
                     columnProfiles: profiles,
@@ -164,6 +231,7 @@ export const createFileUploadSlice = (
         vectorStore.clear();
         await deleteReport(CURRENT_SESSION_KEY);
         deps.resetAutoSaveSession();
+        forgetDatasetId();
         set({
             ...deps.initialAppState,
             busyRunId: null,

@@ -30,6 +30,7 @@ import {
     AgentPhaseState,
     AgentPhase,
     AgentPromptMetric,
+    CsvRow,
 } from '../types';
 import { executePlan, applyTopNWithOthers } from '../utils/dataProcessor';
 import { generateAnalysisPlans, generateSummary, generateFinalSummary, generateCoreAnalysisSummary, generateProactiveInsights } from '../services/aiService';
@@ -45,6 +46,23 @@ import { createFileUploadSlice } from './slices/fileUploadSlice';
 import { createAiFilterSlice } from './slices/aiFilterSlice';
 import { AutoSaveManager, AutoSaveConfig, deriveAutoSaveConfig } from '../utils/autoSaveManager';
 import { computeDatasetHash } from '../utils/datasetHash';
+import { dataTools, type AggregateResult, type AggregatePayload, type ProfileResult } from '../services/dataTools';
+import {
+    persistCleanDataset,
+    readCardResults,
+    readAllRows,
+    readColumnStoreRecord,
+    readProvenance,
+    type CardDataRef,
+    type ViewStoreRecord,
+    type CardKind,
+} from '../services/csvAgentDb';
+import {
+    rememberDatasetId,
+    forgetDatasetId,
+    getRememberedDatasetId,
+    LAST_DATASET_STORAGE_KEY,
+} from '../utils/datasetCache';
 
 const createClarificationId = () =>
     typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -122,6 +140,7 @@ const buildSerializableAppState = (state: AppStore): AppState => ({
     vectorStoreDocuments: vectorStore.getDocuments(),
     spreadsheetFilterFunction: state.spreadsheetFilterFunction,
     aiFilterExplanation: state.aiFilterExplanation,
+    datasetProfile: state.datasetProfile,
     pendingClarifications: state.pendingClarifications,
     activeClarificationId: state.activeClarificationId,
     toasts: [],
@@ -139,6 +158,7 @@ const buildSerializableAppState = (state: AppStore): AppState => ({
     plannerDatasetHash: state.plannerDatasetHash,
     agentAwaitingUserInput: state.agentAwaitingUserInput,
     agentAwaitingPromptId: state.agentAwaitingPromptId,
+    analysisTimeline: state.analysisTimeline,
 });
 
 const buildFileNameFromHeader = (header?: string | null) => {
@@ -212,6 +232,55 @@ const arraysAreEqual = (a: (string | number)[], b: (string | number)[]) => {
     return a.every((value, index) => value === b[index]);
 };
 
+const inferCardKind = (plan: AnalysisPlan): CardKind => {
+    switch (plan.chartType) {
+        case 'line':
+            return 'trend';
+        case 'bar':
+        case 'pie':
+        case 'doughnut':
+        case 'combo':
+            return 'topn';
+        default:
+            return 'kpi';
+    }
+};
+
+const convertViewToCard = (view: ViewStoreRecord<CardDataRef>): AnalysisCardData => {
+    const snapshot = view.dataRef.planSnapshot ?? {};
+    const chartType = snapshot.chartType ?? 'bar';
+    const plan: AnalysisPlan = {
+        chartType,
+        title: snapshot.title ?? view.title,
+        description: snapshot.description ?? view.explainer ?? '',
+        aggregation: snapshot.aggregation,
+        groupByColumn: snapshot.groupByColumn,
+        valueColumn: snapshot.valueColumn,
+        xValueColumn: snapshot.xValueColumn,
+        yValueColumn: snapshot.yValueColumn,
+        secondaryValueColumn: snapshot.secondaryValueColumn,
+        secondaryAggregation: snapshot.secondaryAggregation,
+        defaultTopN: snapshot.defaultTopN,
+        defaultHideOthers: snapshot.defaultHideOthers,
+        rowFilter: snapshot.rowFilter,
+    };
+    return {
+        id: view.id,
+        plan,
+        aggregatedData: view.dataRef.rows,
+        summary: view.explainer,
+        displayChartType: chartType,
+        isDataVisible: false,
+        topN: snapshot.defaultTopN ?? null,
+        hideOthers: snapshot.defaultHideOthers ?? false,
+        disableAnimation: true,
+        hiddenLabels: [],
+        dataRefId: view.id,
+        queryHash: view.queryHash,
+        isSampledResult: view.dataRef.sampled,
+    };
+};
+
 const initialAppState: AppState = {
     currentView: 'file_upload',
     isBusy: false,
@@ -230,6 +299,7 @@ const initialAppState: AppState = {
     vectorStoreDocuments: [],
     spreadsheetFilterFunction: null,
     aiFilterExplanation: null,
+    datasetProfile: null,
     pendingClarifications: [],
     activeClarificationId: null,
     toasts: [],
@@ -247,6 +317,7 @@ const initialAppState: AppState = {
     plannerDatasetHash: null,
     agentAwaitingUserInput: false,
     agentAwaitingPromptId: null,
+    analysisTimeline: { stage: 'idle', totalCards: 0, completedCards: 0 },
 };
 
 export const useAppStore = create<StoreState & StoreActions>((set, get) => {
@@ -255,6 +326,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             ...clarificationPayload,
             id: createClarificationId(),
             status: 'pending',
+            contextType: clarificationPayload.contextType ?? 'plan',
         };
         set(state => ({
             pendingClarifications: [...state.pendingClarifications, newClarification],
@@ -317,6 +389,54 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         getRunSignal,
         runPlanWithChatLifecycle,
     });
+
+    const restoreDatasetFromCache = async (datasetId: string): Promise<boolean> => {
+        get().addProgress('Restoring cached dataset from IndexedDB…');
+        try {
+            const [provenance, columnRecord, rows, views] = await Promise.all([
+                readProvenance(datasetId),
+                readColumnStoreRecord(datasetId),
+                readAllRows(datasetId),
+                readCardResults<CardDataRef>(datasetId),
+            ]);
+            if (!rows || rows.length === 0) {
+                get().addProgress('Cached dataset was empty. Please re-upload your CSV.', 'error');
+                return false;
+            }
+            const csvData: CsvData = {
+                fileName: provenance?.fileName ?? 'cached.csv',
+                data: rows,
+            };
+            const columnProfiles = columnRecord?.columns ?? [];
+            const aliasMap = buildColumnAliasMap(columnProfiles.map(p => p.name));
+            const restoredCards = views.map(convertViewToCard);
+            set({
+                ...initialAppState,
+                csvData,
+                columnProfiles,
+                columnAliasMap: aliasMap,
+                analysisCards: restoredCards,
+                datasetHash: datasetId,
+                currentView: 'analysis_dashboard',
+                analysisTimeline: restoredCards.length
+                    ? { stage: 'insight', totalCards: restoredCards.length, completedCards: restoredCards.length }
+                    : { stage: 'profiling', totalCards: 0, completedCards: 0 },
+                initialDataSample: rows.slice(0, 50),
+            });
+            rememberDatasetId(datasetId);
+            const profileResult = await dataTools.profile(datasetId);
+            if (profileResult.ok) {
+                set({ datasetProfile: profileResult.data });
+            } else {
+                addProgress(`Profiling worker failed: ${profileResult.reason}`, 'error');
+            }
+            return true;
+        } catch (error) {
+            console.error('Failed to restore cached dataset:', error);
+            get().addProgress('Cached dataset restore failed. Please re-upload.', 'error');
+            return false;
+        }
+    };
     const fileUploadSlice = createFileUploadSlice(set, get, {
         initialAppState,
         resetAutoSaveSession: resetAutoSaveSessionMetadata,
@@ -620,6 +740,8 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 interactiveSelectionFilter: null,
                 plannerSession: normalizePlannerSession(currentSession.appState.plannerSession),
                 plannerDatasetHash: currentSession.appState.plannerDatasetHash ?? currentSession.appState.datasetHash ?? null,
+                datasetProfile: currentSession.appState.datasetProfile ?? null,
+                analysisTimeline: currentSession.appState.analysisTimeline ?? { ...initialAppState.analysisTimeline },
             });
             await restoreVectorMemoryFromSnapshot(
                 currentSession.appState.vectorStoreDocuments,
@@ -631,6 +753,11 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 'Restored AI long-term memory from last session.',
             );
             seedAutoSaveCreatedAt(currentSession.createdAt);
+        } else {
+            const cachedDatasetId = getRememberedDatasetId();
+            if (cachedDatasetId) {
+                await restoreDatasetFromCache(cachedDatasetId);
+            }
         }
         await get().loadReportsList();
     },
@@ -686,6 +813,69 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         let isFirstCardInPipeline = true;
         const beginTrace = get().beginAgentActionTrace;
         const completeTrace = get().updateAgentActionTrace;
+        const datasetId = get().datasetHash;
+
+        const buildAggregatePayload = (plan: AnalysisPlan): AggregatePayload | null => {
+            if (!datasetId) return null;
+            if (plan.chartType === 'scatter' || plan.chartType === 'combo') return null;
+            if (!plan.groupByColumn || !plan.aggregation) return null;
+            if (plan.aggregation !== 'count' && !plan.valueColumn) return null;
+            const alias = plan.valueColumn ?? 'count';
+            const orderBy =
+                plan.chartType === 'line'
+                    ? [{ column: plan.groupByColumn, direction: 'asc' as const }]
+                    : [{ column: alias, direction: 'desc' as const }];
+            const payload: AggregatePayload = {
+                datasetId,
+                by: [plan.groupByColumn],
+                metrics: [
+                    {
+                        fn: plan.aggregation as AggregatePayload['metrics'][number]['fn'],
+                        column: plan.aggregation === 'count' ? undefined : plan.valueColumn,
+                        as: alias,
+                    },
+                ],
+                filter: plan.rowFilter
+                    ? [
+                          {
+                              column: plan.rowFilter.column,
+                              op: 'in',
+                              values: plan.rowFilter.values,
+                          },
+                      ]
+                    : undefined,
+                limit: plan.defaultTopN ?? undefined,
+                mode: 'sample',
+                sampleSize: Math.min(5000, data.data.length),
+                orderBy,
+            };
+            return payload;
+        };
+
+        const aggregateWithWorker = async (plan: AnalysisPlan): Promise<AggregateResult | null> => {
+            const payload = buildAggregatePayload(plan);
+            if (!payload) return null;
+            const response = await dataTools.aggregate(payload);
+            if (!response.ok) {
+                addProgress(`Aggregation worker failed for "${plan.title}": ${response.reason}`, 'error');
+                return null;
+            }
+            if (response.data.rows.length === 0) {
+                addProgress(`Skipping "${plan.title}" due to empty aggregation result.`, 'error');
+                return null;
+            }
+            return response.data;
+        };
+
+        if (!isChatRequest && plans.length > 0) {
+            set(state => ({
+                analysisTimeline: {
+                    ...state.analysisTimeline,
+                    totalCards: plans.length,
+                    completedCards: 0,
+                },
+            }));
+        }
 
         const processPlan = async (plan: AnalysisPlan) => {
             const planTraceId = beginTrace('proceed_to_analysis', `Run analysis "${plan.title}"`, 'pipeline');
@@ -704,7 +894,16 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 preparation.warnings.forEach(warning => addProgress(`${plan.title}: ${warning}`));
 
                 const preparedPlan = preparation.plan;
-                const aggregatedData = executePlan(data, preparedPlan);
+                let aggregateResult: AggregateResult | null = null;
+                let aggregatedData: CsvRow[] = [];
+                if (datasetId) {
+                    aggregateResult = await aggregateWithWorker(preparedPlan);
+                }
+                if (aggregateResult) {
+                    aggregatedData = aggregateResult.rows;
+                } else {
+                    aggregatedData = executePlan(data, preparedPlan);
+                }
                 if (aggregatedData.length === 0) {
                     addProgress(`Skipping "${plan.title}" due to empty result.`, 'error');
                     finalizeTrace('failed', 'Aggregation returned 0 rows.');
@@ -718,6 +917,25 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 const summary = await generateSummary(preparedPlan.title, aggregatedData, settings, { signal: requestSignal() });
 
                 if (shouldAbort()) return null;
+
+                let dataRefId: string | null = null;
+                let queryHash: string | null = aggregateResult?.provenance.queryHash ?? null;
+                const isSampledResult = aggregateResult?.provenance.sampled ?? false;
+                if (aggregateResult && datasetId) {
+                    const persistResult = await dataTools.createCardFromResult({
+                        datasetId,
+                        title: preparedPlan.title,
+                        kind: inferCardKind(preparedPlan),
+                        explainer: summary,
+                        result: aggregateResult,
+                        plan: preparedPlan,
+                    });
+                    if (persistResult.ok) {
+                        dataRefId = persistResult.data.cardId;
+                    } else {
+                        addProgress(`View cache save failed for "${preparedPlan.title}": ${persistResult.reason}`, 'error');
+                    }
+                }
 
                 const categoryCount = aggregatedData.length;
                 const shouldApplyDefaultTop8 = preparedPlan.chartType !== 'scatter' && categoryCount > 15;
@@ -733,9 +951,26 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                     hideOthers: shouldApplyDefaultTop8 ? true : (preparedPlan.defaultHideOthers || false),
                     disableAnimation: isChatRequest || !isFirstCardInPipeline || get().analysisCards.length > 0,
                     hiddenLabels: [],
+                    dataRefId,
+                    queryHash,
+                    isSampledResult,
                 };
 
                 set(prev => ({ analysisCards: [...prev.analysisCards, newCard] }));
+                if (!isChatRequest) {
+                    set(state => {
+                        const completed = state.analysisTimeline.completedCards + 1;
+                        const nextStage =
+                            state.analysisTimeline.stage === 'profiling' ? 'insight' : state.analysisTimeline.stage;
+                        return {
+                            analysisTimeline: {
+                                ...state.analysisTimeline,
+                                completedCards: completed,
+                                stage: nextStage,
+                            },
+                        };
+                    });
+                }
 
                 const cardMemoryText = `[Chart: ${preparedPlan.title}] Description: ${preparedPlan.description}. AI Summary: ${summary.split('---')[0]}`;
                 await vectorStore.addDocument({ id: newCard.id, text: cardMemoryText });

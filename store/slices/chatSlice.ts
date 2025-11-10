@@ -126,6 +126,34 @@ export const createChatSlice = (
                         deps.updateClarificationStatus(clarificationId, 'resolving');
                         const { pendingPlan, targetProperty } = targetClarification;
 
+                        if (targetClarification.contextType === 'dom_action' && pendingPlan?.domActionContext) {
+                            const domContext = pendingPlan.domActionContext;
+                            const mergedArgs = { ...(domContext.args ?? {}), cardId: userChoice.value, cardTitle: userChoice.label };
+                            get().executeDomAction({ toolName: domContext.toolName, args: mergedArgs });
+                            deps.updateClarificationStatus(clarificationId, 'resolved');
+                            set(state => ({
+                                pendingClarifications: state.pendingClarifications.map(clar =>
+                                    clar.id === clarificationId ? { ...clar, status: 'resolved' } : clar,
+                                ),
+                                agentAwaitingUserInput: false,
+                                agentAwaitingPromptId: null,
+                                chatHistory: [
+                                    ...state.chatHistory,
+                                    {
+                                        sender: 'ai',
+                                        text:
+                                            domContext.toolName === 'removeCard'
+                                                ? `Removed the chart "${userChoice.label}".`
+                                                : `Updated the chart "${userChoice.label}".`,
+                                        timestamp: new Date(),
+                                        type: 'ai_message',
+                                    },
+                                ],
+                            }));
+                            get().addProgress(`Applied ${domContext.toolName} to "${userChoice.label}".`);
+                            return;
+                        }
+
                         const availableColumns = columnProfiles.map(p => p.name);
                         const resolvedValue = resolveColumnChoice(userChoice, targetProperty, availableColumns);
 

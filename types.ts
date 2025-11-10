@@ -21,6 +21,27 @@ export interface ColumnProfile {
     missingPercentage?: number;
 }
 
+export interface DatasetProfileSnapshot {
+    rowCount: number;
+    sampledRows: number;
+    columns: Array<{
+        name: string;
+        type: ColumnProfile['type'];
+        distinct: number;
+        emptyPercentage: number;
+        examples: string[];
+    }>;
+    warnings: string[];
+}
+
+export type AnalysisTimelineStage = 'idle' | 'persisting' | 'profiling' | 'insight';
+
+export interface AnalysisTimelineState {
+    stage: AnalysisTimelineStage;
+    totalCards: number;
+    completedCards: number;
+}
+
 export interface DataTransformMeta {
     rowsBefore: number;
     rowsAfter: number;
@@ -238,6 +259,9 @@ export interface AnalysisCardData {
     disableAnimation?: boolean; // To control loading animations
     filter?: { column: string; values: (string | number)[] }; // For interactive filtering by the AI
     hiddenLabels?: string[]; // For interactive legend visibility
+    dataRefId?: string | null;
+    queryHash?: string | null;
+    isSampledResult?: boolean;
 }
 
 export interface ProgressMessage {
@@ -264,6 +288,11 @@ export interface ClarificationRequestPayload {
     // We need to know which property of the plan the user's choice will fill.
     targetProperty: keyof AnalysisPlan;
     columnHints?: string[];
+    contextType?: 'plan' | 'dom_action';
+    domActionContext?: {
+        toolName: DomAction['toolName'];
+        args?: Record<string, any>;
+    };
 }
 
 export interface ClarificationRequest extends ClarificationRequestPayload {
@@ -324,6 +353,7 @@ export interface AppState {
     vectorStoreDocuments: VectorStoreDocument[]; // For persisting AI memory
     spreadsheetFilterFunction: string | null; // For AI-powered spreadsheet filtering
     aiFilterExplanation: string | null; // Explanation for the AI filter
+    datasetProfile: DatasetProfileSnapshot | null;
     pendingClarifications: ClarificationRequest[]; // For the clarification loop
     activeClarificationId: string | null;
     toasts: AppToast[];
@@ -341,6 +371,7 @@ export interface AppState {
     plannerDatasetHash: string | null;
     agentAwaitingUserInput: boolean;
     agentAwaitingPromptId: string | null;
+    analysisTimeline: AnalysisTimelineState;
 }
 
 export interface DomActionTarget {
