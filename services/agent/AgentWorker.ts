@@ -122,7 +122,7 @@ const MINTED_STATE_TAG_REGEX = /^(\d{5,})-(\d+)(?:-[\w-]+)?$/;
 const STATE_TAG_WARNING_THROTTLE_MS = 5000;
 const THOUGHTLESS_TOAST_THROTTLE_MS = 8000;
 const PLAN_PRIMER_INSTRUCTION =
-    'Begin every response with a plan_state_update that lists your goal, context, progress, next steps, blockers (or null), referenced observations, confidence, and updatedAt before any other action.';
+    'Begin every response with a plan_state_update that lists your goal, context, progress, next steps, blockers (or null), referenced observations, confidence, and updatedAt before any other action. Immediately after the plan_state_update, include a short text_response (in Mandarin) that restates the user’s latest question or intent in your own words so they know you understood it.';
 const MAX_PLAN_CONTINUATIONS = 3;
 const MAX_VALIDATION_RETRIES = 2;
 const MAX_ACTIONS_PER_RESPONSE = 2;

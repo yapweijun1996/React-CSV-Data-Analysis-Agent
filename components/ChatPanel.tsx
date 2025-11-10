@@ -57,6 +57,14 @@ type HelperDescriptor = {
     }>;
 };
 
+const CARD_ID_REGEX = /card-\d+-[0-9.]+/g;
+const extractCardIdsFromText = (text?: string | null): string[] => {
+    if (!text) return [];
+    const matches = text.match(CARD_ID_REGEX);
+    if (!matches) return [];
+    return Array.from(new Set(matches));
+};
+
 const helperToneClasses: Record<HelperTone, string> = {
     info: 'bg-blue-50 text-blue-800 border-blue-200',
     warning: 'bg-amber-50 text-amber-800 border-amber-200',
