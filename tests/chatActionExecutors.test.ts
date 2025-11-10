@@ -49,7 +49,7 @@ type RuntimeState = {
     lastFilterQuery: string | null;
 };
 
-const createRuntime = (overrides: Partial<RuntimeState> = {}) => {
+const createRuntime = (overrides: Partial<RuntimeState> = {}, options?: { userMessage?: string }) => {
     const baseState: RuntimeState = {
         chatHistory: [],
         isSpreadsheetVisible: false,
@@ -109,7 +109,7 @@ const createRuntime = (overrides: Partial<RuntimeState> = {}) => {
             runPlanWithChatLifecycle: async () => [],
         },
         runId: 'run-test',
-        userMessage: 'hello world',
+        userMessage: options?.userMessage ?? 'hello world',
         memorySnapshot: [],
         memoryTagAttached: false,
     };
@@ -288,6 +288,36 @@ await run('plan_state_update normalizes payload and stores plan state', async ()
     assert.strictEqual(state.plannerSession.planState?.contextSummary, null);
     assert.strictEqual(state.plannerSession.planState?.confidence, 0.42);
     assert.ok(addProgressCalls.some(message => message.includes('Plan goal updated')));
+});
+
+await run('plan_state_update seeds acknowledge step when user just greeted', async () => {
+    const { runtime, state } = createRuntime(
+        {
+            addProgress: () => {},
+        },
+        { userMessage: 'hi' },
+    );
+    const { entries, markTrace } = createTraceRecorder();
+    const action: AiAction = {
+        responseType: 'plan_state_update',
+        thought: 'Set baseline plan',
+        planState: {
+            goal: ' Analyze data ',
+            contextSummary: null,
+            progress: ' waiting ',
+            nextSteps: [],
+            blockedBy: '',
+            observationIds: [],
+            confidence: 0.5,
+            updatedAt: '2024-01-01T00:00:00.000Z',
+        },
+    };
+
+    await runActionThroughRegistry(action, runtime, 0, markTrace);
+    const success = entries.find(entry => entry.status === 'succeeded');
+    assert.ok(success);
+    assert.strictEqual(state.plannerPendingSteps.length, 1);
+    assert.strictEqual(state.plannerPendingSteps[0].id, 'acknowledge_user');
 });
 
 console.log('🎉 chatActionExecutors tests completed successfully.');

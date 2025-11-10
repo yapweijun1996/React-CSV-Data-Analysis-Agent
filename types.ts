@@ -137,6 +137,16 @@ export interface AgentObservation {
     uiDelta?: string | null;
 }
 
+export interface AgentPromptMetric {
+    id: string;
+    mode: 'plan_only' | 'full';
+    charCount: number;
+    estimatedTokens: number;
+    promptLabel: string;
+    createdAt: string;
+    runId?: string | null;
+}
+
 export interface AgentValidationEvent {
     id: string;
     actionType: AgentActionType;
@@ -161,6 +171,7 @@ export interface AgentPlanState {
     observationIds?: string[];
     confidence?: number | null;
     updatedAt: string;
+    stateTag?: AgentStateTag | null;
 }
 
 export interface PlannerSessionState {
@@ -294,6 +305,7 @@ export interface AppState {
     plannerSession: PlannerSessionState;
     agentPhase: AgentPhaseState;
     plannerPendingSteps: AgentPlanStep[];
+    agentPromptMetrics: AgentPromptMetric[];
 }
 
 export interface DomAction {

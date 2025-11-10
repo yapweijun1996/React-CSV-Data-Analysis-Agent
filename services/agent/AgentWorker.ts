@@ -92,6 +92,12 @@ const PLAN_PRIMER_INSTRUCTION =
     'Begin every response with a plan_state_update that lists your goal, context, progress, next steps, blockers (or null), referenced observations, confidence, and updatedAt before any other action.';
 const MAX_PLAN_CONTINUATIONS = 3;
 const CONTINUATION_STATE_TAG_DENYLIST = new Set<AgentStateTag>(['awaiting_clarification', 'blocked']);
+const FALLBACK_TEXT_RESPONSE_STEP_ID = 'ad_hoc_response';
+const GREETING_REGEX = /^(hi|hello|hey|hola|ciao|salut|嗨+|哈囉|你好|您好|早上好|晚上好|早安|晚安)([!.?\s]|$)/i;
+const DEFAULT_ACK_STEP: AgentPlanStep = {
+    id: 'acknowledge_user',
+    label: 'Acknowledge the user and confirm their desired next steps.',
+};
 
 let lastStateTagWarningAt = 0;
 let lastThoughtlessToastAt = 0;
@@ -332,6 +338,42 @@ const normalizePlanStepsPayload = (steps: AgentPlanStep[] | undefined | null): A
         }
     }
     return normalized;
+};
+
+const seedAcknowledgementStepIfNeeded = (
+    steps: AgentPlanStep[],
+    runtime: PlannerRuntime,
+): AgentPlanStep[] => {
+    if (steps.length > 0) return steps;
+    const message = runtime.userMessage?.trim() ?? '';
+    if (message && message.length <= 40 && GREETING_REGEX.test(message)) {
+        return [DEFAULT_ACK_STEP];
+    }
+    return steps;
+};
+
+const autoAssignTextResponseStepId = (
+    action: AiAction,
+    runtime: PlannerRuntime,
+    actionIndex: number,
+): boolean => {
+    if (action.responseType !== 'text_response') return false;
+    const pendingCount = runtime.get().plannerPendingSteps?.length ?? 0;
+    if (pendingCount > 0) return false;
+    action.stepId = FALLBACK_TEXT_RESPONSE_STEP_ID;
+    runtime
+        .get()
+        .addProgress('Auto-assigned fallback stepId "ad_hoc_response" so the agent can keep chatting.');
+    if (typeof runtime.get().recordAgentValidationEvent === 'function') {
+        runtime.get().recordAgentValidationEvent({
+            actionType: 'text_response',
+            reason: 'auto_step_id_assigned',
+            actionIndex,
+            runId: runtime.runId,
+            retryInstruction: 'stepId was auto-filled because no pending steps were tracked.',
+        });
+    }
+    return true;
 };
 
 const thoughtMentionsStep = (thought: string | undefined, stepKey: string | null): boolean => {
@@ -952,15 +994,20 @@ const validateAgentResponse = (
 
     for (let index = 0; index < response.actions.length; index++) {
         const action = response.actions[index];
-        const requiresStepId = action.responseType !== 'plan_state_update';
-        if (requiresStepId) {
-            if (typeof action.stepId !== 'string' || action.stepId.trim().length < 3) {
-                return buildPayloadValidationFailure(
-                    action,
-                    index,
-                    'stepId is missing or invalid.',
-                    'Every action (except plan_state_update) must include stepId matching the pending plan step id (>=3 characters, typically kebab-case).',
-                );
+        if (action.responseType !== 'plan_state_update') {
+            const trimmedStepId = typeof action.stepId === 'string' ? action.stepId.trim() : '';
+            if (trimmedStepId.length < 3) {
+                const autoAssigned = autoAssignTextResponseStepId(action, runtime, index);
+                if (!autoAssigned) {
+                    return buildPayloadValidationFailure(
+                        action,
+                        index,
+                        'stepId is missing or invalid.',
+                        'Every action (except plan_state_update) must include stepId matching the pending plan step id (>=3 characters, typically kebab-case).',
+                    );
+                }
+            } else {
+                action.stepId = trimmedStepId;
             }
         }
         switch (action.responseType) {
@@ -1378,7 +1425,10 @@ const handlePlanStateUpdateAction: AgentActionExecutor = async ({ action, runtim
     }
 
     const payload = action.planState;
-    const normalizedSteps = normalizePlanStepsPayload(payload.nextSteps);
+    const normalizedSteps = seedAcknowledgementStepIfNeeded(
+        normalizePlanStepsPayload(payload.nextSteps),
+        runtime,
+    );
     const normalizedState: AgentPlanState = {
         goal: payload.goal.trim(),
         progress: payload.progress.trim(),
@@ -1393,6 +1443,7 @@ const handlePlanStateUpdateAction: AgentActionExecutor = async ({ action, runtim
                 ? Math.min(1, Math.max(0, payload.confidence))
                 : payload.confidence ?? null,
         updatedAt: payload.updatedAt || new Date().toISOString(),
+        stateTag: normalizeStateTag(payload.stateTag) ?? null,
     };
 
     runtime.get().updatePlannerPlanState(normalizedState);

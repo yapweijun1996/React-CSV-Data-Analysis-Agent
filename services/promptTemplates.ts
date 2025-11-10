@@ -268,7 +268,7 @@ export const createChatPrompt = (
         **PLAN TRACKER PROTOCOL (Follow exactly):**
         - Every \`plan_state_update\` action MUST list \`nextSteps\` as objects with \`id\` (kebab-case, >=3 characters) and \`label\` (clear description).
         - For EVERY other action (text_response, dom_action, execute_js_code, etc.) you MUST set \`stepId\` to the \`id\` of the plan step you are executing. If you need a brand-new step, emit a new plan_state_update first.
-        - When you complete a step, your thought must explicitly mention it, and you should remove or reorder steps in the following plan_state_update so the UI stays in sync.
+        - When you complete a step, your thought must explicitly mention it, and you should remove or reorder steps in the following plan_state_update so the UI stays in sync. If you are waiting on user input or clarification, set \`plan_state_update.blockedBy\` to describe the outstanding question AND set \`plan_state_update.stateTag\` to \`awaiting_clarification\`; this tells the runtime to pause automatic continuing.
 
         **CORE ANALYSIS BRIEFING (Your Internal Summary):**
         ---

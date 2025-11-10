@@ -1,4 +1,5 @@
 import { Type } from "@google/genai";
+import { AGENT_STATE_TAGS } from "../../types";
 
 const analysisPlanItemSchema = {
     type: Type.OBJECT,
@@ -44,7 +45,6 @@ const analysisPlanItemSchema = {
         'secondaryAggregation',
         'defaultTopN',
         'defaultHideOthers',
-        'rowFilter',
     ],
     additionalProperties: false,
 };
@@ -204,6 +204,11 @@ const planStateSnapshotSchema = {
             maximum: 1,
         },
         updatedAt: { type: Type.STRING, description: 'ISO timestamp describing when this snapshot was generated.' },
+        stateTag: {
+            type: Type.STRING,
+            enum: AGENT_STATE_TAGS,
+            description: 'Optional tag describing the current agent state (e.g., awaiting_clarification).',
+        },
     },
     required: ['goal', 'contextSummary', 'progress', 'nextSteps', 'blockedBy', 'observationIds', 'confidence', 'updatedAt'],
     additionalProperties: false,
@@ -370,6 +375,7 @@ const nullablePropertyPaths = new Set([
     'properties.actions.items.properties.planState',
     'properties.actions.items.properties.planState.properties.contextSummary',
     'properties.actions.items.properties.planState.properties.blockedBy',
+    'properties.actions.items.properties.planState.properties.stateTag',
     'properties.jsFunctionBody',
     'properties.plans.items.properties.aggregation',
     'properties.plans.items.properties.groupByColumn',

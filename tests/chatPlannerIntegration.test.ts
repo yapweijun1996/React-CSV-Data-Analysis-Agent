@@ -344,6 +344,42 @@ await test('missing plan_state_update triggers validation retry', async () => {
     assert.strictEqual(lastMessage?.text, 'On it.');
 });
 
+await test('text_response without stepId auto-tags when planner steps empty', async () => {
+    const { runtime, store } = createPlannerHarness({
+        plannerSession: {
+            planState: {
+                goal: 'Follow up with user',
+                contextSummary: null,
+                progress: 'Ready for chatter',
+                nextSteps: [],
+                blockedBy: null,
+                observationIds: [],
+                confidence: 0.5,
+                updatedAt: new Date().toISOString(),
+            },
+            observations: [],
+        },
+        plannerPendingSteps: [],
+    });
+
+    await runPlannerWorkflow(
+        'Any updates?',
+        buildPlannerContext({
+            actions: [
+                {
+                    responseType: 'text_response',
+                    thought: 'Respond casually',
+                    text: 'Still here and ready to help.',
+                },
+            ],
+        }),
+        runtime as any,
+    );
+
+    const lastMessage = store.chatHistory.at(-1);
+    assert.strictEqual(lastMessage?.text, 'Still here and ready to help.');
+});
+
 await test('invalid dom_action payload triggers validation telemetry before retry', async () => {
     const invalidDomAction = {
         responseType: 'dom_action' as const,

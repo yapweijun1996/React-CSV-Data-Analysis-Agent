@@ -2,6 +2,20 @@ import { AnalysisPlan, ColumnProfile, CsvRow, AggregationType } from '../types';
 import { inferGroupByColumn } from './groupByInference';
 
 const ALLOWED_AGGREGATIONS: AggregationType[] = ['sum', 'count', 'avg'];
+const MAX_COLUMN_PROBE_ROWS = 25;
+
+const buildColumnNameSet = (columnProfiles: ColumnProfile[], rows: CsvRow[]): Set<string> => {
+    const names = new Set<string>();
+    columnProfiles.forEach(profile => {
+        if (profile?.name) {
+            names.add(profile.name);
+        }
+    });
+    for (let i = 0; i < Math.min(rows.length, MAX_COLUMN_PROBE_ROWS); i++) {
+        Object.keys(rows[i] ?? {}).forEach(key => names.add(key));
+    }
+    return names;
+};
 
 const normalizeAggregation = (aggregation?: string, hasValueColumn?: boolean): { value: AggregationType; inferred: boolean } => {
     if (aggregation) {
@@ -28,6 +42,7 @@ export const preparePlanForExecution = (
 ): PreparedPlanResult => {
     const plan: AnalysisPlan = { ...originalPlan };
     const warnings: string[] = [];
+    const availableColumns = buildColumnNameSet(columnProfiles, rows);
 
     if (plan.chartType === 'scatter') {
         if (!plan.xValueColumn || !plan.yValueColumn) {
@@ -85,6 +100,26 @@ export const preparePlanForExecution = (
                 isValid: false,
                 errorMessage: 'Unable to infer a grouping column for this chart.',
             };
+        }
+    }
+
+    if (plan.rowFilter) {
+        const filterColumn = plan.rowFilter.column;
+        const hasColumn = filterColumn ? availableColumns.has(filterColumn) : false;
+        const hasValues = Array.isArray(plan.rowFilter.values) && plan.rowFilter.values.length > 0;
+        if (!filterColumn || !hasColumn || !hasValues) {
+            const reasons: string[] = [];
+            if (!filterColumn) {
+                reasons.push('missing column');
+            } else if (!hasColumn) {
+                reasons.push(`column "${filterColumn}" not found`);
+            }
+            if (!hasValues) {
+                reasons.push('no filter values provided');
+            }
+            const reasonText = reasons.length ? ` (${reasons.join(', ')})` : '';
+            warnings.push(`Row filter invalid${reasonText}; removing filter.`);
+            delete plan.rowFilter;
         }
     }
 

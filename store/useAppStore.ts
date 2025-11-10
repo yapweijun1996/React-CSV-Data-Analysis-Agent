@@ -29,6 +29,7 @@ import {
     VectorStoreDocument,
     AgentPhaseState,
     AgentPhase,
+    AgentPromptMetric,
 } from '../types';
 import { executePlan, applyTopNWithOthers } from '../utils/dataProcessor';
 import { generateAnalysisPlans, generateSummary, generateFinalSummary, generateCoreAnalysisSummary, generateProactiveInsights } from '../services/aiService';

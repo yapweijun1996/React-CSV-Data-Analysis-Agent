@@ -24,6 +24,7 @@ import type {
     AgentPlanState,
     AgentPlanStep,
     AgentPhase,
+    AgentPromptMetric,
 } from '../types';
 
 export interface StoreState extends AppState {
@@ -51,6 +52,7 @@ export interface StoreState extends AppState {
     lastAppliedDataTransform: AppliedDataTransformRecord | null;
     isLastAppliedDataTransformBannerDismissed: boolean;
     interactiveSelectionFilter: SelectionDrilldownFilter | null;
+    agentPromptMetrics: AgentPromptMetric[];
 }
 
 export interface StoreActions {
@@ -145,6 +147,8 @@ export interface StoreActions {
     dismissLastAppliedDataTransformBanner: () => void;
     linkChartSelectionToRawData: (cardId: string, column: string | null, values: (string | number)[], label: string) => void;
     clearInteractiveSelectionFilter: () => void;
+    recordPromptMetric: (metric: AgentPromptMetric) => void;
+    clearPromptMetrics: () => void;
 }
 
 export type AppStore = StoreState & StoreActions;
