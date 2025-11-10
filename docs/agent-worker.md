@@ -18,6 +18,35 @@ This document explains how the agent pipeline is structured after introducing th
 | `runPlannerWorkflow` | Core loop: requests an AI response, validates it, dispatches actions, auto-retries when code execution fails, and stops on halt or clarification. |
 | `agentSdk` | Exposes executors/middlewares so tests (or power users) can hook into the registry. |
 
+## Planner Policies
+
+The worker now accepts an optional `PlannerPolicy` when you instantiate it:
+
+```ts
+const worker = new AgentWorker({
+  set,
+  get,
+  deps,
+  policy: { allowLooseSteps: true },
+});
+```
+
+- `allowLooseSteps` (default `false`) controls whether `stateConsistencyMiddleware` enforces pending step order/stepId requirements. Leave it `false` in production so chart creation follows the declared plan. Set it to `true` only for experimental flows (or tests) where you need the agent to improvise without step anchors.
+
+### DOM Actions
+
+The agent can manipulate existing cards through the `dom_action` tool family. Supported `toolName` values now include:
+
+- `highlightCard`
+- `changeCardChartType`
+- `showCardData`
+- `filterCard`
+- `setTopN`
+- `toggleHideOthers`
+- `toggleLegendLabel`
+- `exportCard`
+- `removeCard` *(new – deletes the targeted card when given its `cardId`. If the model only knows the card title, it can send `cardTitle` and the worker will resolve the ID when a unique match exists.)*
+
 ## Adding A New Action Type
 
 1. Extend the `AiAction` union + schema in `services/ai/schemas.ts`.

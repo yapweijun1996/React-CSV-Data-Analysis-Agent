@@ -221,8 +221,70 @@ export const createFinalSummaryPrompt = (summaries: string, language: Settings['
     Your response should be a single paragraph of insightful business analysis.
 `;
 
-
 import type { AgentActionTrace } from '../types';
+
+export const createPlanPrimerPrompt = (
+    columns: ColumnProfile[],
+    chatHistory: ChatMessage[],
+    userPrompt: string,
+    language: Settings['language'],
+    aiCoreAnalysisSummary: string | null,
+    longTermMemory: string[],
+    recentObservations: AgentObservation[],
+    cardContext: CardContext[],
+): string => {
+    const columnSummary = columns
+        .slice(0, 20)
+        .map(col => `${col.name} (${col.type})`)
+        .join(', ');
+    const cardTitles =
+        cardContext.length > 0 ? cardContext.map(card => `- ${card.title}`).join('\n') : 'No analysis cards created yet.';
+    const memoryNotes =
+        longTermMemory.length > 0 ? longTermMemory.slice(0, 3).join('\n---\n') : 'No long-term memory snippets selected.';
+    const observationNotes =
+        recentObservations.length > 0
+            ? recentObservations
+                  .slice(-3)
+                  .map(obs => `- [${obs.status.toUpperCase()}] ${obs.responseType}`)
+                  .join('\n')
+            : 'No recent tool observations available.';
+    const recentHistory =
+        chatHistory.length > 0
+            ? chatHistory
+                  .slice(-6)
+                  .map(msg => `${msg.sender === 'ai' ? 'You' : 'User'}: ${msg.text}`)
+                  .join('\n')
+            : 'No prior conversation.';
+
+    return `
+        You are beginning STEP 1 of a multi-stage workflow. Your sole objective in this turn is to emit a high-quality \`plan_state_update\` action that sets the shared goal tracker for the UI. Do **not** run tools, transformations, or DOM actions yet.
+
+        Requirements for this response:
+        - The first action must be \`plan_state_update\` with goal, contextSummary, progress, nextSteps (each having id + label), blockedBy (or null), observationIds (array, can be empty), confidence (0-1 or null), and updatedAt.
+        - Every action you send must include \`type\`, \`responseType\`, \`stepId\`, and a monotonic \`stateTag\` formatted as "<epochMs>-<seq>" (set \`stateTag\` even on plan_state_update). 
+        - The plan_state_update payload must include \`planId\`, \`currentStepId\`, and a comprehensive \`steps\` array where each entry has \`intent\` and \`status\` (\`ready\`|\`in_progress\`|\`done\`).
+        - You may optionally include one short \`text_response\` after the plan_state_update to acknowledge the plan to the user in ${language}, but do not trigger other action types.
+        - If the user's latest message is merely a greeting or check-in (e.g., "hi", "hello there", "早安"), still include a first nextSteps entry with id "acknowledge_user" and a label that confirms you will greet/clarify with them before moving to data work.
+        - Keep nextSteps focused on the minimum set of concrete moves (e.g., build chart, run filter, gather clarification). Reference dataset columns exactly as they appear.
+
+        Helpful context:
+        - Column inventory: ${columnSummary || 'No columns detected.'}
+        - Existing analysis cards: 
+        ${cardTitles}
+        - Core analysis briefing: ${aiCoreAnalysisSummary || 'Not generated yet.'}
+        - Long-term memory snippets: 
+        ${memoryNotes}
+        - Recent runtime observations:
+        ${observationNotes}
+
+        Recent conversation:
+        ${recentHistory}
+
+        The user's latest request is: "${userPrompt}"
+
+        Output your answer as a JSON object with an "actions" array. Remember: stay in planning mode only; do not issue executions until the goal tracker is established.
+    `;
+};
 
 export const createChatPrompt = (
     columns: ColumnProfile[],
@@ -266,8 +328,12 @@ export const createChatPrompt = (
         You are an expert data analyst and business strategist, required to operate using a Reason-Act (ReAct) framework. For every action you take, you must first explain your reasoning in the 'thought' field, and then define the action itself. Your goal is to respond to the user by providing insightful analysis and breaking down your response into a sequence of these thought-action pairs. Your final conversational responses should be in ${language}.
         
         **PLAN TRACKER PROTOCOL (Follow exactly):**
+        - Every action JSON object MUST include \`type\`, \`responseType\`, \`stepId\`, and a monotonic \`stateTag\` formatted as "<epochMs>-<seq>" (or a supported label such as \`awaiting_clarification\`).
         - Every \`plan_state_update\` action MUST list \`nextSteps\` as objects with \`id\` (kebab-case, >=3 characters) and \`label\` (clear description).
         - For EVERY other action (text_response, dom_action, execute_js_code, etc.) you MUST set \`stepId\` to the \`id\` of the plan step you are executing. If you need a brand-new step, emit a new plan_state_update first.
+        - The plan_state_update payload must include \`planId\`, \`currentStepId\`, and a \`steps\` array where each entry has \`intent\` and \`status\` (\`ready\`|\`in_progress\`|\`done\`).
+        - Emit at most **two actions per turn**: the \`plan_state_update\` plus a single atomic action (text response, clarification, dom_action, etc.).
+        - For any \`dom_action\`, include \`domAction.target\` with either \`byId\`, \`byTitle\`, or \`selector\`. If you cannot resolve a target, downgrade to a \`text_response\` explaining that the user must choose a card.
         - When you complete a step, your thought must explicitly mention it, and you should remove or reorder steps in the following plan_state_update so the UI stays in sync. If you are waiting on user input or clarification, set \`plan_state_update.blockedBy\` to describe the outstanding question AND set \`plan_state_update.stateTag\` to \`awaiting_clarification\`; this tells the runtime to pause automatic continuing.
 
         **CORE ANALYSIS BRIEFING (Your Internal Summary):**
@@ -297,7 +363,7 @@ export const createChatPrompt = (
 
         **Agent Runtime (Pipeline Awareness):**
         - The frontend runs you through **Context Builder → Planner → Action Dispatcher**. Stay concise so downstream executors can follow the plan.
-        - Each action may include an optional \`stateTag\` describing the new internal state. Pick from: \`context_ready\`, \`needs_clarification\`, \`transform_drafted\`, \`analysis_shared\`, \`awaiting_data\`, \`error_retrying\`.
+        - Each action **must** include a \`stateTag\` (use either a known label such as \`context_ready\` or mint "<epochMs>-<seq>" tokens to keep them strictly increasing).
 
         **Recent Conversation (for flow):**
         ${recentHistory}
@@ -323,6 +389,7 @@ export const createChatPrompt = (
             - \`toggleHideOthers\`: Check/uncheck the “Hide Others” box (pass \`hide: true\`/false, or omit to flip).
             - \`toggleLegendLabel\`: Simulate clicking a legend label (\`label\` must match the on-screen text exactly).
             - \`exportCard\`: Trigger the export menu (\`format\` = 'png' | 'csv' | 'html').
+            - \`removeCard\`: Remove an incorrect/irrelevant chart. Pass the exact \`cardId\` (preferred). If you only know the title, set \`cardTitle\` and the runtime will resolve the matching card when possible.
         4.  **execute_js_code**: For PERMANENT data transformations (creating new columns, deleting rows). This action WILL modify the main dataset and cause ALL charts to regenerate. Whenever you emit this action you MUST supply a fully-formed JavaScript function body (no placeholders, no empty strings). Use the provided helpers—\`_util.parseNumber\`, \`_util.splitNumericString\`, \`_util.groupBy\`, \`_util.pivot\`, \`_util.join\`, and \`_util.rollingWindow\`—instead of writing ad-hoc code for these operations. If you cannot write the code confidently, do NOT emit this action—explain the limitation instead. Use it for requests like "Remove all data from the USA".
         5.  **filter_spreadsheet**: For TEMPORARY, exploratory filtering of the Raw Data Explorer view. This action does NOT modify the main dataset and does NOT affect the analysis cards. Use it for requests like "show me record ORD1001" or "find all entries for Hannah". If the user expects the final chart to stay filtered, you must encode that scope inside \`plan.rowFilter\` (or permanently transform the data) instead of relying on this temporary tool. If the user simply says "show the raw data" without a specific condition, set \`args.query\` to \`"show entire table"\` (or leave it blank) so the UI will reveal every row.
         6.  **clarification_request**: To ask the user for more information when their request is ambiguous.
@@ -347,9 +414,9 @@ export const createChatPrompt = (
         - **CRITICAL**: If the user asks where a specific data value comes from (like 'Software Product 10') or how the data was cleaned, you MUST consult the **DATA PREPARATION LOG**. Use a 'text_response' to explain the transformation in simple, non-technical language. You can include snippets of the code using markdown formatting to illustrate your point.
         - **Suggest Next Steps**: After successfully answering the user's request, you should add one final \`text_response\` action to proactively suggest a logical next step or a relevant follow-up question. This guides the user and makes the analysis more conversational. Example: "Now that we've seen the regional breakdown, would you like to explore the top-performing product categories within the East region?"
         - **EXAMPLE of Chaining**:
-          1.  Action 1: { thought: "The user is asking for profit margin, but that column doesn't exist. I need to calculate it from 'Revenue' and 'Cost'.", responseType: 'execute_js_code', code: { ... } }
-          2.  Action 2: { thought: "Now that I have the 'Profit Margin' column, I need to create a chart to find the product with the highest average margin.", responseType: 'plan_creation', plan: { ... } }
-          3.  Action 3: { thought: "The chart is created. I can now see the result and answer the user's question, explaining what I did.", responseType: 'text_response', text: "I've calculated the profit margin and created a new chart. It looks like 'Product A' has the highest margin." }
+          1.  Action 1: { type: 'execute_js_code', responseType: 'execute_js_code', stepId: 'derive-profit-margin', stateTag: '1731234567890-1', thought: "The user is asking for profit margin, but that column doesn't exist. I need to calculate it from 'Revenue' and 'Cost'.", code: { ... } }
+          2.  Action 2: { type: 'plan_creation', responseType: 'plan_creation', stepId: 'plan-profit-margin-chart', stateTag: '1731234567890-2', thought: "Now that I have the 'Profit Margin' column, I need to create a chart to find the product with the highest average margin.", plan: { ... } }
+          3.  Action 3: { type: 'text_response', responseType: 'text_response', stepId: 'summarize-profit-margin', stateTag: '1731234567890-3', thought: "The chart is created. I can now see the result and answer the user's question, explaining what I did.", text: "I've calculated the profit margin and created a new chart. It looks like 'Product A' has the highest margin." }
         - Always be conversational. Use 'text_response' actions to acknowledge the user and explain what you are doing, especially after a complex series of actions.
     `;
 };

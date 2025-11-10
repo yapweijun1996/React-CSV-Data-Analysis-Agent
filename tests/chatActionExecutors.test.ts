@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import type { AiAction, AgentPlanStep } from '../types';
+import type { AiAction, AgentActionType, AgentPlanState, AgentPlanStep } from '../types';
 import { agentSdk } from '../store/slices/chatSlice';
 
 const { errorCodes: ACTION_ERROR_CODES, runAction: runActionThroughRegistry } = agentSdk;
@@ -25,6 +25,46 @@ const buildSteps = (...labels: string[]): AgentPlanStep[] =>
     });
 
 const TEST_STEP_ID = 'test-step';
+let testStateTagSeq = 1;
+
+const nextTestStateTag = () => `100000-${testStateTagSeq++}-test`;
+
+const withEnvelope = (action: Partial<AiAction> & { responseType: AgentActionType }): AiAction => {
+    const stepId =
+        typeof action.stepId === 'string' && action.stepId.trim().length >= 3 ? action.stepId.trim() : TEST_STEP_ID;
+    return {
+        ...action,
+        type: action.type ?? action.responseType,
+        stepId,
+        stateTag: action.stateTag ?? nextTestStateTag(),
+    } as AiAction;
+};
+
+const buildPlanStatePayload = (overrides: Partial<AgentPlanState> = {}): AgentPlanState => {
+    const nextSteps = overrides.nextSteps && overrides.nextSteps.length > 0 ? overrides.nextSteps : buildSteps('collect metrics', 'build chart');
+    const normalizedSteps = nextSteps.map(step => ({
+        ...step,
+        status: step.status ?? 'ready',
+    }));
+    const allStepsSource =
+        overrides.steps && overrides.steps.length > 0
+            ? overrides.steps.map(step => ({ ...step, status: step.status ?? 'ready' }))
+            : normalizedSteps;
+    return {
+        planId: overrides.planId ?? 'plan-test',
+        goal: overrides.goal ?? 'Increase revenue insights',
+        contextSummary: overrides.contextSummary ?? null,
+        progress: overrides.progress ?? 'outlined targets',
+        nextSteps: normalizedSteps,
+        steps: allStepsSource,
+        currentStepId: overrides.currentStepId ?? normalizedSteps[0]?.id ?? TEST_STEP_ID,
+        blockedBy: overrides.blockedBy ?? null,
+        observationIds: overrides.observationIds ?? ['obs-1'],
+        confidence: overrides.confidence ?? 0.42,
+        updatedAt: overrides.updatedAt ?? '2024-01-01T00:00:00.000Z',
+        stateTag: overrides.stateTag ?? 'context_ready',
+    };
+};
 
 type RuntimeState = {
     chatHistory: any[];
@@ -33,6 +73,7 @@ type RuntimeState = {
     columnProfiles: { name: string }[];
     csvData: any;
     pendingDataTransform: any;
+    analysisCards: any[];
     queuePendingDataTransform: () => void;
     handleNaturalLanguageQuery: (query: string) => Promise<void>;
     executeDomAction: () => void;
@@ -49,7 +90,10 @@ type RuntimeState = {
     lastFilterQuery: string | null;
 };
 
-const createRuntime = (overrides: Partial<RuntimeState> = {}, options?: { userMessage?: string }) => {
+const createRuntime = (
+    overrides: Partial<RuntimeState> = {},
+    options?: { userMessage?: string; policy?: { allowLooseSteps?: boolean } },
+) => {
     const baseState: RuntimeState = {
         chatHistory: [],
         isSpreadsheetVisible: false,
@@ -57,6 +101,7 @@ const createRuntime = (overrides: Partial<RuntimeState> = {}, options?: { userMe
         columnProfiles: [],
         csvData: null,
         pendingDataTransform: null,
+        analysisCards: [],
         queuePendingDataTransform: () => {},
         handleNaturalLanguageQuery: async (query: string) => {
             baseState.lastFilterQuery = query;
@@ -112,6 +157,9 @@ const createRuntime = (overrides: Partial<RuntimeState> = {}, options?: { userMe
         userMessage: options?.userMessage ?? 'hello world',
         memorySnapshot: [],
         memoryTagAttached: false,
+        policy: {
+            allowLooseSteps: options?.policy?.allowLooseSteps ?? false,
+        },
     };
 
     return { runtime, state: baseState };
@@ -138,7 +186,7 @@ const run = async (name: string, fn: () => Promise<void>) => {
 await run('blocks actions without thought content', async () => {
     const { runtime } = createRuntime();
     const { entries, markTrace } = createTraceRecorder();
-    const action: AiAction = { responseType: 'text_response', stepId: TEST_STEP_ID };
+    const action = withEnvelope({ responseType: 'text_response', thought: undefined });
 
     const result = await runActionThroughRegistry(action, runtime, 0, markTrace);
     assert.strictEqual(result.type, 'continue');
@@ -150,7 +198,7 @@ await run('blocks actions without thought content', async () => {
 await run('text_response without payload emits error telemetry', async () => {
     const { runtime } = createRuntime();
     const { entries, markTrace } = createTraceRecorder();
-    const action: AiAction = { responseType: 'text_response', thought: 'Respond politely', stepId: TEST_STEP_ID };
+    const action = withEnvelope({ responseType: 'text_response', thought: 'Respond politely' });
 
     await runActionThroughRegistry(action, runtime, 0, markTrace);
     const failure = entries.find(entry => entry.status === 'failed');
@@ -160,7 +208,7 @@ await run('text_response without payload emits error telemetry', async () => {
 await run('plan_creation without dataset reports missing payload', async () => {
     const { runtime } = createRuntime();
     const { entries, markTrace } = createTraceRecorder();
-    const action: AiAction = {
+    const action = withEnvelope({
         responseType: 'plan_creation',
         thought: 'Need a chart',
         stepId: TEST_STEP_ID,
@@ -169,7 +217,7 @@ await run('plan_creation without dataset reports missing payload', async () => {
             title: 'Sales',
             description: 'desc',
         },
-    };
+    });
 
     await runActionThroughRegistry(action, runtime, 0, markTrace);
     const failure = entries.find(entry => entry.status === 'failed');
@@ -179,49 +227,155 @@ await run('plan_creation without dataset reports missing payload', async () => {
 await run('dom_action without payload is rejected', async () => {
     const { runtime } = createRuntime();
     const { entries, markTrace } = createTraceRecorder();
-    const action: AiAction = { responseType: 'dom_action', thought: 'Need to tweak card', stepId: TEST_STEP_ID };
+    const action = withEnvelope({ responseType: 'dom_action', thought: 'Need to tweak card' });
 
     await runActionThroughRegistry(action, runtime, 0, markTrace);
     const failure = entries.find(entry => entry.status === 'failed');
     assert.strictEqual(failure?.telemetry?.errorCode, ACTION_ERROR_CODES.DOM_PAYLOAD_MISSING);
 });
 
+await run('removeCard dom_action invokes executor when payload valid', async () => {
+    let removed = false;
+    const { runtime } = createRuntime({
+        executeDomAction: (domAction: any) => {
+            if (domAction.toolName === 'removeCard' && domAction.args?.cardId === 'card-123') {
+                removed = true;
+            }
+        },
+        analysisCards: [
+            { id: 'card-123', plan: { title: 'Total Amount by Payee Name' } },
+        ],
+    });
+    const { markTrace } = createTraceRecorder();
+    const action = withEnvelope({
+        responseType: 'dom_action',
+        thought: 'Clean up card',
+        domAction: { toolName: 'removeCard', args: { cardId: 'card-123' } },
+    });
+
+    const result = await runActionThroughRegistry(action, runtime, 0, markTrace);
+    assert.strictEqual(result.type, 'continue');
+    assert.ok(removed, 'removeCard should call executeDomAction with cardId');
+});
+
+await run('removeCard dom_action auto-resolves cardId from title', async () => {
+    let resolvedCardId: string | null = null;
+    const { runtime } = createRuntime({
+        executeDomAction: (domAction: any) => {
+            if (domAction.toolName === 'removeCard') {
+                resolvedCardId = domAction.args?.cardId ?? null;
+            }
+        },
+        analysisCards: [
+            { id: 'card-auto', plan: { title: 'Total Amount by Payee Name' } },
+        ],
+    });
+    const { entries, markTrace } = createTraceRecorder();
+    const action = withEnvelope({
+        responseType: 'dom_action',
+        thought: 'Clean up card by title',
+        domAction: { toolName: 'removeCard', args: { cardTitle: 'Total Amount by Payee Name' } },
+    });
+
+    const result = await runActionThroughRegistry(action, runtime, 0, markTrace);
+    assert.strictEqual(result.type, 'continue');
+    assert.strictEqual(resolvedCardId, 'card-auto');
+});
+
 await run('execute_js_code without dataset produces dataset error', async () => {
     const { runtime } = createRuntime();
     const { entries, markTrace } = createTraceRecorder();
-    const action: AiAction = {
+    const action = withEnvelope({
         responseType: 'execute_js_code',
         thought: 'Need transform',
-        stepId: TEST_STEP_ID,
         code: { explanation: 'noop', jsFunctionBody: 'return data;' },
-    };
+    });
 
     await runActionThroughRegistry(action, runtime, 1, markTrace);
     const failure = entries.find(entry => entry.status === 'failed');
     assert.strictEqual(failure?.telemetry?.errorCode, ACTION_ERROR_CODES.DATASET_UNAVAILABLE);
 });
 
-await run('filter_spreadsheet without query defaults to show-all', async () => {
-    const { runtime, state } = createRuntime();
+await run('execute_js_code no-op triggers retry with transform error', async () => {
+    const { runtime } = createRuntime({
+        csvData: {
+            fileName: 'test.csv',
+            data: [
+                { Metric: 'Revenue', Value: 120 },
+                { Metric: 'Cost', Value: 45 },
+            ],
+        },
+        columnAliasMap: {},
+    });
     const { entries, markTrace } = createTraceRecorder();
-    const action: AiAction = {
+    const action = withEnvelope({
+        responseType: 'execute_js_code',
+        thought: 'Attempt transform with no change',
+        code: {
+            explanation: 'Return the dataset as-is (should be rejected)',
+            jsFunctionBody: 'return data;',
+        },
+    });
+
+    const result = await runActionThroughRegistry(action, runtime, 1, markTrace);
+    assert.strictEqual(result.type, 'retry');
+    assert.strictEqual(result.observation?.errorCode, ACTION_ERROR_CODES.TRANSFORM_FAILED);
+    const failure = entries.find(entry => entry.status === 'failed');
+    assert.strictEqual(failure?.telemetry?.errorCode, ACTION_ERROR_CODES.TRANSFORM_FAILED);
+});
+
+await run('filter_spreadsheet without query reuses meaningful user message', async () => {
+    const { runtime, state } = createRuntime({}, { userMessage: 'focus on general ledger invoices' });
+    const { entries, markTrace } = createTraceRecorder();
+    const action = withEnvelope({
         responseType: 'filter_spreadsheet',
         thought: 'Need focus',
-        stepId: TEST_STEP_ID,
         args: { query: '' },
-    };
+    });
 
     const result = await runActionThroughRegistry(action, runtime, 0, markTrace);
     assert.strictEqual(result.type, 'continue');
     const success = entries.find(entry => entry.status === 'succeeded');
     assert.ok(success, 'filter action should succeed with fallback');
+    assert.strictEqual(state.lastFilterQuery, runtime.userMessage);
+});
+
+await run('filter_spreadsheet without query and blank message shows full table', async () => {
+    const { runtime, state } = createRuntime({}, { userMessage: '' });
+    const { entries, markTrace } = createTraceRecorder();
+    const action = withEnvelope({
+        responseType: 'filter_spreadsheet',
+        thought: 'Need focus',
+        args: {},
+    });
+
+    const result = await runActionThroughRegistry(action, runtime, 0, markTrace);
+    assert.strictEqual(result.type, 'continue');
+    const success = entries.find(entry => entry.status === 'succeeded');
+    assert.ok(success, 'filter fallback should still succeed');
+    assert.strictEqual(state.lastFilterQuery, 'show entire table');
+});
+
+await run('filter_spreadsheet ignores greeting fallback', async () => {
+    const { runtime, state } = createRuntime({}, { userMessage: 'hi there' });
+    const { entries, markTrace } = createTraceRecorder();
+    const action = withEnvelope({
+        responseType: 'filter_spreadsheet',
+        thought: 'Need focus',
+        args: {},
+    });
+
+    const result = await runActionThroughRegistry(action, runtime, 0, markTrace);
+    assert.strictEqual(result.type, 'continue');
+    const success = entries.find(entry => entry.status === 'succeeded');
+    assert.ok(success, 'filter fallback should succeed');
     assert.strictEqual(state.lastFilterQuery, 'show entire table');
 });
 
 await run('clarification_request without payload is rejected', async () => {
     const { runtime } = createRuntime();
     const { entries, markTrace } = createTraceRecorder();
-    const action: AiAction = { responseType: 'clarification_request', thought: 'Need more info', stepId: TEST_STEP_ID };
+    const action = withEnvelope({ responseType: 'clarification_request', thought: 'Need more info' });
 
     await runActionThroughRegistry(action, runtime, 0, markTrace);
     const failure = entries.find(entry => entry.status === 'failed');
@@ -231,12 +385,11 @@ await run('clarification_request without payload is rejected', async () => {
 await run('proceed_to_analysis succeeds and records duration', async () => {
     const { runtime } = createRuntime();
     const { entries, markTrace } = createTraceRecorder();
-    const action: AiAction = {
+    const action = withEnvelope({
         responseType: 'proceed_to_analysis',
         thought: 'Continue',
         stateTag: 'analysis_shared',
-        stepId: TEST_STEP_ID,
-    };
+    });
 
     await runActionThroughRegistry(action, runtime, 0, markTrace);
     const success = entries.find(entry => entry.status === 'succeeded');
@@ -248,7 +401,7 @@ await run('proceed_to_analysis succeeds and records duration', async () => {
 await run('plan_state_update without payload is rejected', async () => {
     const { runtime } = createRuntime();
     const { entries, markTrace } = createTraceRecorder();
-    const action: AiAction = { responseType: 'plan_state_update', thought: 'Need to log goal' };
+    const action = withEnvelope({ responseType: 'plan_state_update', thought: 'Need to log goal' });
 
     await runActionThroughRegistry(action, runtime, 0, markTrace);
     const failure = entries.find(entry => entry.status === 'failed');
@@ -261,36 +414,36 @@ await run('plan_state_update normalizes payload and stores plan state', async ()
         addProgress: (msg: string) => addProgressCalls.push(msg),
     });
     const { entries, markTrace } = createTraceRecorder();
-    const action: AiAction = {
+    const action = withEnvelope({
         responseType: 'plan_state_update',
         thought: 'Clarify mission',
-        planState: {
+        stepId: 'collect-metrics',
+        planState: buildPlanStatePayload({
             goal: '  Increase revenue insights  ',
-            contextSummary: null,
             progress: ' outlined targets ',
-            nextSteps: buildSteps(' collect metrics ', 'build chart'),
             blockedBy: '',
             observationIds: ['obs-1'],
-            confidence: 0.42,
-            updatedAt: '2024-01-01T00:00:00.000Z',
-        },
-    };
+            nextSteps: buildSteps(' collect metrics ', 'build chart'),
+            steps: buildSteps(' collect metrics ', 'build chart'),
+        }),
+    });
 
     await runActionThroughRegistry(action, runtime, 0, markTrace);
     const success = entries.find(entry => entry.status === 'succeeded');
     assert.ok(success);
     assert.deepStrictEqual(state.plannerSession.planState?.goal, 'Increase revenue insights');
-    assert.deepStrictEqual(
-        state.plannerSession.planState?.nextSteps,
-        buildSteps('collect metrics', 'build chart'),
-    );
+    const storedSteps = (state.plannerSession.planState?.nextSteps ?? []).map(step => ({
+        id: step.id,
+        label: step.label,
+    }));
+    assert.deepStrictEqual(storedSteps, buildSteps('collect metrics', 'build chart'));
     assert.strictEqual(state.plannerSession.planState?.blockedBy, null);
     assert.strictEqual(state.plannerSession.planState?.contextSummary, null);
     assert.strictEqual(state.plannerSession.planState?.confidence, 0.42);
     assert.ok(addProgressCalls.some(message => message.includes('Plan goal updated')));
 });
 
-await run('plan_state_update seeds acknowledge step when user just greeted', async () => {
+await run('plan_state_update leaves steps untouched when user just greeted', async () => {
     const { runtime, state } = createRuntime(
         {
             addProgress: () => {},
@@ -298,26 +451,77 @@ await run('plan_state_update seeds acknowledge step when user just greeted', asy
         { userMessage: 'hi' },
     );
     const { entries, markTrace } = createTraceRecorder();
-    const action: AiAction = {
+    const greetingSteps = buildSteps('acknowledge user greeting');
+    const action = withEnvelope({
         responseType: 'plan_state_update',
         thought: 'Set baseline plan',
-        planState: {
+        stepId: greetingSteps[0].id,
+        planState: buildPlanStatePayload({
             goal: ' Analyze data ',
-            contextSummary: null,
             progress: ' waiting ',
-            nextSteps: [],
-            blockedBy: '',
+            nextSteps: greetingSteps,
+            steps: greetingSteps,
             observationIds: [],
             confidence: 0.5,
-            updatedAt: '2024-01-01T00:00:00.000Z',
-        },
-    };
+        }),
+    });
 
     await runActionThroughRegistry(action, runtime, 0, markTrace);
     const success = entries.find(entry => entry.status === 'succeeded');
     assert.ok(success);
     assert.strictEqual(state.plannerPendingSteps.length, 1);
-    assert.strictEqual(state.plannerPendingSteps[0].id, 'acknowledge_user');
+    assert.strictEqual(state.plannerPendingSteps[0]?.id, greetingSteps[0].id);
+});
+
+await run('plan_creation enforces pending step when policy is strict', async () => {
+    const pendingSteps = buildSteps('Build chart');
+    const dataset = { fileName: 'test.csv', data: [{ vendor: 'A', amount: 100 }] };
+    const { runtime } = createRuntime({
+        csvData: dataset,
+        plannerPendingSteps: pendingSteps,
+        plannerSession: { planState: { nextSteps: pendingSteps }, observations: [] },
+    });
+    const { entries, markTrace } = createTraceRecorder();
+    const action = withEnvelope({
+        responseType: 'plan_creation',
+        thought: 'Need chart',
+        plan: {
+            chartType: 'bar',
+            title: 'Spend by Vendor',
+            description: 'desc',
+        },
+    });
+
+    await runActionThroughRegistry(action, runtime, 0, markTrace);
+    const failure = entries.find(entry => entry.status === 'failed');
+    assert.strictEqual(failure?.telemetry?.errorCode, ACTION_ERROR_CODES.PLAN_STEP_OUT_OF_ORDER);
+});
+
+await run('plan_creation allows loose steps when policy permits', async () => {
+    const pendingSteps = buildSteps('Build chart');
+    const dataset = { fileName: 'test.csv', data: [{ vendor: 'A', amount: 100 }] };
+    const { runtime } = createRuntime(
+        {
+            csvData: dataset,
+            plannerPendingSteps: pendingSteps,
+            plannerSession: { planState: { nextSteps: pendingSteps }, observations: [] },
+        },
+        { policy: { allowLooseSteps: true } },
+    );
+    const { entries, markTrace } = createTraceRecorder();
+    const action = withEnvelope({
+        responseType: 'plan_creation',
+        thought: 'Need chart',
+        plan: {
+            chartType: 'bar',
+            title: 'Spend by Vendor',
+            description: 'desc',
+        },
+    });
+
+    await runActionThroughRegistry(action, runtime, 0, markTrace);
+    const success = entries.find(entry => entry.status === 'succeeded');
+    assert.ok(success, 'plan_creation should succeed when loose steps are allowed');
 });
 
 console.log('🎉 chatActionExecutors tests completed successfully.');

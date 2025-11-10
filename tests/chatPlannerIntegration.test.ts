@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { runPlannerWorkflow } from '../store/slices/chatSlice';
 import type {
+    AiAction,
     AiChatResponse,
+    AgentPlanState,
     AgentPlanStep,
     ChatMessage,
     ColumnProfile,
@@ -37,6 +39,7 @@ type PlannerStore = {
     domActions: DomAction[];
     lastFilterQuery: string | null;
     validationEvents: AgentValidationEvent[];
+    analysisCards: Array<{ id: string; plan: { title: string } }>;
 };
 
 const DEFAULT_TEST_TIMEOUT_MS = Number(process.env.PLANNER_TEST_TIMEOUT_MS ?? '20000');
@@ -67,6 +70,7 @@ const defaultStore = (): PlannerStore => ({
     domActions: [],
     lastFilterQuery: null,
     validationEvents: [],
+    analysisCards: [],
 });
 
 const createPlannerHarness = (overrides: Partial<PlannerStore> = {}) => {
@@ -138,6 +142,7 @@ const createPlannerHarness = (overrides: Partial<PlannerStore> = {}) => {
         executeDomAction: (domAction: DomAction) => {
             store.domActions.push(domAction);
         },
+        analysisCards: store.analysisCards,
         handleNaturalLanguageQuery: async (query: string) => {
             store.lastFilterQuery = query;
             store.progressLog.push(`filter:${query}`);
@@ -198,6 +203,7 @@ const createPlannerHarness = (overrides: Partial<PlannerStore> = {}) => {
         userMessage: 'Need summary',
         memorySnapshot: [],
         memoryTagAttached: false,
+        policy: { allowLooseSteps: false },
     } as const;
 
     return { runtime, store };
@@ -205,7 +211,7 @@ const createPlannerHarness = (overrides: Partial<PlannerStore> = {}) => {
 
 const buildPlannerContext = (response: AiChatResponse) => ({
     memorySnapshot: [],
-    requestAiResponse: async () => response,
+    requestAiResponse: async () => wrapResponse(response),
 });
 
 const buildMultiResponseContext = (responses: AiChatResponse[]) => {
@@ -218,9 +224,9 @@ const buildMultiResponseContext = (responses: AiChatResponse[]) => {
             requestCount++;
             if (queue.length === 0) {
                 exhausted = true;
-                return responses[responses.length - 1];
+                return wrapResponse(responses[responses.length - 1]);
             }
-            return queue.shift()!;
+            return wrapResponse(queue.shift()!);
         },
         getRequestCount: () => requestCount,
         wasExhausted: () => exhausted,
@@ -261,24 +267,77 @@ const buildSteps = (...labels: string[]): AgentPlanStep[] =>
         };
     });
 
-const primaryPlanSteps = buildSteps('Draft cohort analysis', 'Run pipeline forecast');
+const primaryPlanSteps = buildSteps('Draft cohort analysis', 'Run pipeline forecast').map((step, index) => ({
+    ...step,
+    status: index === 0 ? 'in_progress' : 'ready',
+}));
 const FIRST_STEP_ID = primaryPlanSteps[0].id;
 const SECOND_STEP_ID = primaryPlanSteps[1].id;
+
+let plannerStateTagSeq = 1;
+const nextPlannerStateTag = () => `200000-${plannerStateTagSeq++}-planner`;
+
+const buildPlanStatePayload = (overrides: Partial<AgentPlanState> = {}): AgentPlanState => {
+    const sourceSteps =
+        overrides.nextSteps && overrides.nextSteps.length > 0 ? overrides.nextSteps : primaryPlanSteps;
+    const normalizedSteps = sourceSteps.map(step => ({
+        ...step,
+        status: step.status ?? 'ready',
+    }));
+    const normalizedAllSteps =
+        overrides.steps && overrides.steps.length > 0
+            ? overrides.steps.map(step => ({
+                  ...step,
+                  status: step.status ?? 'ready',
+              }))
+            : normalizedSteps;
+    return {
+        planId: overrides.planId ?? 'plan-primary',
+        goal: overrides.goal ?? 'Increase ARR by 10%',
+        contextSummary: overrides.contextSummary ?? null,
+        progress: overrides.progress ?? 'Outlined metrics',
+        nextSteps: normalizedSteps,
+        steps: normalizedAllSteps,
+        currentStepId: overrides.currentStepId ?? normalizedSteps[0]?.id ?? FIRST_STEP_ID,
+        blockedBy: overrides.blockedBy ?? null,
+        observationIds: overrides.observationIds ?? ['obs-1'],
+        confidence: overrides.confidence ?? 0.66,
+        updatedAt: overrides.updatedAt ?? '2024-01-02T00:00:00.000Z',
+        stateTag: overrides.stateTag ?? 'context_ready',
+    };
+};
+
+const wrapActionEnvelope = (action: AiAction, defaultStepId: string = FIRST_STEP_ID): AiAction => {
+    const stepId =
+        typeof action.stepId === 'string' && action.stepId.trim().length >= 3 ? action.stepId.trim() : defaultStepId;
+    const enriched: AiAction = {
+        ...action,
+        type: action.type ?? action.responseType,
+        stepId,
+        stateTag: action.stateTag ?? nextPlannerStateTag(),
+    };
+    if (enriched.responseType === 'plan_state_update') {
+        enriched.planState = buildPlanStatePayload(enriched.planState ?? {});
+    }
+    return enriched;
+};
+
+const wrapResponse = (response: AiChatResponse): AiChatResponse => ({
+    actions: response.actions.map(action => wrapActionEnvelope({ ...action })),
+});
 
 const planStateAction = {
     responseType: 'plan_state_update' as const,
     thought: 'Clarify mission',
-    planState: {
-        goal: 'Increase ARR by 10%',
-        contextSummary: 'Focus on enterprise deals',
-        progress: 'Outlined metrics',
-        nextSteps: primaryPlanSteps,
-        blockedBy: null,
-        observationIds: ['obs-1'],
-        confidence: 0.66,
-        updatedAt: '2024-01-02T00:00:00.000Z',
-    },
+    planState: buildPlanStatePayload(),
 };
+
+const buildTextResponseAction = (text: string, thought = 'Acknowledged'): AiAction => ({
+    responseType: 'text_response',
+    thought,
+    text,
+    stepId: FIRST_STEP_ID,
+});
 
 await test('runPlannerWorkflow executes plan_state then reply', async () => {
     const textResponseAction = {
@@ -342,6 +401,43 @@ await test('missing plan_state_update triggers validation retry', async () => {
     );
     const lastMessage = store.chatHistory.at(-1);
     assert.strictEqual(lastMessage?.text, 'On it.');
+});
+
+await test('greeting auto-fills missing plan_state_update payload', async () => {
+    const incompletePlanStateAction = {
+        responseType: 'plan_state_update' as const,
+        thought: 'Wave back',
+    };
+    const greetingReply = {
+        responseType: 'text_response' as const,
+        thought: 'Say hello',
+        text: 'Hi there! How can I help today?',
+    };
+
+    const { runtime, store } = createPlannerHarness();
+    runtime.userMessage = 'hi';
+    (runtime as any).detectedIntent = { intent: 'greeting', confidence: 0.95 };
+    (runtime as any).intentRequirementSatisfied = true;
+
+    await runPlannerWorkflow(
+        'hi',
+        buildPlannerContext({ actions: [incompletePlanStateAction, greetingReply] }),
+        runtime as any,
+    );
+
+    assert.strictEqual(store.validationEvents.length, 1, 'greeting auto-fill should only emit an auto-tag notice');
+    assert.strictEqual(store.validationEvents[0].reason, 'auto_step_id_greeting_ack');
+    assert.strictEqual(
+        store.plannerSession.planState?.goal,
+        'Acknowledge the user and gather their request.',
+        'greeting plan should be seeded automatically',
+    );
+    const finalMessage = store.chatHistory.at(-1);
+    assert.strictEqual(finalMessage?.text, greetingReply.text);
+    assert.ok(
+        store.progressLog.some(msg => msg.includes('Relaxed plan tracker requirement for greeting')),
+        'should log that the greeting plan payload was auto-filled',
+    );
 });
 
 await test('text_response without stepId auto-tags when planner steps empty', async () => {
@@ -422,6 +518,65 @@ await test('invalid dom_action payload triggers validation telemetry before retr
     );
 });
 
+await test('removeCard dom_action can rely on cardTitle fallback', async () => {
+    const removeByTitleAction = {
+        responseType: 'dom_action' as const,
+        thought: 'Clean redundant chart',
+        stepId: FIRST_STEP_ID,
+        domAction: {
+            toolName: 'removeCard' as const,
+            args: { cardId: '', cardTitle: 'Monthly Expenses' },
+        },
+    };
+
+    const { runtime, store } = createPlannerHarness({
+        analysisCards: [{ id: 'card-auto', plan: { title: 'Monthly Expenses' } }],
+    });
+    await runPlannerWorkflow(
+        'Delete extra chart',
+        buildPlannerContext({ actions: [planStateAction, removeByTitleAction] }),
+        runtime as any,
+    );
+
+    const executedRemove = store.domActions.find(action => action.toolName === 'removeCard');
+    assert.ok(executedRemove, 'removeCard action should execute');
+    assert.strictEqual(executedRemove?.args?.cardId, 'card-auto', 'cardId should be auto-resolved from title');
+});
+
+await test('required remove_card action auto-inserted when missing', async () => {
+    const { runtime, store } = createPlannerHarness({
+        analysisCards: [{ id: 'card-1', plan: { title: 'Aged Payables' } }],
+    });
+    runtime.userMessage = 'please remove the aged payables card';
+    (runtime as any).detectedIntent = {
+        intent: 'remove_card',
+        confidence: 0.95,
+        requiredTool: {
+            responseType: 'dom_action',
+            domToolName: 'removeCard',
+            payloadHints: { cardId: 'card-1', cardTitle: 'Aged Payables' },
+        },
+        payloadHints: { cardTitle: 'Aged Payables' },
+    };
+    (runtime as any).intentRequirementSatisfied = false;
+
+    console.log('debug: starting auto-insert remove_card test');
+    await runPlannerWorkflow(
+        'please remove the aged payables card',
+        buildPlannerContext({ actions: [planStateAction, buildTextResponseAction('Working on it')] }),
+        runtime as any,
+    );
+    console.log('debug: finished auto-insert remove_card test');
+
+    const executedRemove = store.domActions.find(action => action.toolName === 'removeCard');
+    assert.ok(executedRemove, 'removeCard action should be auto-inserted and executed');
+    assert.strictEqual(executedRemove?.args?.cardId, 'card-1');
+    assert.ok(
+        store.progressLog.some(msg => msg.includes('Auto-inserted removeCard')),
+        'Should log that removeCard was auto-inserted',
+    );
+});
+
 await test('too-short filter query triggers validation retry', async () => {
     const shortFilterAction = {
         responseType: 'filter_spreadsheet' as const,
@@ -456,6 +611,108 @@ await test('too-short filter query triggers validation retry', async () => {
     assert.deepStrictEqual(
         store.agentActionTraces.map(t => t.actionType),
         ['filter_spreadsheet', 'plan_state_update', 'filter_spreadsheet'],
+    );
+});
+
+await test('required filter action auto-inserted when missing', async () => {
+    const { runtime, store } = createPlannerHarness();
+    runtime.userMessage = 'show invoices above 5000';
+    (runtime as any).detectedIntent = {
+        intent: 'data_filter',
+        confidence: 0.82,
+        requiredTool: { responseType: 'filter_spreadsheet' },
+        payloadHints: { query: 'amount > 5000' },
+    };
+    (runtime as any).intentRequirementSatisfied = false;
+
+    await runPlannerWorkflow(
+        'show invoices above 5000',
+        buildPlannerContext({ actions: [planStateAction, buildTextResponseAction('On it.')] }),
+        runtime as any,
+    );
+
+    assert.strictEqual(store.lastFilterQuery, 'amount > 5000');
+    assert.ok(
+        store.progressLog.some(msg => msg.includes('Auto-inserted filter_spreadsheet')),
+        'Should log that filter was auto inserted',
+    );
+    assert.ok(
+        store.agentActionTraces.some(trace => trace.actionType === 'filter_spreadsheet'),
+        'Auto-inserted filter action should produce a trace',
+    );
+});
+
+await test('filter payload auto-filled using user request when intent is filter', async () => {
+    const blankFilterAction = {
+        responseType: 'filter_spreadsheet' as const,
+        thought: 'Need to narrow results',
+        stepId: FIRST_STEP_ID,
+        args: {},
+    };
+    const { runtime, store } = createPlannerHarness();
+    runtime.userMessage = 'filter february invoices only';
+    (runtime as any).detectedIntent = {
+        intent: 'data_filter',
+        confidence: 0.78,
+        requiredTool: { responseType: 'filter_spreadsheet' },
+    };
+    (runtime as any).intentRequirementSatisfied = false;
+
+    await runPlannerWorkflow(
+        'filter february invoices only',
+        buildPlannerContext({ actions: [planStateAction, blankFilterAction] }),
+        runtime as any,
+    );
+
+    assert.strictEqual(
+        store.lastFilterQuery,
+        'filter february invoices only',
+        'Filter query should reuse the user message',
+    );
+    assert.ok(
+        store.validationEvents.some(event => event.reason === 'auto_filter_query_filled'),
+        'Auto fill event should be recorded',
+    );
+});
+
+await test('dom_action payload auto-filled using intent hints', async () => {
+    const missingPayloadAction = {
+        responseType: 'dom_action' as const,
+        thought: 'Clean chart',
+        stepId: FIRST_STEP_ID,
+        domAction: {
+            toolName: 'removeCard' as const,
+            args: {},
+        },
+    };
+
+    const { runtime, store } = createPlannerHarness({
+        analysisCards: [{ id: 'card-intent', plan: { title: 'Aged Payables' } }],
+    });
+    runtime.userMessage = 'delete aged payables card';
+    (runtime as any).detectedIntent = {
+        intent: 'remove_card',
+        confidence: 0.9,
+        requiredTool: {
+            responseType: 'dom_action',
+            domToolName: 'removeCard',
+            payloadHints: { cardId: 'card-intent', cardTitle: 'Aged Payables' },
+        },
+        payloadHints: { cardTitle: 'Aged Payables' },
+    };
+    (runtime as any).intentRequirementSatisfied = false;
+
+    await runPlannerWorkflow(
+        'delete aged payables card',
+        buildPlannerContext({ actions: [planStateAction, missingPayloadAction] }),
+        runtime as any,
+    );
+
+    const executedRemove = store.domActions.find(action => action.toolName === 'removeCard');
+    assert.strictEqual(executedRemove?.args?.cardId, 'card-intent');
+    assert.ok(
+        store.validationEvents.some(event => event.reason === 'auto_dom_payload_filled'),
+        'Should record auto dom payload event',
     );
 });
 
@@ -807,6 +1064,61 @@ await test('execute_js_code failure triggers auto-retry flow', async () => {
             'text_response',
         ],
     );
+});
+
+await test('execute_js_code intent stays unsatisfied until a successful tool runs', async () => {
+    const noChangeTransform = {
+        responseType: 'execute_js_code' as const,
+        thought: 'Try transform without effect',
+        stepId: FIRST_STEP_ID,
+        code: {
+            explanation: 'Return the dataset unchanged',
+            jsFunctionBody: 'return data;',
+        },
+    };
+    const missingToolText = {
+        responseType: 'text_response' as const,
+        thought: 'Skip tool for now',
+        text: 'Let me re-evaluate before changing the data.',
+        stepId: FIRST_STEP_ID,
+    };
+    const successfulTransform = {
+        responseType: 'execute_js_code' as const,
+        thought: 'Add a normalized metric',
+        stepId: FIRST_STEP_ID,
+        code: {
+            explanation: 'Create a bonus column for each row',
+            jsFunctionBody:
+                'return data.map(row => ({ ...row, Bonus: Number(row.Revenue_total || 0) * 0.1 }));',
+        },
+    };
+
+    const { runtime, store } = createPlannerHarness();
+    const plannerContext = buildMultiResponseContext([
+        { actions: [planStateAction, noChangeTransform] },
+        { actions: [planStateAction, missingToolText] },
+        { actions: [planStateAction, successfulTransform] },
+    ]);
+    runtime.userMessage = 'Please transform the dataset';
+    (runtime as any).detectedIntent = {
+        intent: 'data_transform',
+        confidence: 0.9,
+        requiredTool: { responseType: 'execute_js_code' },
+    };
+    (runtime as any).intentRequirementSatisfied = false;
+
+    await runPlannerWorkflow(
+        'Please transform the dataset',
+        plannerContext,
+        runtime as any,
+    );
+
+    assert.ok(store.progressLog.some(msg => msg.includes('Auto-retrying data transformation (attempt 2)...')));
+    assert.strictEqual(store.validationEvents.length, 1);
+    assert.strictEqual(store.validationEvents[0].reason, 'Required tool execute_js_code missing.');
+    assert.ok(store.pendingDataTransform, 'Successful final transform should queue preview data.');
+    assert.strictEqual(plannerContext.getRequestCount(), 3);
+    assert.strictEqual((runtime as any).intentRequirementSatisfied, true);
 });
 
 await test('execute_js_code success queues pending data transform', async () => {

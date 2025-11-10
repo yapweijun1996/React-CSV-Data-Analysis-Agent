@@ -22,7 +22,20 @@ const getPlanStateSchema = () => {
 
 test('plan_state schema mandates all fields and forbids extras', () => {
     const planStateSchema = getPlanStateSchema();
-    const requiredFields = ['goal', 'contextSummary', 'progress', 'nextSteps', 'blockedBy', 'observationIds', 'confidence', 'updatedAt'];
+    const requiredFields = [
+        'goal',
+        'contextSummary',
+        'progress',
+        'nextSteps',
+        'blockedBy',
+        'observationIds',
+        'confidence',
+        'stateTag',
+        'updatedAt',
+        'planId',
+        'currentStepId',
+        'steps',
+    ];
     assert.deepStrictEqual(planStateSchema.required?.slice().sort(), requiredFields.slice().sort());
     assert.strictEqual(planStateSchema.additionalProperties, false);
 });

@@ -90,7 +90,7 @@ export const AGENT_STATE_TAGS = [
     'error_retrying',
 ] as const;
 
-export type AgentStateTag = typeof AGENT_STATE_TAGS[number];
+export type AgentStateTag = string;
 
 export const AGENT_PHASES = [
     'idle',
@@ -137,6 +137,28 @@ export interface AgentObservation {
     uiDelta?: string | null;
 }
 
+export type AgentIntent =
+    | 'remove_card'
+    | 'data_filter'
+    | 'data_transform'
+    | 'clarification'
+    | 'chart_request'
+    | 'greeting'
+    | 'unknown';
+
+export interface RequiredToolHint {
+    responseType: AgentActionType;
+    domToolName?: string;
+    payloadHints?: Record<string, any>;
+}
+
+export interface DetectedIntent {
+    intent: AgentIntent;
+    confidence: number;
+    requiredTool?: RequiredToolHint | null;
+    payloadHints?: Record<string, any>;
+}
+
 export interface AgentPromptMetric {
     id: string;
     mode: 'plan_only' | 'full';
@@ -157,16 +179,23 @@ export interface AgentValidationEvent {
     retryInstruction?: string;
 }
 
+export type AgentPlanStepStatus = 'ready' | 'in_progress' | 'done';
+
 export interface AgentPlanStep {
     id: string;
     label: string;
+    intent?: string;
+    status?: AgentPlanStepStatus;
 }
 
 export interface AgentPlanState {
+    planId?: string | null;
     goal: string;
     contextSummary?: string | null;
     progress: string;
     nextSteps: AgentPlanStep[];
+    steps?: AgentPlanStep[];
+    currentStepId?: string | null;
     blockedBy?: string | null;
     observationIds?: string[];
     confidence?: number | null;
@@ -306,6 +335,13 @@ export interface AppState {
     agentPhase: AgentPhaseState;
     plannerPendingSteps: AgentPlanStep[];
     agentPromptMetrics: AgentPromptMetric[];
+    plannerDatasetHash: string | null;
+}
+
+export interface DomActionTarget {
+    byId?: string;
+    byTitle?: string;
+    selector?: string;
 }
 
 export interface DomAction {
@@ -317,11 +353,14 @@ export interface DomAction {
         | 'setTopN'
         | 'toggleHideOthers'
         | 'toggleLegendLabel'
-        | 'exportCard';
+        | 'exportCard'
+        | 'removeCard';
+    target?: DomActionTarget;
     args: { [key: string]: any };
 }
 
 export interface AiAction {
+  type?: AgentActionType;
   thought?: string; // The AI's reasoning for this action (ReAct pattern).
   responseType: AgentActionType;
   stateTag?: AgentStateTag;

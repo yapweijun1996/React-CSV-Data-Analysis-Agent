@@ -1,6 +1,7 @@
 import type { GetState, SetState } from 'zustand';
 import { executeJavaScriptDataTransform, executeJavaScriptFilter, profileData } from '../../utils/dataProcessor';
 import { generateChatResponse } from '../aiService';
+import type { ChatResponseOptions } from '../aiService';
 import { vectorStore } from '../vectorStore';
 import { filterClarificationOptions, COLUMN_TARGET_PROPERTIES } from '../../utils/clarification';
 import { buildColumnAliasMap, cloneRowsWithAliases, normalizeRowsFromAliases } from '../../utils/columnAliases';
@@ -26,9 +27,15 @@ import type {
     AgentPhase,
     PendingPlan,
     AgentActionType,
+    AgentPromptMetric,
+    DetectedIntent,
+    RequiredToolHint,
 } from '../../types';
 import { AGENT_STATE_TAGS } from '../../types';
 import type { AppStore } from '../../store/appStoreTypes';
+import { detectUserIntent } from './intentRouter';
+import { createAgentEngine } from './engine';
+import type { EngineContext } from './engine';
 
 /**
  * Core runtime that keeps the agent flow sandboxed outside the chat slice.
@@ -51,7 +58,16 @@ export interface AgentWorkerOptions {
     set: SetState<AppStore>;
     get: GetState<AppStore>;
     deps: ChatSliceDependencies;
+    policy?: PlannerPolicy;
 }
+
+export interface PlannerPolicy {
+    allowLooseSteps: boolean;
+}
+
+const DEFAULT_PLANNER_POLICY: PlannerPolicy = {
+    allowLooseSteps: false,
+};
 
 interface PlannerRuntime {
     set: SetState<AppStore>;
@@ -61,11 +77,15 @@ interface PlannerRuntime {
     userMessage: string;
     memorySnapshot: MemoryReference[];
     memoryTagAttached: boolean;
+    policy: PlannerPolicy;
+    intentNotes?: string[];
+    detectedIntent?: DetectedIntent | null;
+    intentRequirementSatisfied?: boolean;
 }
 
 interface ChatPlannerContext {
     memorySnapshot: MemoryReference[];
-    requestAiResponse: (prompt: string) => Promise<AiChatResponse>;
+    requestAiResponse: (prompt: string, options?: ChatResponseOptions) => Promise<AiChatResponse>;
 }
 
 interface ActionObservationPayload {
@@ -86,17 +106,88 @@ type DispatchResult =
     | { type: 'halt' };
 
 const STATE_TAG_SET = new Set<AgentStateTag>(AGENT_STATE_TAGS);
+const MINTED_STATE_TAG_REGEX = /^(\d{5,})-(\d+)(?:-[\w-]+)?$/;
 const STATE_TAG_WARNING_THROTTLE_MS = 5000;
 const THOUGHTLESS_TOAST_THROTTLE_MS = 8000;
 const PLAN_PRIMER_INSTRUCTION =
     'Begin every response with a plan_state_update that lists your goal, context, progress, next steps, blockers (or null), referenced observations, confidence, and updatedAt before any other action.';
 const MAX_PLAN_CONTINUATIONS = 3;
+const MAX_ACTIONS_PER_RESPONSE = 2;
 const CONTINUATION_STATE_TAG_DENYLIST = new Set<AgentStateTag>(['awaiting_clarification', 'blocked']);
 const FALLBACK_TEXT_RESPONSE_STEP_ID = 'ad_hoc_response';
-const GREETING_REGEX = /^(hi|hello|hey|hola|ciao|salut|嗨+|哈囉|你好|您好|早上好|晚上好|早安|晚安)([!.?\s]|$)/i;
 const DEFAULT_ACK_STEP: AgentPlanStep = {
-    id: 'acknowledge_user',
-    label: 'Acknowledge the user and confirm their desired next steps.',
+    id: 'acknowledge_user_greeting',
+    label: 'Acknowledge the greeting and ask what to analyze next.',
+};
+const SHOW_ALL_FILTER_QUERY = 'show entire table';
+const PLAN_RESET_KEYWORDS = ['reset plan', 'start over', '重新開始', '重新开始', '重新規劃', '重新规划'];
+const GREETING_REGEX_STRICT = /^(hi|hello|hey|hola|ciao|salut|嗨+|哈囉|你好|您好|早上好|晚上好|早安|晚安)([!.?\s]|$)/i;
+const FALLBACK_PLAN_STATUS = 'Requesting simplified plan outline...';
+const REMOVE_CARD_REGEX = /(remove|delete)\s+card/i;
+const agentEngine = createAgentEngine();
+
+interface MintedStateTagInfo {
+    epochMs: number;
+    seq: number;
+    raw: string;
+}
+
+const parseMintedStateTag = (tag: string): MintedStateTagInfo | null => {
+    const match = tag.match(MINTED_STATE_TAG_REGEX);
+    if (!match) return null;
+    return {
+        epochMs: Number(match[1]),
+        seq: Number(match[2]),
+        raw: tag,
+    };
+};
+
+const createValidationStateTag = (): string => {
+    const epoch = Date.now();
+    const seq = Math.floor(Math.random() * 9000) + 1000;
+    return `${epoch}-${seq}-autofill`;
+};
+
+const messageRequestsPlanReset = (message: string): boolean => {
+    const normalized = message.trim().toLowerCase();
+    if (!normalized) return false;
+    if (PLAN_RESET_KEYWORDS.some(keyword => normalized.includes(keyword))) {
+        return true;
+    }
+    return false;
+};
+
+const buildIntentNotes = (detectedIntent: DetectedIntent | null | undefined, store: AppStore): string[] => {
+    if (!detectedIntent) return [];
+    switch (detectedIntent.intent) {
+        case 'remove_card': {
+            const cardTitle: string | undefined = detectedIntent.payloadHints?.cardTitle;
+            const cardId: string | undefined = detectedIntent.requiredTool?.payloadHints?.cardId;
+            if (cardId && cardTitle) {
+                return [
+                    `USER INTENT: Remove the chart titled "${cardTitle}" (cardId: ${cardId}). ACTION REQUIREMENT: Emit a dom_action removeCard with cardId=${cardId} (or cardTitle matching that text). Do not use other dom_action tools for this request.`,
+                ];
+            }
+            const titles = (store.analysisCards ?? []).map(card => card?.plan?.title).filter(Boolean);
+            return [
+                `USER INTENT: Remove a chart but no exact title match was found. Ask the user which chart to remove before proceeding. Available charts: ${titles.join(', ')}.`,
+            ];
+        }
+        case 'data_filter':
+            return [
+                'USER INTENT: Filter the raw data view. ACTION REQUIREMENT: Use filter_spreadsheet immediately with args.query echoing their request before creating new charts.',
+            ];
+        case 'data_transform':
+            return [
+                'USER INTENT: Permanently transform the dataset. ACTION REQUIREMENT: Use execute_js_code with valid transformation code before continuing.',
+            ];
+        case 'clarification':
+            return [
+                'USER INTENT: Needs clarification. ACTION REQUIREMENT: Ask a clarification_request that lists concrete options or explicitly states the missing detail.',
+            ];
+        default:
+            return [];
+    }
 };
 
 let lastStateTagWarningAt = 0;
@@ -333,23 +424,13 @@ const normalizePlanStepsPayload = (steps: AgentPlanStep[] | undefined | null): A
         const id = typeof raw?.id === 'string' ? raw.id.trim() : '';
         const label = typeof raw?.label === 'string' ? raw.label.trim() : '';
         if (id.length >= 3 && label.length >= 3 && !seenIds.has(id)) {
-            normalized.push({ id, label });
+            const intent = typeof raw?.intent === 'string' ? raw.intent.trim() || undefined : undefined;
+            const status = typeof raw?.status === 'string' ? (raw.status as AgentPlanStep['status']) : undefined;
+            normalized.push({ id, label, intent, status });
             seenIds.add(id);
         }
     }
     return normalized;
-};
-
-const seedAcknowledgementStepIfNeeded = (
-    steps: AgentPlanStep[],
-    runtime: PlannerRuntime,
-): AgentPlanStep[] => {
-    if (steps.length > 0) return steps;
-    const message = runtime.userMessage?.trim() ?? '';
-    if (message && message.length <= 40 && GREETING_REGEX.test(message)) {
-        return [DEFAULT_ACK_STEP];
-    }
-    return steps;
 };
 
 const autoAssignTextResponseStepId = (
@@ -358,14 +439,38 @@ const autoAssignTextResponseStepId = (
     actionIndex: number,
 ): boolean => {
     if (action.responseType !== 'text_response') return false;
-    const pendingCount = runtime.get().plannerPendingSteps?.length ?? 0;
-    if (pendingCount > 0) return false;
+    const store = runtime.get();
+    const pendingSteps = store.plannerPendingSteps ?? [];
+    if (pendingSteps.length > 0) {
+        const firstPending = pendingSteps[0];
+        if (
+            runtime.detectedIntent?.intent === 'greeting' &&
+            pendingSteps.length === 1 &&
+            firstPending?.id === DEFAULT_ACK_STEP.id
+        ) {
+            action.stepId = firstPending.id;
+            store.addProgress(
+                `Auto-tagged greeting reply to step "${firstPending.id}" so it can proceed.`,
+                'system',
+            );
+            if (typeof store.recordAgentValidationEvent === 'function') {
+                store.recordAgentValidationEvent({
+                    actionType: 'text_response',
+                    reason: 'auto_step_id_greeting_ack',
+                    actionIndex,
+                    runId: runtime.runId,
+                    retryInstruction:
+                        'stepId was auto-filled with the greeting acknowledgement step so you can keep chatting.',
+                });
+            }
+            return true;
+        }
+        return false;
+    }
     action.stepId = FALLBACK_TEXT_RESPONSE_STEP_ID;
-    runtime
-        .get()
-        .addProgress('Auto-assigned fallback stepId "ad_hoc_response" so the agent can keep chatting.');
-    if (typeof runtime.get().recordAgentValidationEvent === 'function') {
-        runtime.get().recordAgentValidationEvent({
+    store.addProgress('Auto-assigned fallback stepId "ad_hoc_response" so the agent can keep chatting.');
+    if (typeof store.recordAgentValidationEvent === 'function') {
+        store.recordAgentValidationEvent({
             actionType: 'text_response',
             reason: 'auto_step_id_assigned',
             actionIndex,
@@ -374,6 +479,17 @@ const autoAssignTextResponseStepId = (
         });
     }
     return true;
+};
+
+const pickPlannerStepIdForAutoAction = (runtime: PlannerRuntime): string => {
+    const pending = runtime.get().plannerPendingSteps;
+    if (Array.isArray(pending) && pending.length > 0) {
+        const candidate = pending[0]?.id?.trim();
+        if (candidate && candidate.length >= 3) {
+            return candidate;
+        }
+    }
+    return FALLBACK_TEXT_RESPONSE_STEP_ID;
 };
 
 const thoughtMentionsStep = (thought: string | undefined, stepKey: string | null): boolean => {
@@ -455,16 +571,13 @@ const hasPlanStatePayload = (action: AiAction): action is AiAction & { planState
     if (!payload) return false;
     const hasGoal = typeof payload.goal === 'string' && payload.goal.trim().length > 0;
     const hasProgress = typeof payload.progress === 'string' && payload.progress.trim().length > 0;
-    const hasNextSteps =
-        Array.isArray(payload.nextSteps) &&
-        payload.nextSteps.some(
-            step =>
-                typeof step?.id === 'string' &&
-                step.id.trim().length >= 3 &&
-                typeof step?.label === 'string' &&
-                step.label.trim().length > 0,
-        );
-    return hasGoal && hasProgress && hasNextSteps;
+    const hasNextStepsArray = Array.isArray(payload.nextSteps) && payload.nextSteps.length > 0;
+    const hasPlanId = typeof payload.planId === 'string' && payload.planId.trim().length > 0;
+    const hasCurrentStep =
+        typeof payload.currentStepId === 'string' && payload.currentStepId.trim().length >= 3;
+    const normalizedSteps = normalizePlanStepsPayload(payload.steps ?? payload.nextSteps);
+    const hasStepsList = normalizedSteps.length > 0;
+    return hasGoal && hasProgress && hasNextStepsArray && hasPlanId && hasCurrentStep && hasStepsList;
 };
 
 const extractPendingPlanColumns = (plan?: PendingPlan | null): string[] => {
@@ -489,6 +602,241 @@ const plannerHasPendingSteps = (
         stateTag: planState?.stateTag as AgentStateTag | undefined,
         hasBlocker: !!(planState?.blockedBy && planState.blockedBy.trim().length > 0),
     };
+};
+
+const formatPlanStepsForPrompt = (plan?: AgentPlanState | null): string => {
+    if (!plan || !Array.isArray(plan.nextSteps) || plan.nextSteps.length === 0) {
+        return 'No pending steps were captured previously.';
+    }
+    return plan.nextSteps.map(step => `- [${step.id}] ${step.label}`).join('\n');
+};
+
+const buildFallbackPlanPrompt = (runtime: PlannerRuntime): string => {
+    const priorPlan = runtime.get().plannerSession.planState;
+    const priorSummary = priorPlan
+        ? `LAST_KNOWN_PLAN:\nGoal: ${priorPlan.goal}\nProgress: ${priorPlan.progress}\nNext Steps:\n${formatPlanStepsForPrompt(priorPlan)}`
+        : 'No previous plan was captured; establish a brand new plan.';
+    return `
+${runtime.userMessage}
+
+SYSTEM NOTE: The UI failed to parse your plan. Respond with ONLY a plan_state_update (plus an optional short text_response) that restates or refines the current goal tracker. Do not execute tools yet.
+
+${PLAN_PRIMER_INSTRUCTION}
+
+${priorSummary}
+    `.trim();
+};
+
+const appendIntentNotesToPrompt = (prompt: string, intentNotes?: string[]): string => {
+    if (!intentNotes || intentNotes.length === 0) return prompt;
+    const noteBlock = intentNotes.map(note => `- ${note}`).join('\n');
+    return `${prompt}\n\nSYSTEM INTENT NOTES:\n${noteBlock}`;
+};
+
+const resolveCardIdFromArgs = (runtime: PlannerRuntime, domAction: DomAction): void => {
+    if (!domAction || domAction.toolName !== 'removeCard') return;
+    const store = runtime.get();
+    const args = domAction.args ?? (domAction.args = {});
+    if (typeof args.cardId === 'string' && args.cardId.trim().length > 0) {
+        return;
+    }
+    const cards = store.analysisCards ?? [];
+    if (!Array.isArray(cards) || cards.length === 0) return;
+
+    const intentHints = runtime.detectedIntent?.requiredTool?.payloadHints ?? {};
+    const candidateIds = [args.cardId, intentHints.cardId].filter(
+        (value): value is string => typeof value === 'string' && value.trim().length > 0,
+    );
+    for (const candidateId of candidateIds) {
+        const matched = cards.find(card => card?.id === candidateId);
+        if (matched) {
+            args.cardId = matched.id;
+            if (!args.cardTitle && matched.plan?.title) {
+                args.cardTitle = matched.plan.title;
+            }
+            store.addProgress(`Auto-selected cardId ${matched.id} for removeCard using intent hints.`, 'system');
+            return;
+        }
+    }
+
+    const normalizeTitle = (value?: string | null) =>
+        (value ?? '')
+            .toLowerCase()
+            .replace(/\s+/g, ' ')
+            .trim();
+    const candidateTitles = [
+        typeof args.cardTitle === 'string' ? args.cardTitle : '',
+        typeof intentHints.cardTitle === 'string' ? intentHints.cardTitle : '',
+    ]
+        .map(normalizeTitle)
+        .filter(title => title.length >= 3);
+    if (candidateTitles.length === 0) return;
+
+    const matches = cards.filter(card => {
+        const title = normalizeTitle(card?.plan?.title);
+        if (!title) return false;
+        return candidateTitles.some(candidate => title.includes(candidate) || candidate.includes(title));
+    });
+
+    if (matches.length === 1) {
+        const target = matches[0];
+        args.cardId = target.id;
+        args.cardTitle = target.plan?.title ?? args.cardTitle;
+        store.addProgress(
+            `Auto-selected cardId ${target.id} for removeCard using title "${target.plan?.title ?? ''}".`,
+            'system',
+        );
+        return;
+    }
+
+    if (matches.length > 1) {
+        store.addProgress(
+            `Multiple charts matched "${candidateTitles[0]}". Please clarify which card to remove.`,
+            'error',
+        );
+    }
+};
+
+const isMeaningfulFilterQuery = (query: string): boolean => {
+    const trimmed = query.trim();
+    if (trimmed.length < 3) return false;
+    if (GREETING_REGEX_STRICT.test(trimmed)) return false;
+    const hasAlphaNumeric = /[\p{L}\p{N}]/u.test(trimmed);
+    return hasAlphaNumeric;
+};
+
+type FilterQuerySource = 'payload' | 'intent_hint' | 'user_message' | 'default';
+
+const computeFilterQuery = (
+    runtime: PlannerRuntime,
+    existingQuery?: string | null,
+    hint?: RequiredToolHint,
+): { query: string; source: FilterQuerySource } => {
+    const normalizedExisting = typeof existingQuery === 'string' ? existingQuery.trim() : '';
+    if (normalizedExisting) {
+        return { query: normalizedExisting, source: 'payload' };
+    }
+    const hinted = typeof hint?.payloadHints?.query === 'string' ? hint.payloadHints.query.trim() : '';
+    if (hinted) {
+        return { query: hinted, source: 'intent_hint' };
+    }
+    const fallback = runtime.userMessage?.trim() ?? '';
+    if (isMeaningfulFilterQuery(fallback)) {
+        return { query: fallback, source: 'user_message' };
+    }
+    return { query: SHOW_ALL_FILTER_QUERY, source: 'default' };
+};
+
+const repairFilterActionFromIntent = (
+    action: AiAction,
+    runtime: PlannerRuntime,
+    actionIndex: number,
+): boolean => {
+    if (action.responseType !== 'filter_spreadsheet') return false;
+    const intentHint =
+        runtime.detectedIntent?.intent === 'data_filter' ? runtime.detectedIntent.requiredTool : undefined;
+    if (!intentHint && action.args?.query) {
+        return false;
+    }
+    const currentQuery = typeof action.args?.query === 'string' ? action.args.query : '';
+    const { query, source } = computeFilterQuery(runtime, currentQuery, intentHint);
+    if (currentQuery?.trim() === query) {
+        return false;
+    }
+    action.args = { ...(action.args ?? {}), query };
+    const progressMessage =
+        source === 'default'
+            ? 'Auto-filled filter query with "show entire table" to keep the conversation moving.'
+            : 'Auto-filled filter query using your latest request so the filter tool can run.';
+    runtime.get().addProgress(progressMessage, 'system');
+    runtime.get().recordAgentValidationEvent?.({
+        actionType: 'filter_spreadsheet',
+        reason: 'auto_filter_query_filled',
+        actionIndex,
+        runId: runtime.runId,
+        retryInstruction: 'Filter query was auto-filled using the user intent/context.',
+    });
+    return true;
+};
+
+const repairDomActionFromIntent = (
+    action: AiAction,
+    runtime: PlannerRuntime,
+    actionIndex: number,
+): boolean => {
+    if (action.responseType !== 'dom_action' || !action.domAction) return false;
+    const hint = runtime.detectedIntent?.requiredTool;
+    if (!hint || hint.responseType !== 'dom_action') return false;
+    if (hint.domToolName && action.domAction.toolName !== hint.domToolName) return false;
+    const args = action.domAction.args ?? (action.domAction.args = {});
+    let mutated = false;
+    const hintedId = typeof hint.payloadHints?.cardId === 'string' ? hint.payloadHints.cardId.trim() : '';
+    const hintedTitle =
+        typeof hint.payloadHints?.cardTitle === 'string' ? hint.payloadHints.cardTitle.trim() : '';
+    if (!args.cardId && hintedId) {
+        args.cardId = hintedId;
+        mutated = true;
+    }
+    if (!args.cardTitle && hintedTitle) {
+        args.cardTitle = hintedTitle;
+        mutated = true;
+    }
+    if (mutated) {
+        runtime.get().addProgress('Auto-filled DOM action payload using intent hints.', 'system');
+        runtime.get().recordAgentValidationEvent?.({
+            actionType: 'dom_action',
+            reason: 'auto_dom_payload_filled',
+            actionIndex,
+            runId: runtime.runId,
+            retryInstruction: 'DOM payload fields were auto-filled using the user intent hints.',
+        });
+    }
+    return mutated;
+};
+
+const buildRequiredToolFallbackAction = (
+    runtime: PlannerRuntime,
+    hint: RequiredToolHint,
+): AiAction | null => {
+    const stepId = pickPlannerStepIdForAutoAction(runtime);
+    switch (hint.responseType) {
+        case 'dom_action': {
+            if (!hint.domToolName) return null;
+            const args: Record<string, any> = {};
+            if (hint.payloadHints?.cardId) {
+                args.cardId = hint.payloadHints.cardId;
+            }
+            if (hint.payloadHints?.cardTitle) {
+                args.cardTitle = hint.payloadHints.cardTitle;
+            }
+            const domAction: DomAction = { toolName: hint.domToolName, args };
+            resolveCardIdFromArgs(runtime, domAction);
+            if (!domAction.args?.cardId) {
+                return null;
+            }
+            return {
+                type: 'dom_action',
+                responseType: 'dom_action',
+                thought: 'Auto-inserted DOM action to satisfy the user intent.',
+                stepId,
+                stateTag: createValidationStateTag(),
+                domAction,
+            };
+        }
+        case 'filter_spreadsheet': {
+            const { query } = computeFilterQuery(runtime, hint.payloadHints?.query ?? null, hint);
+            return {
+                type: 'filter_spreadsheet',
+                responseType: 'filter_spreadsheet',
+                thought: 'Auto-inserted filter to satisfy the user intent.',
+                stepId,
+                stateTag: createValidationStateTag(),
+                args: { query },
+            };
+        }
+        default:
+            return null;
+    }
 };
 
 const buildChatPlannerContext = async (
@@ -524,7 +872,7 @@ const buildChatPlannerContext = async (
 
     const getRawDataExplorerSummary = (): string => buildRawDataExplorerSnapshot(get()).summary;
 
-    const requestAiResponse = (prompt: string) =>
+    const requestAiResponse = (prompt: string, options?: ChatResponseOptions) =>
         generateChatResponse(
             get().columnProfiles,
             get().chatHistory,
@@ -540,12 +888,44 @@ const buildChatPlannerContext = async (
             get().dataPreparationPlan,
             get().agentActionTraces.slice(-10),
             getRawDataExplorerSummary(),
-            { signal: deps.getRunSignal(runId) },
+            {
+                signal: options?.signal ?? deps.getRunSignal(runId),
+                mode: options?.mode,
+                onPromptProfile: profile => {
+                    const recordPromptMetric = get().recordPromptMetric;
+                    if (typeof recordPromptMetric === 'function') {
+                        const metric: AgentPromptMetric = {
+                            id: `prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                            mode: profile.mode,
+                            charCount: profile.charCount,
+                            estimatedTokens: profile.estimatedTokens,
+                            promptLabel: profile.promptLabel,
+                            createdAt: new Date().toISOString(),
+                            runId,
+                        };
+                        recordPromptMetric(metric);
+                    }
+                    options?.onPromptProfile?.(profile);
+                },
+            },
         );
 
     return {
         memorySnapshot,
         requestAiResponse,
+    };
+};
+
+const buildEngineContext = (runtime: PlannerRuntime): EngineContext => {
+    const store = runtime.get();
+    return {
+        planState: store.plannerSession.planState,
+        pendingSteps: store.plannerPendingSteps ?? [],
+        detectedIntent: runtime.detectedIntent,
+        userMessage: runtime.userMessage,
+        runId: runtime.runId,
+        now: Date.now(),
+        lastStateTag: store.plannerSession.planState?.stateTag ?? null,
     };
 };
 
@@ -584,8 +964,36 @@ const planActionMatchesStep = (action: AiAction, stepKey: string | null): boolea
     return haystacks.some(text => text.includes(stepKey));
 };
 
+const matchesRequiredTool = (action: AiAction, hint: RequiredToolHint): boolean => {
+    if (action.responseType !== hint.responseType) return false;
+    if (hint.responseType === 'dom_action' && hint.domToolName) {
+        return action.domAction?.toolName === hint.domToolName;
+    }
+    return true;
+};
+
 const planStepViolationCounts: Record<string, number> = Object.create(null);
 const MAX_PLAN_STEP_VIOLATIONS = 3;
+
+const seedGreetingPlanState = (runtime: PlannerRuntime) => {
+    const store = runtime.get();
+    const existingPlan = store.plannerSession.planState;
+    if (existingPlan) return;
+    const now = new Date().toISOString();
+    const planState: AgentPlanState = {
+        goal: 'Acknowledge the user and gather their request.',
+        contextSummary: 'User greeted the assistant; no task specified yet.',
+        progress: 'Greeting acknowledged.',
+        nextSteps: [DEFAULT_ACK_STEP],
+        blockedBy: null,
+        observationIds: [],
+        confidence: 0.5,
+        updatedAt: now,
+        stateTag: 'context_ready',
+    };
+    store.updatePlannerPlanState(planState);
+    store.addProgress('Auto-seeded a greeting plan tracker so the assistant can respond.');
+};
 
 const stateConsistencyMiddleware: ActionMiddleware = async (context, next) => {
     const runId = context.runtime.runId;
@@ -593,6 +1001,11 @@ const stateConsistencyMiddleware: ActionMiddleware = async (context, next) => {
         context.action.responseType === 'plan_state_update' ||
         context.action.responseType === 'text_response';
     if (isPlanOrText) {
+        planStepViolationCounts[runId] = 0;
+        return next();
+    }
+
+    if (context.runtime.policy.allowLooseSteps) {
         planStepViolationCounts[runId] = 0;
         return next();
     }
@@ -731,6 +1144,9 @@ const runActionThroughRegistry = async (
     remainingAutoRetries: number,
     markTrace: TraceRecorder,
 ): Promise<ActionStepResult> => {
+    if (action.responseType === 'dom_action' && action.domAction) {
+        resolveCardIdFromArgs(runtime, action.domAction);
+    }
     const executor = actionExecutorRegistry[action.responseType];
     if (!executor) {
         markTrace('failed', 'Unsupported action type.', { errorCode: ACTION_ERROR_CODES.UNSUPPORTED_ACTION });
@@ -792,7 +1208,9 @@ const validateClarificationPayload = (
 const validateDomActionPayload = (domAction: DomAction): string | null => {
     const args = domAction.args ?? {};
     const cardId = typeof args.cardId === 'string' ? args.cardId.trim() : '';
-    if (!cardId) {
+    const cardTitle = typeof args.cardTitle === 'string' ? args.cardTitle.trim() : '';
+    const requiresCardId = domAction.toolName !== 'removeCard';
+    if (requiresCardId && !cardId) {
         return 'DOM action missing cardId.';
     }
     switch (domAction.toolName) {
@@ -829,6 +1247,11 @@ const validateDomActionPayload = (domAction: DomAction): string | null => {
         case 'exportCard':
             if (!args.format || typeof args.format !== 'string') {
                 return 'exportCard requires a format.';
+            }
+            break;
+        case 'removeCard':
+            if (!cardId && !cardTitle) {
+                return 'removeCard requires a cardId (or cardTitle that uniquely identifies the card).';
             }
             break;
         default:
@@ -962,12 +1385,102 @@ const validateAgentResponse = (
                 'You must return at least one action. Begin with a plan_state_update that satisfies the required schema before any other steps.',
         };
     }
+    if (response.actions.length > MAX_ACTIONS_PER_RESPONSE) {
+        const offendingAction = response.actions[1] ?? response.actions[0];
+        return buildPayloadValidationFailure(
+            offendingAction,
+            Math.min(1, response.actions.length - 1),
+            'Too many actions returned in a single response.',
+            'Limit every response to a plan_state_update followed by exactly one atomic action (text_response, dom_action, execute_js_code, etc.).',
+        );
+    }
 
     const firstAction = response.actions[0];
-    const currentPlanState = runtime.get().plannerSession.planState;
+    let currentPlanState = runtime.get().plannerSession.planState;
+    const isGreetingIntent = runtime.detectedIntent?.intent === 'greeting';
+    let lastMintedStateTagInfo: MintedStateTagInfo | null = null;
+
+    const enforceActionEnvelope = (action: AiAction, index: number): AgentResponseValidationResult | null => {
+        const normalizedType = typeof action.type === 'string' ? action.type.trim() : '';
+        if (!normalizedType) {
+            return buildPayloadValidationFailure(
+                action,
+                index,
+                'Action type is missing.',
+                'Every action must include the type field (matching responseType) along with stepId and stateTag.',
+            );
+        }
+        if (action.responseType !== normalizedType) {
+            return buildPayloadValidationFailure(
+                action,
+                index,
+                'Action type must match responseType.',
+                'Keep the type field identical to responseType for every action.',
+            );
+        }
+        action.type = normalizedType as AgentActionType;
+
+        const rawStateTag = typeof action.stateTag === 'string' ? action.stateTag.trim() : '';
+        if (!rawStateTag) {
+            return buildPayloadValidationFailure(
+                action,
+                index,
+                'stateTag is missing.',
+                'Every action must include a monotonic stateTag formatted as "<epochMs>-<seq>" (or a known label like "awaiting_clarification").',
+            );
+        }
+        const normalizedStateTag = normalizeStateTag(rawStateTag);
+        if (!normalizedStateTag) {
+            return buildPayloadValidationFailure(
+                action,
+                index,
+                'stateTag format is invalid.',
+                'Mint stateTag tokens as "<epochMs>-<seq>" (optionally with a suffix) or use one of the known labels.',
+            );
+        }
+        const mintedInfo = parseMintedStateTag(normalizedStateTag);
+        if (mintedInfo) {
+            if (
+                lastMintedStateTagInfo &&
+                (mintedInfo.epochMs < lastMintedStateTagInfo.epochMs ||
+                    (mintedInfo.epochMs === lastMintedStateTagInfo.epochMs &&
+                        mintedInfo.seq <= lastMintedStateTagInfo.seq))
+            ) {
+                return buildPayloadValidationFailure(
+                    action,
+                    index,
+                    'stateTag must strictly increase with each action.',
+                    'Ensure every new action increments the numeric portion of the stateTag so it remains monotonic.',
+                );
+            }
+            lastMintedStateTagInfo = mintedInfo;
+        }
+        action.stateTag = normalizedStateTag;
+        return null;
+    };
+
+    const attachGreetingPlanPayload = (): boolean => {
+        seedGreetingPlanState(runtime);
+        currentPlanState = runtime.get().plannerSession.planState;
+        if (!currentPlanState) {
+            return false;
+        }
+        firstAction.planState = currentPlanState;
+        runtime
+            .get()
+            .addProgress(
+                'Relaxed plan tracker requirement for greeting; auto-filled plan_state_update payload.',
+                'system',
+            );
+        return true;
+    };
 
     if (!currentPlanState) {
         if (firstAction.responseType !== 'plan_state_update') {
+            if (isGreetingIntent && firstAction.responseType === 'text_response') {
+                seedGreetingPlanState(runtime);
+                return { isValid: true };
+            }
             return buildPayloadValidationFailure(
                 firstAction ?? null,
                 0,
@@ -976,39 +1489,44 @@ const validateAgentResponse = (
             );
         }
         if (!hasPlanStatePayload(firstAction)) {
-            return buildPayloadValidationFailure(
-                firstAction,
-                0,
-                'Plan tracker snapshot missing required fields.',
-                'Your initial plan_state_update must include goal, contextSummary, progress, nextSteps, blockedBy (or null), referenced observationIds, confidence, and updatedAt before other actions.',
-            );
+            if (!(isGreetingIntent && attachGreetingPlanPayload())) {
+                return buildPayloadValidationFailure(
+                    firstAction,
+                    0,
+                    'Plan tracker snapshot missing required fields.',
+                    'Your initial plan_state_update must include planId, currentStepId, steps[], goal, contextSummary, progress, nextSteps, blockedBy (or null), referenced observationIds, confidence, and updatedAt before other actions.',
+                );
+            }
         }
     } else if (firstAction.responseType === 'plan_state_update' && !hasPlanStatePayload(firstAction)) {
         return buildPayloadValidationFailure(
             firstAction,
             0,
             'Plan tracker update missing required fields.',
-            'Any plan_state_update must include goal, contextSummary, progress, nextSteps, blockedBy, observationIds, confidence, and updatedAt.',
+            'Any plan_state_update must include planId, currentStepId, steps[], goal, contextSummary, progress, nextSteps, blockedBy, observationIds, confidence, and updatedAt.',
         );
     }
 
     for (let index = 0; index < response.actions.length; index++) {
         const action = response.actions[index];
-        if (action.responseType !== 'plan_state_update') {
-            const trimmedStepId = typeof action.stepId === 'string' ? action.stepId.trim() : '';
-            if (trimmedStepId.length < 3) {
-                const autoAssigned = autoAssignTextResponseStepId(action, runtime, index);
-                if (!autoAssigned) {
-                    return buildPayloadValidationFailure(
-                        action,
-                        index,
-                        'stepId is missing or invalid.',
-                        'Every action (except plan_state_update) must include stepId matching the pending plan step id (>=3 characters, typically kebab-case).',
-                    );
-                }
-            } else {
-                action.stepId = trimmedStepId;
+        const envelopeError = enforceActionEnvelope(action, index);
+        if (envelopeError) {
+            return envelopeError;
+        }
+        const trimmedStepId = typeof action.stepId === 'string' ? action.stepId.trim() : '';
+        if (trimmedStepId.length < 3) {
+            const autoAssigned =
+                action.responseType === 'text_response' ? autoAssignTextResponseStepId(action, runtime, index) : false;
+            if (!autoAssigned) {
+                return buildPayloadValidationFailure(
+                    action,
+                    index,
+                    'stepId is missing or invalid.',
+                    'Every action must include stepId matching the pending plan step id (>=3 characters, typically kebab-case).',
+                );
             }
+        } else {
+            action.stepId = trimmedStepId;
         }
         switch (action.responseType) {
             case 'plan_state_update':
@@ -1040,6 +1558,7 @@ const validateAgentResponse = (
                         'Include domAction with the toolName and args for card interactions.',
                     );
                 }
+                repairDomActionFromIntent(action, runtime, index);
                 {
                     const domIssue = validateDomActionPayload(action.domAction);
                     if (domIssue) {
@@ -1077,15 +1596,24 @@ const validateAgentResponse = (
                 break;
             case 'filter_spreadsheet':
                 if (!hasFilterArgsPayload(action)) {
-                    return buildPayloadValidationFailure(
-                        action,
-                        index,
-                        'Filter query is missing.',
-                        'Provide args.query describing how to filter the spreadsheet.',
-                    );
+                    const repaired = repairFilterActionFromIntent(action, runtime, index);
+                    if (!repaired) {
+                        return buildPayloadValidationFailure(
+                            action,
+                            index,
+                            'Filter query is missing.',
+                            'Provide args.query describing how to filter the spreadsheet.',
+                        );
+                    }
                 }
                 {
-                    const filterIssue = validateFilterArgsPayload(action.args?.query ?? null);
+                    let filterIssue = validateFilterArgsPayload(action.args?.query ?? null);
+                    if (filterIssue) {
+                        const repaired = repairFilterActionFromIntent(action, runtime, index);
+                        if (repaired) {
+                            filterIssue = validateFilterArgsPayload(action.args?.query ?? null);
+                        }
+                    }
                     if (filterIssue) {
                         return buildPayloadValidationFailure(
                             action,
@@ -1122,17 +1650,61 @@ const validateAgentResponse = (
         }
     }
 
+    const requiredToolHint = runtime.detectedIntent?.requiredTool;
+    if (requiredToolHint && !runtime.intentRequirementSatisfied) {
+        const hasRequiredTool = response.actions.some(action => matchesRequiredTool(action, requiredToolHint));
+        if (!hasRequiredTool) {
+            const autoAction = buildRequiredToolFallbackAction(runtime, requiredToolHint);
+            if (autoAction) {
+                const planAction = response.actions[0];
+                response.actions = [planAction, autoAction];
+                lastMintedStateTagInfo = parseMintedStateTag(planAction?.stateTag ?? '') ?? null;
+                const envelopeFailure = enforceActionEnvelope(autoAction, 1);
+                if (envelopeFailure) {
+                    return envelopeFailure;
+                }
+                const requiredLabel =
+                    requiredToolHint.domToolName ?? requiredToolHint.responseType ?? 'the required tool';
+                runtime
+                    .get()
+                    .addProgress(`Auto-inserted ${requiredLabel} to satisfy the user's request.`, 'system');
+                runtime.get().recordAgentValidationEvent?.({
+                    actionType: autoAction.responseType,
+                    reason: 'auto_insert_required_tool',
+                    actionIndex: response.actions.length - 1,
+                    runId: runtime.runId,
+                    retryInstruction: `Inserted ${requiredLabel} automatically because it was required by the user intent.`,
+                });
+            } else {
+                const requiredLabel =
+                    requiredToolHint.domToolName ?? requiredToolHint.responseType ?? 'the required tool';
+                return buildPayloadValidationFailure(
+                    response.actions[0] ?? null,
+                    0,
+                    `Required tool ${requiredLabel} missing.`,
+                    `The user's intent requires using ${requiredLabel}. Include that action (with the correct payload) in your response before other tools.`,
+                );
+            }
+        }
+    }
+
     return { isValid: true };
 };
 
 const planAgentActions = async (
     prompt: string,
-    requestAiResponse: (prompt: string) => Promise<AiChatResponse>,
-    updateBusyStatus: (message: string) => void,
+    plannerContext: ChatPlannerContext,
+    runtime: PlannerRuntime,
     statusMessage: string,
+    options?: ChatResponseOptions,
 ): Promise<AiChatResponse> => {
-    updateBusyStatus(statusMessage);
-    return requestAiResponse(prompt);
+    runtime.get().updateBusyStatus(statusMessage);
+    const rawResponse = await plannerContext.requestAiResponse(prompt, options);
+    return agentEngine.run(rawResponse, buildEngineContext(runtime));
+};
+
+const resolvePromptModeForRuntime = (runtime: PlannerRuntime): 'plan_only' | 'full' => {
+    return runtime.get().plannerSession.planState ? 'full' : 'plan_only';
 };
 
 const runPlannerWorkflow = async (
@@ -1145,16 +1717,19 @@ const runPlannerWorkflow = async (
     const PLAN_CORRECTION_STATUS = 'Requesting corrected plan outline...';
     let retryAttempts = 0;
     let validationRetries = 0;
+    let usedFallbackPlanPrompt = false;
     let continuationAttempts = 0;
+    const withIntentNotes = (prompt: string) => appendIntentNotesToPrompt(prompt, runtime.intentNotes);
+
     enterAgentPhase(runtime, 'observing', 'Reviewing the current dataset and prior context...');
     try {
-        const updateBusyStatus = runtime.get().updateBusyStatus;
         enterAgentPhase(runtime, 'planning', 'Thinking through your question...');
         let response = await planAgentActions(
-            originalPrompt,
-            plannerContext.requestAiResponse,
-            updateBusyStatus,
+            withIntentNotes(originalPrompt),
+            plannerContext,
+            runtime,
             'Thinking through your question...',
+            { mode: resolvePromptModeForRuntime(runtime) },
         );
 
         while (response) {
@@ -1169,6 +1744,20 @@ const runPlannerWorkflow = async (
                 recordValidationTelemetry(runtime, validation.details, validation.retryInstruction);
                 runtime.get().addProgress(validation.userMessage, 'error');
                 if (validationRetries >= MAX_VALIDATION_RETRIES) {
+                    if (!usedFallbackPlanPrompt) {
+                        usedFallbackPlanPrompt = true;
+                        validationRetries = 0;
+                        runtime.get().addProgress('Plan validation failed twice; requesting a simplified plan snapshot...', 'system');
+                        enterAgentPhase(runtime, 'planning', 'Rebuilding the plan outline...');
+                        response = await planAgentActions(
+                            appendIntentNotesToPrompt(buildFallbackPlanPrompt(runtime), runtime.intentNotes),
+                            plannerContext,
+                            runtime,
+                            FALLBACK_PLAN_STATUS,
+                            { mode: 'plan_only' },
+                        );
+                        continue;
+                    }
                     runtime.get().addProgress('Unable to obtain a valid plan update after multiple attempts.', 'error');
                     const failureMessage: ChatMessage = {
                         sender: 'ai',
@@ -1182,10 +1771,11 @@ const runPlannerWorkflow = async (
                 }
                 enterAgentPhase(runtime, 'planning', 'Revising the plan outline based on validation feedback...');
                 response = await planAgentActions(
-                    `${runtime.userMessage}\n\nSYSTEM NOTE: ${validation.retryInstruction}`,
-                    plannerContext.requestAiResponse,
-                    updateBusyStatus,
+                    withIntentNotes(`${runtime.userMessage}\n\nSYSTEM NOTE: ${validation.retryInstruction}`),
+                    plannerContext,
+                    runtime,
                     PLAN_CORRECTION_STATUS,
+                    { mode: resolvePromptModeForRuntime(runtime) },
                 );
                 continue;
             }
@@ -1225,10 +1815,13 @@ const runPlannerWorkflow = async (
                 runtime.get().addProgress(`Auto-retrying data transformation (attempt ${nextAttemptNumber})...`);
                 enterAgentPhase(runtime, 'planning', 'Adjusting the plan after a failed attempt...');
                 response = await planAgentActions(
-                    `${runtime.userMessage}\n\nSYSTEM NOTE: Previous data transformation failed because ${dispatchResult.reason}. Please adjust the code and try again.`,
-                    plannerContext.requestAiResponse,
-                    updateBusyStatus,
+                    withIntentNotes(
+                        `${runtime.userMessage}\n\nSYSTEM NOTE: Previous data transformation failed because ${dispatchResult.reason}. Please adjust the code and try again.`,
+                    ),
+                    plannerContext,
+                    runtime,
                     'Retrying data transformation...',
+                    { mode: 'full' },
                 );
                 continue;
             }
@@ -1265,10 +1858,11 @@ const runPlannerWorkflow = async (
                 runtime.get().addProgress(continuationLabel);
                 enterAgentPhase(runtime, 'planning', 'Continuing with the remaining plan steps...');
                 response = await planAgentActions(
-                    continuationPrompt,
-                    plannerContext.requestAiResponse,
-                    updateBusyStatus,
+                    withIntentNotes(continuationPrompt),
+                    plannerContext,
+                    runtime,
                     continuationAttempts === 1 ? 'Continuing plan...' : `Continuing plan (cycle ${continuationAttempts})...`,
+                    { mode: 'full' },
                 );
                 continue;
             }
@@ -1289,8 +1883,15 @@ const shouldRecordPostActionObservation = (action: AiAction): boolean => {
         return true;
     }
     if (action.responseType === 'dom_action' && action.domAction) {
-        return ['filterCard', 'setTopN', 'toggleHideOthers', 'toggleLegendLabel', 'highlightCard', 'showCardData']
-            .includes(action.domAction.toolName);
+        return [
+            'filterCard',
+            'setTopN',
+            'toggleHideOthers',
+            'toggleLegendLabel',
+            'highlightCard',
+            'showCardData',
+            'removeCard',
+        ].includes(action.domAction.toolName);
     }
     return false;
 };
@@ -1355,11 +1956,29 @@ const dispatchAgentActions = async (
         const initialTelemetry = Object.keys(metadata).length > 0 ? { metadata } : undefined;
         markTrace('executing', undefined, initialTelemetry);
 
+        if (action.responseType === 'dom_action' && action.domAction) {
+            resolveCardIdFromArgs(runtime, action.domAction);
+        }
         const stepResult = await runActionThroughRegistry(action, runtime, remainingAutoRetries, markTrace);
         const observationPayload = normalizeObservationPayload(stepResult);
         const recordedObservation = toAgentObservation(action, traceId, observationPayload);
         runtime.get().appendPlannerObservation(recordedObservation);
         recordPostActionObservation(runtime, action, traceId, recordedObservation);
+        const satisfiedByAction =
+            runtime.detectedIntent?.requiredTool &&
+            !runtime.intentRequirementSatisfied &&
+            matchesRequiredTool(action, runtime.detectedIntent.requiredTool) &&
+            recordedObservation.status === 'success';
+        if (satisfiedByAction) {
+            runtime.intentRequirementSatisfied = true;
+            runtime.get().addProgress(
+                `Intent requirement satisfied via ${runtime.detectedIntent.requiredTool.domToolName ?? runtime.detectedIntent.requiredTool.responseType}.`,
+            );
+            runtime.get().annotateAgentActionTrace(traceId, {
+                intentSatisfied: true,
+                intent: runtime.detectedIntent.intent,
+            });
+        }
         if (stepResult.type === 'retry') {
             return { type: 'retry', reason: stepResult.reason };
         }
@@ -1425,14 +2044,25 @@ const handlePlanStateUpdateAction: AgentActionExecutor = async ({ action, runtim
     }
 
     const payload = action.planState;
-    const normalizedSteps = seedAcknowledgementStepIfNeeded(
-        normalizePlanStepsPayload(payload.nextSteps),
-        runtime,
-    );
+    const normalizedSteps = normalizePlanStepsPayload(payload.nextSteps);
+    const normalizedAllSteps = normalizePlanStepsPayload(payload.steps);
+    const fallbackStepId =
+        normalizedSteps[0]?.id ?? normalizedAllSteps[0]?.id ?? runtime.get().plannerPendingSteps[0]?.id ?? FALLBACK_TEXT_RESPONSE_STEP_ID;
+    const derivedPlanId =
+        typeof payload.planId === 'string' && payload.planId.trim().length > 0
+            ? payload.planId.trim()
+            : runtime.get().plannerSession.planState?.planId ?? `plan-${Date.now().toString(36)}`;
+    const derivedCurrentStepId =
+        typeof payload.currentStepId === 'string' && payload.currentStepId.trim().length >= 3
+            ? payload.currentStepId.trim()
+            : fallbackStepId;
     const normalizedState: AgentPlanState = {
+        planId: derivedPlanId,
         goal: payload.goal.trim(),
         progress: payload.progress.trim(),
         nextSteps: normalizedSteps,
+        steps: normalizedAllSteps.length > 0 ? normalizedAllSteps : normalizedSteps,
+        currentStepId: derivedCurrentStepId,
         blockedBy: payload.blockedBy?.trim() || null,
         contextSummary: payload.contextSummary?.trim() || null,
         observationIds: Array.isArray(payload.observationIds)
@@ -1688,24 +2318,24 @@ const handleExecuteCodeAction: AgentActionExecutor = async ({ action, runtime, r
     }
 };
 
-const SHOW_ALL_FILTER_QUERY = 'show entire table';
-
 const handleFilterSpreadsheetAction: AgentActionExecutor = async ({ action, runtime, markTrace }) => {
-    if (!hasFilterArgsPayload(action)) {
-        markTrace('failed', 'Missing filter payload.', { errorCode: ACTION_ERROR_CODES.FILTER_QUERY_MISSING });
-        return {
-            type: 'continue',
-            observation: {
-                status: 'error',
-                errorCode: ACTION_ERROR_CODES.FILTER_QUERY_MISSING,
-            },
-        };
-    }
+    const { query: finalQuery, source } = computeFilterQuery(
+        runtime,
+        action.args?.query ?? null,
+        runtime.detectedIntent?.intent === 'data_filter' ? runtime.detectedIntent.requiredTool : undefined,
+    );
+    const isShowAll = finalQuery === SHOW_ALL_FILTER_QUERY;
 
-    const rawQuery = typeof action.args?.query === 'string' ? action.args.query : '';
-    const trimmed = rawQuery.trim();
-    const isShowAll = trimmed.length === 0;
-    const finalQuery = isShowAll ? SHOW_ALL_FILTER_QUERY : rawQuery;
+    if (!action.args) {
+        action.args = { query: finalQuery };
+    } else {
+        action.args.query = finalQuery;
+    }
+    if (source === 'user_message') {
+        runtime.get().addProgress('No filter payload provided; inferring filter from your latest message.');
+    } else if (source === 'default') {
+        runtime.get().addProgress('No useful filter found; showing the entire dataset so you can refine it.');
+    }
 
     runtime
         .get()
@@ -1857,12 +2487,17 @@ export { runPlannerWorkflow };
 
 const normalizeStateTag = (tag?: string | null): AgentStateTag | undefined => {
     if (!tag) return undefined;
-    if (STATE_TAG_SET.has(tag as AgentStateTag)) {
-        return tag as AgentStateTag;
+    const normalized = tag.trim();
+    if (!normalized) return undefined;
+    if (STATE_TAG_SET.has(normalized as AgentStateTag)) {
+        return normalized as AgentStateTag;
+    }
+    if (MINTED_STATE_TAG_REGEX.test(normalized)) {
+        return normalized as AgentStateTag;
     }
     const ts = Date.now();
     if (ts - lastStateTagWarningAt > STATE_TAG_WARNING_THROTTLE_MS) {
-        console.warn(`Unknown agent stateTag "${tag}". Allowed values: ${AGENT_STATE_TAGS.join(', ')}`);
+        console.warn(`Unknown agent stateTag "${normalized}". Allowed values: ${AGENT_STATE_TAGS.join(', ')} or minted "<epoch>-<seq>" tokens.`);
         lastStateTagWarningAt = ts;
     }
     return undefined;
@@ -1894,18 +2529,50 @@ export class AgentWorker {
     private readonly set: SetState<AppStore>;
     private readonly get: GetState<AppStore>;
     private readonly deps: ChatSliceDependencies;
+    private readonly policy: PlannerPolicy;
 
     constructor(options: AgentWorkerOptions) {
         this.set = options.set;
         this.get = options.get;
         this.deps = options.deps;
+        this.policy = options.policy ?? DEFAULT_PLANNER_POLICY;
     }
 
     async handleMessage(message: string): Promise<void> {
+        const trimmedMessage = message.trim();
         const userMessage: ChatMessage = { sender: 'user', text: message, timestamp: new Date(), type: 'user_message' };
 
-        this.get().resetPlannerObservations();
-        this.get().clearPlannerPlanState();
+        const stateSnapshot = this.get();
+        const datasetHash = stateSnapshot.datasetHash ?? null;
+        const plannerDatasetHash = stateSnapshot.plannerDatasetHash ?? null;
+        const datasetChanged = Boolean(plannerDatasetHash && datasetHash && plannerDatasetHash !== datasetHash);
+        const shouldForcePlanReset = messageRequestsPlanReset(message);
+        const isGreeting = GREETING_REGEX_STRICT.test(trimmedMessage);
+
+        const detectedIntent = detectUserIntent(message, stateSnapshot);
+        if (detectedIntent.intent !== 'unknown') {
+            const requiredToolLabel =
+                detectedIntent.requiredTool?.domToolName ?? detectedIntent.requiredTool?.responseType ?? 'n/a';
+            stateSnapshot.addProgress(
+                `[IntentRouter] Detected intent=${detectedIntent.intent} (conf=${detectedIntent.confidence.toFixed(
+                    2,
+                )}) tool=${requiredToolLabel}`,
+            );
+        }
+        const intentNotes = buildIntentNotes(detectedIntent, stateSnapshot);
+
+        if (datasetChanged || shouldForcePlanReset || (isGreeting && !!stateSnapshot.plannerSession.planState)) {
+            stateSnapshot.resetPlannerObservations();
+            stateSnapshot.clearPlannerPlanState();
+            if (datasetChanged) {
+                stateSnapshot.addProgress('Detected new dataset; resetting the analysis plan tracker.');
+            } else if (shouldForcePlanReset) {
+                stateSnapshot.addProgress('Resetting the analysis plan as requested.');
+            } else if (isGreeting) {
+                stateSnapshot.addProgress('Greeting detected; starting a fresh plan for this interaction.');
+            }
+        }
+
         const runId = this.get().beginBusy('Working on your request...', { cancellable: true });
         this.set(prev => ({ chatHistory: [...prev.chatHistory, userMessage] }));
 
@@ -1924,6 +2591,10 @@ export class AgentWorker {
                 userMessage: message,
                 memorySnapshot: plannerContext.memorySnapshot,
                 memoryTagAttached: false,
+                policy: this.policy,
+                intentNotes,
+                detectedIntent,
+                intentRequirementSatisfied: !detectedIntent?.requiredTool,
             });
         } catch (error) {
             if (!this.get().isRunCancellationRequested(runId)) {

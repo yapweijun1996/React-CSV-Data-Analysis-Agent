@@ -14,10 +14,19 @@ import {
 } from '../../types';
 import { callGemini, callOpenAI } from './apiClient';
 import { multiActionChatResponseSchema, multiActionChatResponseJsonSchema } from './schemas';
-import { createChatPrompt } from '../promptTemplates';
+import { createChatPrompt, createPlanPrimerPrompt } from '../promptTemplates';
 
-interface ChatResponseOptions {
+export interface PromptProfile {
+    mode: 'plan_only' | 'full';
+    charCount: number;
+    estimatedTokens: number;
+    promptLabel: string;
+}
+
+export interface ChatResponseOptions {
     signal?: AbortSignal;
+    mode?: 'full' | 'plan_only';
+    onPromptProfile?: (profile: PromptProfile) => void;
 }
 
 const hasMissingExecutableCode = (response: AiChatResponse): boolean => {
@@ -47,27 +56,64 @@ export const generateChatResponse = async (
 ): Promise<AiChatResponse> => {
     const isApiKeySet = (settings.provider === 'google' && !!settings.geminiApiKey) || (settings.provider === 'openai' && !!settings.openAIApiKey);
     if (!isApiKeySet) {
-        return { actions: [{ responseType: 'text_response', text: 'Cloud AI is disabled. API Key not provided.', thought: 'API key is missing, so I must inform the user.' }] };
+        const fallbackStateTag = `${Date.now()}-1-fallback`;
+        return {
+            actions: [
+                {
+                    type: 'text_response',
+                    responseType: 'text_response',
+                    stepId: 'ad_hoc_response',
+                    stateTag: fallbackStateTag,
+                    text: 'Cloud AI is disabled. API Key not provided.',
+                    thought: 'API key is missing, so I must inform the user.',
+                },
+            ],
+        };
     }
     
     try {
-        const promptContent = createChatPrompt(
-            columns,
-            chatHistory,
-            userPrompt,
-            cardContext,
-            settings.language,
-            aiCoreAnalysisSummary,
-            rawDataSample,
-            longTermMemory,
-            recentObservations,
-            activePlanState,
-            dataPreparationPlan,
-            recentActionTraces,
-            rawDataFilterSummary,
-        );
+        const promptMode = options?.mode ?? 'full';
+        const promptContent =
+            promptMode === 'plan_only'
+                ? createPlanPrimerPrompt(
+                      columns,
+                      chatHistory,
+                      userPrompt,
+                      settings.language,
+                      aiCoreAnalysisSummary,
+                      longTermMemory,
+                      recentObservations,
+                      cardContext,
+                  )
+                : createChatPrompt(
+                      columns,
+                      chatHistory,
+                      userPrompt,
+                      cardContext,
+                      settings.language,
+                      aiCoreAnalysisSummary,
+                      rawDataSample,
+                      longTermMemory,
+                      recentObservations,
+                      activePlanState,
+                      dataPreparationPlan,
+                      recentActionTraces,
+                      rawDataFilterSummary,
+                  );
 
-        const baseSystemPrompt = `You are an expert data analyst and business strategist, required to operate using a Reason-Act (ReAct) framework. For every action you take, you must first explain your reasoning in the 'thought' field, and then define the action itself. You also maintain an explicit goal tracker by emitting a 'plan_state_update' action at the start of each response (and whenever the mission changes) so the UI can display your progress. Your final conversational responses should be in ${settings.language}.
+        if (options?.onPromptProfile) {
+            const promptLabel = promptMode === 'plan_only' ? 'chat_plan_primer' : 'chat_full';
+            const charCount = promptContent.length;
+            const estimatedTokens = Math.ceil(charCount / 4);
+            options.onPromptProfile({
+                mode: promptMode,
+                charCount,
+                estimatedTokens,
+                promptLabel,
+            });
+        }
+
+        const baseSystemPrompt = `You are an expert data analyst and business strategist, required to operate using a Reason-Act (ReAct) framework. For every action you take, you must first explain your reasoning in the 'thought' field, and then define the action itself. You also maintain an explicit goal tracker by emitting a 'plan_state_update' action at the start of each response (and whenever the mission changes) so the UI can display your progress. Every action JSON object must include \`type\`, \`responseType\`, \`stepId\`, and a monotonic \`stateTag\` formatted as "<epochMs>-<seq>" (or a known label like \`awaiting_clarification\`). The plan_state_update payload must include \`planId\`, \`currentStepId\`, and a \`steps\` array (each entry with intent + status). Emit at most two actions per response: the plan_state_update plus a single atomic action. Your final conversational responses should be in ${settings.language}.
 Your output MUST be a single JSON object with an "actions" key containing an array of action objects.`;
         const maxAttempts = settings.provider === 'openai' ? 2 : 1;
         let retryInstruction = '';
@@ -80,7 +126,7 @@ Your output MUST be a single JSON object with an "actions" key containing an arr
                 jsonStr = await callOpenAI(
                     settings,
                     messages,
-                    { name: 'MultiActionChatResponse', schema: multiActionChatResponseJsonSchema, strict: true },
+                    true,
                     options?.signal
                 );
             } else {

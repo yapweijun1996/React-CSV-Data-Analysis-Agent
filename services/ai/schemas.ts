@@ -1,5 +1,4 @@
 import { Type } from "@google/genai";
-import { AGENT_STATE_TAGS } from "../../types";
 
 const analysisPlanItemSchema = {
     type: Type.OBJECT,
@@ -32,20 +31,7 @@ const analysisPlanItemSchema = {
             additionalProperties: false,
         },
     },
-    required: [
-        'chartType',
-        'title',
-        'description',
-        'aggregation',
-        'groupByColumn',
-        'valueColumn',
-        'xValueColumn',
-        'yValueColumn',
-        'secondaryValueColumn',
-        'secondaryAggregation',
-        'defaultTopN',
-        'defaultHideOthers',
-    ],
+    required: ['chartType', 'title', 'description'],
     additionalProperties: false,
 };
 
@@ -191,6 +177,7 @@ const planStateSnapshotSchema = {
             minItems: 1,
             items: planStepSchema,
         },
+        planId: { type: Type.STRING, description: 'Stable identifier for the active plan (e.g., plan-<timestamp>).'},
         blockedBy: { type: Type.STRING, description: 'Describe any blockers or open questions. Omit if none.' },
         observationIds: {
             type: Type.ARRAY,
@@ -204,13 +191,33 @@ const planStateSnapshotSchema = {
             maximum: 1,
         },
         updatedAt: { type: Type.STRING, description: 'ISO timestamp describing when this snapshot was generated.' },
+        currentStepId: {
+            type: Type.STRING,
+            description: 'The id of the step currently being executed. Must reference one of the declared steps.',
+        },
+        steps: {
+            type: Type.ARRAY,
+            description: 'Full list of steps with their intent + status.',
+            minItems: 1,
+            items: {
+                type: Type.OBJECT,
+                properties: {
+                    id: { type: Type.STRING, description: 'Stable identifier for the step.' },
+                    label: { type: Type.STRING, description: 'Human-readable summary.' },
+                    intent: { type: Type.STRING, description: 'High-level intent (e.g., conversation, remove_card).' },
+                    status: { type: Type.STRING, enum: ['ready', 'in_progress', 'done'], description: 'Current status for the step.' },
+                },
+                required: ['id', 'label', 'status'],
+                additionalProperties: false,
+            },
+        },
         stateTag: {
             type: Type.STRING,
-            enum: AGENT_STATE_TAGS,
-            description: 'Optional tag describing the current agent state (e.g., awaiting_clarification).',
+            description:
+                'Monotonic tag minted as "<epochMs>-<seq>" or one of the known labels (context_ready, awaiting_clarification, etc.).',
         },
     },
-    required: ['goal', 'contextSummary', 'progress', 'nextSteps', 'blockedBy', 'observationIds', 'confidence', 'updatedAt'],
+    required: ['goal', 'contextSummary', 'progress', 'nextSteps', 'blockedBy', 'observationIds', 'confidence', 'updatedAt', 'planId', 'currentStepId'],
     additionalProperties: false,
 };
 
@@ -225,8 +232,16 @@ export const multiActionChatResponseSchema = {
                 type: Type.OBJECT,
                 properties: {
                     thought: { type: Type.STRING, description: "The AI's reasoning or thought process before performing the action. This explains *why* this action is being taken. This is a mandatory part of the ReAct pattern." },
-                    stateTag: { type: Type.STRING, description: "Optional short tag summarizing the assistant's internal state (e.g., 'context_ready', 'awaiting_data')." },
-                    stepId: { type: Type.STRING, description: "The identifier of the plan step this action is advancing. Required for every action except plan_state_update." },
+                    type: {
+                        type: Type.STRING,
+                        enum: ['text_response', 'plan_creation', 'dom_action', 'execute_js_code', 'proceed_to_analysis', 'filter_spreadsheet', 'clarification_request', 'plan_state_update'],
+                        description: 'Primary action type identifier. Must align with responseType for backward compatibility.',
+                    },
+                    stateTag: {
+                        type: Type.STRING,
+                        description: 'Monotonic tag minted as "<epochMs>-<seq>" that tracks action chronology (or a known label such as awaiting_clarification).',
+                    },
+                    stepId: { type: Type.STRING, description: "The identifier of the plan step this action is advancing. Required for every action including plan_state_update." },
                     responseType: { type: Type.STRING, enum: ['text_response', 'plan_creation', 'dom_action', 'execute_js_code', 'proceed_to_analysis', 'filter_spreadsheet', 'clarification_request', 'plan_state_update'] },
                     text: { type: Type.STRING, description: "A conversational text response to the user. Required for 'text_response'." },
                     cardId: { type: Type.STRING, description: "Optional. The ID of the card this text response refers to. Used to link text to a specific chart." },
@@ -242,12 +257,23 @@ export const multiActionChatResponseSchema = {
                         type: Type.OBJECT,
                         description: "A DOM manipulation action for the frontend to execute. Required for 'dom_action'.",
                         properties: {
-                            toolName: { type: Type.STRING, enum: ['highlightCard', 'changeCardChartType', 'showCardData', 'filterCard', 'setTopN', 'toggleHideOthers', 'toggleLegendLabel', 'exportCard'] },
+                            toolName: { type: Type.STRING, enum: ['highlightCard', 'changeCardChartType', 'showCardData', 'filterCard', 'setTopN', 'toggleHideOthers', 'toggleLegendLabel', 'exportCard', 'removeCard'] },
+                            target: {
+                                type: Type.OBJECT,
+                                description: 'Declaration of the DOM target. Provide byId (card id), byTitle, or a CSS selector.',
+                                properties: {
+                                    byId: { type: Type.STRING },
+                                    byTitle: { type: Type.STRING },
+                                    selector: { type: Type.STRING },
+                                },
+                                additionalProperties: false,
+                            },
                             args: {
                                 type: Type.OBJECT,
                                 description: 'Arguments for the tool. Provide values for all properties; set unused ones to null.',
                                 properties: {
                                     cardId: { type: Type.STRING, description: 'The ID of the target analysis card.' },
+                                    cardTitle: { type: Type.STRING, description: 'Optional title used to look up the card when cardId is unknown (removeCard only).' },
                                     newType: { type: Type.STRING, enum: ['bar', 'line', 'pie', 'doughnut', 'scatter', 'combo'], description: "For 'changeCardChartType'." },
                                     visible: { type: Type.BOOLEAN, description: "For 'showCardData'." },
                                     column: { type: Type.STRING, description: "For 'filterCard', the column to filter on." },
@@ -257,7 +283,7 @@ export const multiActionChatResponseSchema = {
                                     label: { type: Type.STRING, description: "For 'toggleLegendLabel'. The exact legend label to toggle visibility for." },
                                     format: { type: Type.STRING, enum: ['png', 'csv', 'html'], description: "For 'exportCard'. Choose the export format." },
                                 },
-                                required: ['cardId', 'newType', 'visible', 'column', 'values', 'topN', 'hide', 'label', 'format'],
+                                required: ['cardId', 'cardTitle', 'newType', 'visible', 'column', 'values', 'topN', 'hide', 'label', 'format'],
                                 additionalProperties: false,
                             },
                         },
@@ -288,7 +314,7 @@ export const multiActionChatResponseSchema = {
                         description: "The clarification request object. Required for 'clarification_request'."
                     },
                 },
-                required: ['responseType', 'thought']
+                required: ['type', 'responseType', 'thought', 'stateTag', 'stepId']
             }
         }
     },
@@ -321,8 +347,10 @@ const strictAdditionalPropsPaths = new Set([
 
 const strictAllPropsRequiredPaths = new Set([
     'properties.actions.items.properties.args',
+    'properties.actions.items.properties.plan',
+    'properties.actions.items.properties.planState',
     'properties.actions.items.properties.clarification.properties.pendingPlan',
-    'properties.actions.items',
+    'properties.plans.items',
 ]);
 
 const nullablePropertyPaths = new Set([
@@ -347,6 +375,7 @@ const nullablePropertyPaths = new Set([
     'properties.actions.items.properties.domAction.properties.args',
     'properties.actions.items.properties.domAction.properties.args.properties.newType',
     'properties.actions.items.properties.domAction.properties.args.properties.visible',
+    'properties.actions.items.properties.domAction.properties.args.properties.cardTitle',
     'properties.actions.items.properties.domAction.properties.args.properties.column',
     'properties.actions.items.properties.domAction.properties.args.properties.values',
     'properties.actions.items.properties.domAction.properties.args.properties.topN',

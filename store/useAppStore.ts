@@ -54,6 +54,7 @@ const createClarificationId = () =>
 const createRunId = () => `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const createToastId = () => `toast-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const createValidationEventId = () => `val-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const createPromptMetricId = () => `prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 let autoSaveManager: AutoSaveManager | null = null;
 let latestAutoSaveConfig: AutoSaveConfig | null = null;
@@ -83,6 +84,8 @@ const normalizePlanSteps = (steps: AgentPlanStep[] | undefined | null): AgentPla
         .map(step => ({
             id: typeof step?.id === 'string' ? step.id.trim() : '',
             label: typeof step?.label === 'string' ? step.label.trim() : '',
+            intent: typeof step?.intent === 'string' ? step.intent.trim() || undefined : undefined,
+            status: typeof step?.status === 'string' ? (step.status as AgentPlanStep['status']) : undefined,
         }))
         .filter(step => step.id.length >= 3 && step.label.length >= 3);
 };
@@ -132,6 +135,8 @@ const buildSerializableAppState = (state: AppStore): AppState => ({
     plannerSession: state.plannerSession,
     agentPhase: state.agentPhase,
     plannerPendingSteps: state.plannerPendingSteps,
+    agentPromptMetrics: state.agentPromptMetrics,
+    plannerDatasetHash: state.plannerDatasetHash,
 });
 
 const buildFileNameFromHeader = (header?: string | null) => {
@@ -236,6 +241,8 @@ const initialAppState: AppState = {
     plannerSession: normalizePlannerSession(),
     agentPhase: { phase: 'idle', message: null, enteredAt: null },
     plannerPendingSteps: [],
+    agentPromptMetrics: [],
+    plannerDatasetHash: null,
 };
 
 export const useAppStore = create<StoreState & StoreActions>((set, get) => {
@@ -371,7 +378,11 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         },
         requestBusyCancel: () => {
             if (!get().busyRunId || get().isCancellationRequested) return;
-            set({ isCancellationRequested: true, canCancelBusy: false });
+            set({
+                isCancellationRequested: true,
+                canCancelBusy: false,
+                busyMessage: 'Cancelling… wrapping up safely.',
+            });
             get().addProgress('Cancelling current request...');
             const activeRunId = get().busyRunId;
             if (activeRunId) {
@@ -604,6 +615,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 lastAppliedDataTransform: null,
                 interactiveSelectionFilter: null,
                 plannerSession: normalizePlannerSession(currentSession.appState.plannerSession),
+                plannerDatasetHash: currentSession.appState.plannerDatasetHash ?? currentSession.appState.datasetHash ?? null,
             });
             await restoreVectorMemoryFromSnapshot(
                 currentSession.appState.vectorStoreDocuments,
@@ -1021,6 +1033,33 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 })();
                 break;
             }
+            case 'removeCard': {
+                const { cardId } = action.args;
+                if (!cardId || typeof cardId !== 'string') break;
+                let removedTitle: string | null = null;
+                let removed = false;
+                set(state => {
+                    const target = state.analysisCards.find(card => card.id === cardId);
+                    if (!target) {
+                        return {};
+                    }
+                    removed = true;
+                    removedTitle = target.plan?.title ?? cardId;
+                    const next: Partial<StoreState> = {
+                        analysisCards: state.analysisCards.filter(card => card.id !== cardId),
+                    };
+                    if (state.interactiveSelectionFilter?.sourceCardId === cardId) {
+                        next.interactiveSelectionFilter = null;
+                    }
+                    return next;
+                });
+                if (removed) {
+                    get().addProgress(`Removed card "${removedTitle ?? cardId}" as requested.`);
+                } else {
+                    get().addProgress('Unable to remove the requested card because it was not found.', 'error');
+                }
+                break;
+            }
             default:
                 break;
         }
@@ -1115,6 +1154,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 agentValidationEvents: report.appState.agentValidationEvents ?? [],
                 columnAliasMap: report.appState.columnAliasMap ?? deriveAliasMap(report.appState.columnProfiles ?? []),
                 plannerSession: normalizePlannerSession(report.appState.plannerSession),
+                plannerDatasetHash: report.appState.plannerDatasetHash ?? report.appState.datasetHash ?? null,
             });
             await restoreVectorMemoryFromSnapshot(
                 report.appState.vectorStoreDocuments,
@@ -1189,6 +1229,13 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         }));
     },
     clearAgentValidationEvents: () => set({ agentValidationEvents: [] }),
+    recordPromptMetric: (metric: AgentPromptMetric) => {
+        set(state => {
+            const next = [...state.agentPromptMetrics, metric];
+            return { agentPromptMetrics: next.slice(-20) };
+        });
+    },
+    clearPromptMetrics: () => set({ agentPromptMetrics: [] }),
     beginAgentActionTrace: (actionType, summary, source: AgentActionSource = 'chat') => {
         const traceId = `trace-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const newTrace = {
@@ -1250,12 +1297,14 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             set(state => ({
                 plannerSession: { ...state.plannerSession, planState: { ...planState, nextSteps: normalizedSteps } },
                 plannerPendingSteps: normalizedSteps,
+                plannerDatasetHash: state.datasetHash ?? null,
             }));
         },
         clearPlannerPlanState: () => {
             set(state => ({
                 plannerSession: { ...state.plannerSession, planState: null },
                 plannerPendingSteps: [],
+                plannerDatasetHash: null,
             }));
         },
         setPlannerPendingSteps: (steps: AgentPlanStep[]) => {
