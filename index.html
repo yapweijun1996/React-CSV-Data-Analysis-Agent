@@ -52,6 +52,24 @@
   <body class="bg-slate-50 text-slate-800">
     <div id="root"></div>
     <script>
+      // Engineer presets: edit values below to bake in defaults for every user session.
+      window.tempgeminiapikey = window.tempgeminiapikey ?? ''; // e.g. 'AIza...'
+      window.tempopenaiapikey = window.tempopenaiapikey ?? ''; // e.g. 'sk-...'
+      window.__CSV_AGENT_DEFAULTS__ = {
+        defaultSettings: {
+          provider: 'google', // 'google' | 'openai'
+          model: 'gemini-2.5-flash',
+          language: 'Mandarin', // 'English' | 'Mandarin' | 'Spanish' | 'Japanese' | 'French'
+          geminiApiKey: window.tempgeminiapikey,
+          openAIApiKey: window.tempopenaiapikey,
+        },
+        ui: {
+          showNewButton: false, // false hides the "New" session button
+          showSettingsButton: true, // false hides the gear icon in Assistant panel
+        },
+      };
+    </script>
+    <script>
       (function () {
         const TARGET_ORIGIN = window.location.origin;
         const queue = [];

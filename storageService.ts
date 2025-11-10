@@ -1,5 +1,6 @@
 import { openDB, DBSchema, IDBPDatabase } from 'idb';
 import { AppState, Settings, Report, ReportListItem } from './types';
+import { getBootstrapSettingsOverrides } from './services/bootstrapConfig';
 
 const DB_NAME = 'csv-ai-assistant-db';
 const DB_VERSION = 3;
@@ -99,7 +100,7 @@ export const deleteReport = async (id: string): Promise<void> => {
 };
 
 // Settings Management
-const defaultSettings: Settings = {
+const baseDefaultSettings: Settings = {
     provider: 'google',
     geminiApiKey: '',
     openAIApiKey: '',
@@ -108,6 +109,11 @@ const defaultSettings: Settings = {
     autoSaveEnabled: true,
     autoSaveIntervalSeconds: 15,
 };
+
+const getDefaultSettings = (): Settings => ({
+    ...baseDefaultSettings,
+    ...getBootstrapSettingsOverrides(),
+});
 
 export const saveSettings = (settings: Settings): void => {
     try {
@@ -126,10 +132,10 @@ export const getSettings = (): Settings => {
             if (savedSettings.apiKey) {
                 delete savedSettings.apiKey;
             }
-            return { ...defaultSettings, ...savedSettings };
+            return { ...getDefaultSettings(), ...savedSettings };
         }
     } catch (error) {
         console.error('Failed to get settings from localStorage:', error);
     }
-    return defaultSettings;
+    return getDefaultSettings();
 };

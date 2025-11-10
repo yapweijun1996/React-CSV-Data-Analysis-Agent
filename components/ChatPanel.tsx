@@ -3,6 +3,7 @@ import { shallow } from 'zustand/shallow';
 import { ProgressMessage, ChatMessage, AgentActionTrace, AgentObservation, AgentObservationStatus, AgentPhaseState } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { useAutosizeTextArea } from '../hooks/useAutosizeTextArea';
+import { getUiVisibilityConfig } from '../services/bootstrapConfig';
 
 const HideIcon: React.FC = () => (
     <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -70,6 +71,7 @@ const helperToneIcon: Record<HelperTone, string> = {
 };
 
 const MAX_CHAT_INPUT_HEIGHT = 240;
+const uiFlags = getUiVisibilityConfig();
 
 const phaseDescriptors: Record<
     AgentPhaseState['phase'],
@@ -616,23 +618,25 @@ export const ChatPanel: React.FC = () => {
         <div className="flex flex-col h-full bg-slate-100 rounded-lg md:rounded-none">
             <div className="p-4 border-b border-slate-200 flex justify-between items-center relative">
                 <h2 className="text-xl font-semibold text-slate-900">Assistant</h2>
-                 <div className="flex items-center space-x-3">
-                    <button
-                        onClick={() => setIsMemoryPanelOpen(true)}
-                        className="p-1 text-slate-500 rounded-full hover:bg-slate-200 hover:text-slate-800 transition-colors"
-                        title="View AI Memory"
-                        aria-label="View AI Memory"
-                    >
-                        <MemoryIcon />
-                    </button>
-                    <button
-                        onClick={() => setIsSettingsModalOpen(true)}
-                        className="p-1 text-slate-500 rounded-full hover:bg-slate-200 hover:text-slate-800 transition-colors"
-                        title="Settings"
-                        aria-label="Open Settings"
-                    >
-                        <SettingsIcon />
-                    </button>
+                <div className="flex items-center space-x-3">
+                   <button
+                       onClick={() => setIsMemoryPanelOpen(true)}
+                       className="p-1 text-slate-500 rounded-full hover:bg-slate-200 hover:text-slate-800 transition-colors"
+                       title="View AI Memory"
+                       aria-label="View AI Memory"
+                   >
+                       <MemoryIcon />
+                   </button>
+                    {uiFlags.showSettingsButton && (
+                        <button
+                            onClick={() => setIsSettingsModalOpen(true)}
+                            className="p-1 text-slate-500 rounded-full hover:bg-slate-200 hover:text-slate-800 transition-colors"
+                            title="Settings"
+                            aria-label="Open Settings"
+                        >
+                            <SettingsIcon />
+                        </button>
+                    )}
                     <button 
                         onClick={() => setIsAsideVisible(false)} 
                         className="p-1 text-slate-500 rounded-full hover:bg-slate-200 hover:text-slate-800 transition-colors"
