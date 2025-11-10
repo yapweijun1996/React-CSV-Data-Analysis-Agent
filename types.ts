@@ -288,6 +288,7 @@ export interface AppState {
     interactiveSelectionFilter: SelectionDrilldownFilter | null;
     plannerSession: PlannerSessionState;
     agentPhase: AgentPhaseState;
+    plannerPendingSteps: string[];
 }
 
 export interface DomAction {

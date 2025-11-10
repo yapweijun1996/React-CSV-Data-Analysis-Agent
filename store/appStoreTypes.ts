@@ -127,10 +127,16 @@ export interface StoreActions {
         details?: string,
         telemetry?: Partial<Pick<AgentActionTrace, 'durationMs' | 'errorCode' | 'metadata'>>
     ) => void;
+    annotateAgentActionTrace: (
+        traceId: string,
+        metadata: Record<string, any>
+    ) => void;
     appendPlannerObservation: (observation: AgentObservation) => void;
     resetPlannerObservations: () => void;
     updatePlannerPlanState: (state: AgentPlanState) => void;
     clearPlannerPlanState: () => void;
+    setPlannerPendingSteps: (steps: string[]) => void;
+    completePlannerPendingStep: () => void;
     queuePendingDataTransform: (preview: PendingDataTransform) => void;
     confirmPendingDataTransform: () => Promise<void>;
     discardPendingDataTransform: () => void;

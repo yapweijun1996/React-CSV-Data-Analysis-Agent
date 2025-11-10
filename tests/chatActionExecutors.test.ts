@@ -28,6 +28,10 @@ type RuntimeState = {
     endBusy: () => void;
     updatePlannerPlanState: (state: Record<string, any>) => void;
     plannerSession: { planState: any; observations: any[] };
+    plannerPendingSteps: string[];
+    setPlannerPendingSteps: (steps: string[]) => void;
+    completePlannerPendingStep: () => void;
+    annotateAgentActionTrace: (traceId: string, metadata: Record<string, any>) => void;
 };
 
 const createRuntime = (overrides: Partial<RuntimeState> = {}) => {
@@ -47,8 +51,17 @@ const createRuntime = (overrides: Partial<RuntimeState> = {}) => {
         endBusy: () => {},
         updatePlannerPlanState: (state) => {
             baseState.plannerSession.planState = state;
+            baseState.plannerPendingSteps = state?.nextSteps ?? [];
         },
         plannerSession: { planState: null, observations: [] },
+        plannerPendingSteps: [],
+        setPlannerPendingSteps: steps => {
+            baseState.plannerPendingSteps = steps;
+        },
+        completePlannerPendingStep: () => {
+            baseState.plannerPendingSteps = baseState.plannerPendingSteps.slice(1);
+        },
+        annotateAgentActionTrace: () => {},
         ...overrides,
     };
 

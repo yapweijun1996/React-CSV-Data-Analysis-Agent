@@ -17,6 +17,7 @@ type PlannerStore = {
     chatHistory: ChatMessage[];
     agentActionTraces: PlannerTrace[];
     plannerSession: { planState: any; observations: any[] };
+    plannerPendingSteps: string[];
     progressLog: string[];
     pendingClarifications: any[];
     activeClarificationId: string | null;
@@ -34,6 +35,7 @@ const defaultStore = (): PlannerStore => ({
     chatHistory: [],
     agentActionTraces: [],
     plannerSession: { planState: null, observations: [] },
+    plannerPendingSteps: [],
     progressLog: [],
     pendingClarifications: [],
     activeClarificationId: null,
@@ -108,8 +110,10 @@ const createPlannerHarness = (overrides: Partial<PlannerStore> = {}) => {
         updateAgentActionTrace: updateTrace,
         appendPlannerObservation: (obs: any) => store.plannerSession.observations.push(obs),
         plannerSession: store.plannerSession,
+        plannerPendingSteps: store.plannerPendingSteps,
         updatePlannerPlanState: (state: any) => {
             store.plannerSession.planState = state;
+            store.plannerPendingSteps = state?.nextSteps ?? [];
         },
         chatHistory: store.chatHistory,
         pendingClarifications: store.pendingClarifications,
@@ -141,6 +145,18 @@ const createPlannerHarness = (overrides: Partial<PlannerStore> = {}) => {
         },
         clearAgentValidationEvents: () => {
             store.validationEvents = [];
+        },
+        annotateAgentActionTrace: (traceId: string, metadata: Record<string, any>) => {
+            const trace = store.agentActionTraces.find(t => t.id === traceId);
+            if (trace) {
+                (trace as any).metadata = { ...(trace as any).metadata, ...metadata };
+            }
+        },
+        setPlannerPendingSteps: (steps: string[]) => {
+            store.plannerPendingSteps = steps;
+        },
+        completePlannerPendingStep: () => {
+            store.plannerPendingSteps = store.plannerPendingSteps.slice(1);
         },
     });
 

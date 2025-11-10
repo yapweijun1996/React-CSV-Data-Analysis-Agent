@@ -39,6 +39,12 @@ const LoadingSpinner: React.FC = () => (
     </svg>
 );
 
+const formatEventTimestamp = (value: Date | string): string => {
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+    return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+};
+
 
 export const SpreadsheetPanel: React.FC<SpreadsheetPanelProps> = ({ isVisible }) => {
     const {
@@ -50,6 +56,7 @@ export const SpreadsheetPanel: React.FC<SpreadsheetPanelProps> = ({ isVisible })
         clearAiFilter,
         cancelAiFilterRequest,
         interactiveSelectionFilter,
+        chatHistory,
     } = useAppStore(state => ({
         csvData: state.csvData,
         spreadsheetFilterFunction: state.spreadsheetFilterFunction,
@@ -59,6 +66,7 @@ export const SpreadsheetPanel: React.FC<SpreadsheetPanelProps> = ({ isVisible })
         clearAiFilter: state.clearAiFilter,
         cancelAiFilterRequest: state.cancelAiFilterRequest,
         interactiveSelectionFilter: state.interactiveSelectionFilter,
+        chatHistory: state.chatHistory,
     }));
     const onToggleVisibility = () => useAppStore.getState().setIsSpreadsheetVisible(!isVisible);
 
@@ -183,6 +191,17 @@ export const SpreadsheetPanel: React.FC<SpreadsheetPanelProps> = ({ isVisible })
         return dataToProcess;
     }, [csvData, sortConfig, filterText, spreadsheetFilterFunction, interactiveSelectionFilter]);
     
+    const filterEvents = useMemo(() => {
+        return chatHistory
+            .filter(message =>
+                typeof message.text === 'string' &&
+                message.text.startsWith('System note:') &&
+                (message.text.includes('Raw Data Explorer') || message.text.includes('chart drilldown')),
+            )
+            .slice(-5)
+            .reverse();
+    }, [chatHistory]);
+    
     if (!csvData) return null;
 
     return (
@@ -214,19 +233,58 @@ export const SpreadsheetPanel: React.FC<SpreadsheetPanelProps> = ({ isVisible })
                         </div>
                     )}
 
+                    {filterEvents.length > 0 && (
+                        <div className="bg-slate-50 text-slate-700 border border-slate-200 rounded-md p-2 text-xs mb-2">
+                            <p className="font-semibold mb-1">Filter Provenance</p>
+                            <ul className="space-y-1">
+                                {filterEvents.map((event, index) => (
+                                    <li key={`${event.timestamp}-${index}`} className="flex justify-between items-start gap-2">
+                                        <span className="flex-1 text-slate-600">{event.text}</span>
+                                        <span className="text-slate-400 whitespace-nowrap">
+                                            {formatEventTimestamp(event.timestamp)}
+                                        </span>
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    )}
+
                     <div className="flex items-center space-x-2 mb-2">
-                        <div className="relative flex-grow">
-                            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                                <SearchIcon />
-                            </div>
-                            <input
-                                type="text"
+                        <div className="flex flex-col flex-grow space-y-1">
+                            <div className="relative">
+                                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                    <SearchIcon />
+                                </div>
+                                <input
+                                    type="text"
                                 placeholder="Search table or ask AI (e.g., 'show rows where column_3 > 100')"
                                 value={filterText}
                                 onChange={(e) => setFilterText(e.target.value)}
                                 onKeyDown={handleKeyDown}
                                 className="bg-white border border-slate-300 rounded-md py-1.5 pl-10 pr-4 text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500 w-full"
                             />
+                        </div>
+                            <div className="text-xs text-slate-500 flex items-center space-x-3 flex-wrap">
+                                <span>
+                                    Filtered rows: {processedData.length}/{csvData.data.length}
+                                </span>
+                                {spreadsheetFilterFunction && (
+                                    <button
+                                        type="button"
+                                        onClick={clearAiFilter}
+                                        className="flex items-center space-x-1 text-blue-600 hover:text-blue-800 underline decoration-dotted"
+                                        title="Clear AI filter"
+                                    >
+                                        <AiIcon />
+                                        <span>AI filter active (click to clear)</span>
+                                    </button>
+                                )}
+                                {interactiveSelectionFilter && (
+                                    <span className="text-amber-700">
+                                        Drilldown from "{interactiveSelectionFilter.label}"
+                                    </span>
+                                )}
+                            </div>
                         </div>
                         <div className="flex items-center space-x-2">
                             <button 

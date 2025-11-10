@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --import tsx ./tests/applyTopNWithOthers.test.ts && node --import tsx ./tests/chatActionExecutors.test.ts && node --import tsx ./tests/schemaValidation.test.ts && node --import tsx ./tests/promptTemplates.test.ts && node --import tsx ./tests/chatPlannerIntegration.test.ts && node --import tsx ./tests/clarification.test.ts && node --import tsx ./tests/groupByInference.test.ts"
+    "test": "node --import tsx ./tests/applyTopNWithOthers.test.ts && node --import tsx ./tests/chatActionExecutors.test.ts && node --import tsx ./tests/schemaValidation.test.ts && node --import tsx ./tests/promptTemplates.test.ts && node --import tsx ./tests/clarification.test.ts && node --import tsx ./tests/groupByInference.test.ts",
+    "test:integration": "node --import tsx ./tests/chatPlannerIntegration.test.ts"
   },
   "dependencies": {
     "@google/genai": "^1.28.0",

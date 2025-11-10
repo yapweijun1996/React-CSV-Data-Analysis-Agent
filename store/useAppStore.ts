@@ -120,6 +120,7 @@ const buildSerializableAppState = (state: AppStore): AppState => ({
     interactiveSelectionFilter: state.interactiveSelectionFilter,
     plannerSession: state.plannerSession,
     agentPhase: state.agentPhase,
+    plannerPendingSteps: state.plannerPendingSteps,
 });
 
 const buildFileNameFromHeader = (header?: string | null) => {
@@ -223,6 +224,7 @@ const initialAppState: AppState = {
     interactiveSelectionFilter: null,
     plannerSession: normalizePlannerSession(),
     agentPhase: { phase: 'idle', message: null, enteredAt: null },
+    plannerPendingSteps: [],
 };
 
 export const useAppStore = create<StoreState & StoreActions>((set, get) => {
@@ -537,7 +539,31 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                     ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
             }, 150);
         },
-        clearInteractiveSelectionFilter: () => set({ interactiveSelectionFilter: null }),
+        clearInteractiveSelectionFilter: () => {
+            const current = get().interactiveSelectionFilter;
+            if (!current) {
+                return;
+            }
+            const systemNote: ChatMessage = {
+                sender: 'ai',
+                text: `System note: Cleared chart drilldown "${current.label}" (${current.column}); Raw Data Explorer now shows all rows.`,
+                timestamp: new Date(),
+                type: 'ai_message',
+            };
+            set(state => ({
+                interactiveSelectionFilter: null,
+                chatHistory: [...state.chatHistory, systemNote],
+            }));
+            get().addProgress('Cleared the linked chart selection filter.');
+            const traceId = get().beginAgentActionTrace('dom_action', 'User cleared chart drilldown', 'system');
+            get().updateAgentActionTrace(traceId, 'succeeded', 'Chart drilldown reset via UI', {
+                metadata: {
+                    drilldownLabel: current.label,
+                    drilldownColumn: current.column,
+                    valueCount: current.values.length,
+                },
+            });
+        },
 
     init: async () => {
         const currentSession = await getReport(CURRENT_SESSION_KEY);
@@ -1168,25 +1194,37 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         });
         return traceId;
     },
-    updateAgentActionTrace: (traceId, status, details, telemetry) => {
-        set(state => ({
-            agentActionTraces: state.agentActionTraces.map(trace => {
-                if (trace.id !== traceId) return trace;
-                const mergedMetadata = telemetry?.metadata
-                    ? { ...(trace.metadata ?? {}), ...telemetry.metadata }
-                    : trace.metadata;
-                return {
-                    ...trace,
-                    status,
-                    details,
-                    timestamp: new Date(),
-                    durationMs: telemetry?.durationMs ?? trace.durationMs,
-                    errorCode: telemetry?.errorCode ?? trace.errorCode,
-                    metadata: mergedMetadata,
-                };
-            }),
-        }));
-    },
+        updateAgentActionTrace: (traceId, status, details, telemetry) => {
+            set(state => ({
+                agentActionTraces: state.agentActionTraces.map(trace => {
+                    if (trace.id !== traceId) return trace;
+                    const mergedMetadata = telemetry?.metadata
+                        ? { ...(trace.metadata ?? {}), ...telemetry.metadata }
+                        : trace.metadata;
+                    return {
+                        ...trace,
+                        status,
+                        details,
+                        timestamp: new Date(),
+                        durationMs: telemetry?.durationMs ?? trace.durationMs,
+                        errorCode: telemetry?.errorCode ?? trace.errorCode,
+                        metadata: mergedMetadata,
+                    };
+                }),
+            }));
+        },
+        annotateAgentActionTrace: (traceId, metadata) => {
+            if (!metadata || Object.keys(metadata).length === 0) {
+                return;
+            }
+            set(state => ({
+                agentActionTraces: state.agentActionTraces.map(trace =>
+                    trace.id === traceId
+                        ? { ...trace, metadata: { ...(trace.metadata ?? {}), ...metadata } }
+                        : trace,
+                ),
+            }));
+        },
         appendPlannerObservation: (observation: AgentObservation) => {
             set(state => {
                 const nextObservations = [...state.plannerSession.observations, observation].slice(-MAX_PLANNER_OBSERVATIONS);
@@ -1197,10 +1235,27 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             set(state => ({ plannerSession: { ...state.plannerSession, observations: [] } }));
         },
         updatePlannerPlanState: (planState: AgentPlanState) => {
-            set(state => ({ plannerSession: { ...state.plannerSession, planState } }));
+            set(state => ({
+                plannerSession: { ...state.plannerSession, planState },
+                plannerPendingSteps: planState.nextSteps ?? [],
+            }));
         },
         clearPlannerPlanState: () => {
-            set(state => ({ plannerSession: { ...state.plannerSession, planState: null } }));
+            set(state => ({
+                plannerSession: { ...state.plannerSession, planState: null },
+                plannerPendingSteps: [],
+            }));
+        },
+        setPlannerPendingSteps: (steps: string[]) => {
+            const normalized = (steps || []).map(step => step.trim()).filter(Boolean);
+            set({ plannerPendingSteps: normalized });
+        },
+        completePlannerPendingStep: () => {
+            set(state =>
+                state.plannerPendingSteps.length === 0
+                    ? {}
+                    : { plannerPendingSteps: state.plannerPendingSteps.slice(1) },
+            );
         },
     focusDataPreview: () => {
         set({ isSpreadsheetVisible: true });

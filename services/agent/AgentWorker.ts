@@ -1,5 +1,5 @@
 import type { GetState, SetState } from 'zustand';
-import { executeJavaScriptDataTransform, profileData } from '../../utils/dataProcessor';
+import { executeJavaScriptDataTransform, executeJavaScriptFilter, profileData } from '../../utils/dataProcessor';
 import { generateChatResponse } from '../aiService';
 import { vectorStore } from '../vectorStore';
 import { filterClarificationOptions, COLUMN_TARGET_PROPERTIES } from '../../utils/clarification';
@@ -167,12 +167,128 @@ const ACTION_ERROR_CODES = {
     UNSUPPORTED_ACTION: 'UNSUPPORTED_ACTION',
     PLAN_STATE_PAYLOAD_MISSING: 'PLAN_STATE_PAYLOAD_MISSING',
     VALIDATION_FAILED: 'VALIDATION_FAILED',
+    PLAN_STEP_OUT_OF_ORDER: 'PLAN_STEP_OUT_OF_ORDER',
 } as const;
 
 type ActionErrorCode = (typeof ACTION_ERROR_CODES)[keyof typeof ACTION_ERROR_CODES];
 
 const createObservationId = () =>
     `obs-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+interface RawDataExplorerSnapshot {
+    summary: string;
+    metadata: {
+        totalRows: number;
+        filteredRows: number;
+        snippetHash: string | null;
+        drilldownLabel: string | null;
+        drilldownValueCount: number;
+    };
+}
+
+const computeSnippetHash = (rows: CsvRow[]): string => {
+    const json = JSON.stringify(rows);
+    let hash = 0;
+    for (let i = 0; i < json.length; i++) {
+        hash = (hash << 5) - hash + json.charCodeAt(i);
+        hash |= 0;
+    }
+    return Math.abs(hash).toString(36);
+};
+
+const formatCsvValue = (value: unknown): string => {
+    if (value === null || value === undefined) return '';
+    const text = String(value);
+    const needsQuotes = /[",\n]/.test(text);
+    const normalized = text.replace(/"/g, '""');
+    return needsQuotes ? `"${normalized}"` : normalized;
+};
+
+const buildRawDataExplorerSnapshot = (store: AppStore): RawDataExplorerSnapshot => {
+    const { csvData, spreadsheetFilterFunction, aiFilterExplanation, interactiveSelectionFilter } = store;
+    const dataset = csvData?.data ?? [];
+    if (dataset.length === 0) {
+        return {
+            summary: 'No dataset loaded; Raw Data Explorer summary unavailable.',
+            metadata: {
+                totalRows: 0,
+                filteredRows: 0,
+                snippetHash: null,
+                drilldownLabel: null,
+                drilldownValueCount: 0,
+            },
+        };
+    }
+
+    let workingRows = dataset;
+    const parts: string[] = [];
+    let snippetHash: string | null = null;
+    let drilldownLabel: string | null = null;
+    let drilldownValueCount = 0;
+
+    if (interactiveSelectionFilter && interactiveSelectionFilter.column) {
+        const { label, column, values } = interactiveSelectionFilter;
+        const normalized = new Set(values.map(value => String(value)));
+        workingRows = workingRows.filter(row => normalized.has(String(row[column] ?? '')));
+        const preview = values.slice(0, 4).map(value => `"${String(value)}"`).join(', ');
+        const remainder = values.length > 4 ? ` +${values.length - 4}` : '';
+        parts.push(`Chart drilldown "${label}" (${column}) → ${preview}${remainder}.`);
+        drilldownLabel = label;
+        drilldownValueCount = values.length;
+    }
+
+    if (spreadsheetFilterFunction) {
+        try {
+            workingRows = executeJavaScriptFilter(workingRows, spreadsheetFilterFunction);
+            if (aiFilterExplanation?.trim()) {
+                parts.push(`AI filter active: ${aiFilterExplanation.trim()}`);
+            } else {
+                parts.push('AI filter active via natural-language query (no explanation available).');
+            }
+        } catch (error) {
+            const friendly = error instanceof Error ? error.message : String(error);
+            parts.push(`AI filter active but preview failed: ${friendly}`);
+        }
+    }
+
+    const filteredRows = workingRows.length;
+    const totalRows = dataset.length;
+
+    const buildSampleSnippet = (): string => {
+        if (workingRows.length === 0) {
+            return 'No rows available.';
+        }
+        if (workingRows.length > 1000) {
+            const columns = Object.keys(workingRows[0]);
+            const header = columns.join(',');
+            const pageSize = 5;
+            const rows = workingRows.slice(0, pageSize).map(row =>
+                columns.map(col => formatCsvValue(row[col])).join(','),
+            );
+            const totalPages = Math.ceil(workingRows.length / pageSize);
+            const hash = computeSnippetHash(workingRows.slice(0, pageSize));
+            snippetHash = hash;
+            return `CSV snippet page 1/${totalPages} (hash ${hash}):\n${[header, ...rows].join('\n')}`;
+        }
+        const previewSample = workingRows.slice(0, 3);
+        const previewText = previewSample.length > 0 ? JSON.stringify(previewSample, null, 2) : '[]';
+        return previewText.length > 600 ? `${previewText.slice(0, 600)}…` : previewText;
+    };
+
+    const snippet = buildSampleSnippet();
+    parts.push(`Filtered rows: ${filteredRows}/${totalRows}. Preview sample: ${snippet}`);
+
+    return {
+        summary: parts.join(' '),
+        metadata: {
+            totalRows,
+            filteredRows,
+            snippetHash,
+            drilldownLabel,
+            drilldownValueCount,
+        },
+    };
+};
 
 const normalizeObservationPayload = (result: ActionStepResult): ActionObservationPayload => {
     if (result.observation) {
@@ -185,6 +301,27 @@ const normalizeObservationPayload = (result: ActionStepResult): ActionObservatio
         };
     }
     return { status: 'success' };
+};
+
+const PLAN_STEP_KEY_MAX_WORDS = 6;
+
+const deriveStepKey = (step: string | undefined | null): string | null => {
+    if (!step) return null;
+    const key = step
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .filter(Boolean)
+        .slice(0, PLAN_STEP_KEY_MAX_WORDS)
+        .join(' ')
+        .trim();
+    return key.length >= 3 ? key : null;
+};
+
+const thoughtMentionsStep = (thought: string | undefined, stepKey: string | null): boolean => {
+    if (!stepKey) return true;
+    if (!thought) return false;
+    return thought.toLowerCase().includes(stepKey);
 };
 
 const toAgentObservation = (
@@ -317,34 +454,7 @@ const buildChatPlannerContext = async (
     const memorySnapshot = selectedMemories;
     const memoryPayload = memorySnapshot.map(mem => mem.text);
 
-    const getRawDataExplorerSummary = (): string => {
-        const {
-            spreadsheetFilterFunction,
-            aiFilterExplanation,
-            interactiveSelectionFilter,
-        } = get();
-
-        const parts: string[] = [];
-
-        if (spreadsheetFilterFunction) {
-            const explanation = aiFilterExplanation?.trim();
-            parts.push(
-                explanation
-                    ? `AI filter active: ${explanation}`
-                    : 'AI filter active via natural-language query (no explanation available).',
-            );
-        }
-
-        if (interactiveSelectionFilter) {
-            const { label, column, values } = interactiveSelectionFilter;
-            const valueStrings = values.map(value => String(value));
-            const preview = valueStrings.slice(0, 4).map(value => `"${value}"`).join(', ');
-            const remainder = valueStrings.length > 4 ? ` +${valueStrings.length - 4}` : '';
-            parts.push(`Chart drilldown "${label}" (${column}) → ${preview}${remainder}.`);
-        }
-
-        return parts.length > 0 ? parts.join(' ') : 'No filters active; explorer shows every row.';
-    };
+    const getRawDataExplorerSummary = (): string => buildRawDataExplorerSnapshot(get()).summary;
 
     const requestAiResponse = (prompt: string) =>
         generateChatResponse(
@@ -391,6 +501,99 @@ const chainOfThoughtGuardMiddleware: ActionMiddleware = async (context, next) =>
     return next();
 };
 
+const planActionMatchesStep = (action: AiAction, stepKey: string | null): boolean => {
+    if (!stepKey) return false;
+    if (action.responseType !== 'plan_creation' || !action.plan) return false;
+    const haystacks = [
+        action.plan.title,
+        action.plan.description,
+        action.plan.groupByColumn,
+        action.plan.valueColumn,
+        action.plan.secondaryValueColumn,
+    ]
+        .filter(Boolean)
+        .map(value => String(value).toLowerCase());
+    return haystacks.some(text => text.includes(stepKey));
+};
+
+const planStepViolationCounts: Record<string, number> = Object.create(null);
+const MAX_PLAN_STEP_VIOLATIONS = 3;
+
+const stateConsistencyMiddleware: ActionMiddleware = async (context, next) => {
+    const runId = context.runtime.runId;
+    if (
+        context.action.responseType === 'plan_state_update' ||
+        context.action.responseType === 'text_response'
+    ) {
+        planStepViolationCounts[runId] = 0;
+        return next();
+    }
+
+    const pendingSteps = context.runtime.get().plannerPendingSteps || [];
+    const expectedStep = pendingSteps[0];
+    const stepKey = deriveStepKey(expectedStep);
+
+    if (
+        expectedStep &&
+        stepKey &&
+        !thoughtMentionsStep(context.action.thought, stepKey) &&
+        !planActionMatchesStep(context.action, stepKey)
+    ) {
+        const nextCount = (planStepViolationCounts[runId] ?? 0) + 1;
+        planStepViolationCounts[runId] = nextCount;
+
+        if (nextCount >= MAX_PLAN_STEP_VIOLATIONS) {
+            context.runtime
+                .get()
+                .addProgress(
+                    'Relaxing plan-step enforcement after repeated attempts. Proceed carefully and build the pending chart immediately.',
+                );
+            planStepViolationCounts[runId] = 0;
+            if (typeof context.runtime.get().completePlannerPendingStep === 'function') {
+                context.runtime.get().completePlannerPendingStep();
+            }
+            return next();
+        }
+
+        context.runtime
+            .get()
+            .addProgress(
+                `State consistency check failed. Next planned step is "${expectedStep}". Reference it explicitly before taking other actions.`,
+                'error',
+            );
+        context.markTrace('failed', 'Plan step order violation.', {
+            errorCode: ACTION_ERROR_CODES.PLAN_STEP_OUT_OF_ORDER,
+            metadata: { expectedStep },
+        });
+        return {
+            type: 'retry',
+            reason: `You attempted to skip the next plan step. Focus on "${expectedStep}" before moving on.`,
+            observation: {
+                status: 'error',
+                errorCode: ACTION_ERROR_CODES.PLAN_STEP_OUT_OF_ORDER,
+                outputs: { expectedStep },
+            },
+        };
+    }
+
+    const originalMarkTrace = context.markTrace;
+    context.markTrace = (status, details, telemetry) => {
+        if (status === 'succeeded' && expectedStep) {
+            context.runtime.get().completePlannerPendingStep();
+        }
+        if (status === 'succeeded') {
+            planStepViolationCounts[runId] = 0;
+        }
+        originalMarkTrace(status, details, telemetry);
+    };
+
+    try {
+        return await next();
+    } finally {
+        context.markTrace = originalMarkTrace;
+    }
+};
+
 const thoughtLoggingMiddleware: ActionMiddleware = async (context, next) => {
     if (context.action.thought) {
         context.runtime.get().addProgress(`AI Thought: ${context.action.thought}`);
@@ -418,6 +621,7 @@ const telemetryMiddleware: ActionMiddleware = async (context, next) => {
 const registeredMiddlewares: ActionMiddleware[] = [];
 const coreMiddlewares: ActionMiddleware[] = [
     chainOfThoughtGuardMiddleware,
+    stateConsistencyMiddleware,
     thoughtLoggingMiddleware,
     telemetryMiddleware,
 ];
@@ -971,6 +1175,50 @@ const runPlannerWorkflow = async (
     }
 };
 
+const shouldRecordPostActionObservation = (action: AiAction): boolean => {
+    if (action.responseType === 'filter_spreadsheet' || action.responseType === 'execute_js_code') {
+        return true;
+    }
+    if (action.responseType === 'dom_action' && action.domAction) {
+        return ['filterCard', 'setTopN', 'toggleHideOthers', 'toggleLegendLabel', 'highlightCard', 'showCardData']
+            .includes(action.domAction.toolName);
+    }
+    return false;
+};
+
+const recordPostActionObservation = (
+    runtime: PlannerRuntime,
+    action: AiAction,
+    traceId: string,
+    observation: AgentObservation,
+) => {
+    if (observation.status !== 'success' || !shouldRecordPostActionObservation(action)) {
+        return;
+    }
+    const snapshot = buildRawDataExplorerSnapshot(runtime.get());
+    const outputs = {
+        rawDataExplorerSummary: snapshot.summary,
+        filteredRows: snapshot.metadata.filteredRows,
+        totalRows: snapshot.metadata.totalRows,
+        snippetHash: snapshot.metadata.snippetHash,
+        drilldownLabel: snapshot.metadata.drilldownLabel,
+        drilldownValueCount: snapshot.metadata.drilldownValueCount,
+    };
+    runtime.get().appendPlannerObservation({
+        id: createObservationId(),
+        actionId: traceId,
+        responseType: action.responseType,
+        status: 'success',
+        timestamp: new Date().toISOString(),
+        outputs,
+        errorCode: null,
+        uiDelta: null,
+    });
+    if (typeof runtime.get().annotateAgentActionTrace === 'function') {
+        runtime.get().annotateAgentActionTrace(traceId, outputs);
+    }
+};
+
 const dispatchAgentActions = async (
     response: AiChatResponse,
     runtime: PlannerRuntime,
@@ -993,9 +1241,9 @@ const dispatchAgentActions = async (
 
         const stepResult = await runActionThroughRegistry(action, runtime, remainingAutoRetries, markTrace);
         const observationPayload = normalizeObservationPayload(stepResult);
-        runtime.get().appendPlannerObservation(
-            toAgentObservation(action, traceId, observationPayload),
-        );
+        const recordedObservation = toAgentObservation(action, traceId, observationPayload);
+        runtime.get().appendPlannerObservation(recordedObservation);
+        recordPostActionObservation(runtime, action, traceId, recordedObservation);
         if (stepResult.type === 'retry') {
             return { type: 'retry', reason: stepResult.reason };
         }
