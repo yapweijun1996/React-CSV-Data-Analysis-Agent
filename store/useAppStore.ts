@@ -854,17 +854,21 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         const beginTrace = get().beginAgentActionTrace;
         const completeTrace = get().updateAgentActionTrace;
         const datasetId = get().datasetHash;
+        const shouldTrackTimeline = !isChatRequest;
         const markTimelineStep = () => {
-            if (isChatRequest) return;
+            if (!shouldTrackTimeline) return;
             set(state => {
-                const total = state.analysisTimeline.totalCards || 0;
-                const completed = Math.min(total, state.analysisTimeline.completedCards + 1);
-                const shouldPromoteStage = state.analysisTimeline.stage === 'persisting' || state.analysisTimeline.stage === 'profiling';
+                const timeline = state.analysisTimeline;
+                if (!timeline.totalCards) {
+                    return {};
+                }
+                const completed = Math.min(timeline.totalCards, timeline.completedCards + 1);
+                const nextStage = timeline.stage === 'profiling' && completed > 0 ? 'insight' : timeline.stage;
                 return {
                     analysisTimeline: {
-                        ...state.analysisTimeline,
+                        ...timeline,
                         completedCards: completed,
-                        stage: shouldPromoteStage ? 'insight' : state.analysisTimeline.stage,
+                        stage: nextStage,
                     },
                 };
             });
@@ -925,10 +929,10 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             return response.data;
         };
 
-        if (!isChatRequest && plans.length > 0) {
+        if (shouldTrackTimeline && plans.length > 0) {
             set(state => ({
                 analysisTimeline: {
-                    ...state.analysisTimeline,
+                    stage: state.analysisTimeline.stage === 'persisting' ? 'profiling' : state.analysisTimeline.stage,
                     totalCards: plans.length,
                     completedCards: 0,
                 },
@@ -1113,6 +1117,19 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
     
     handleInitialAnalysis: async (dataForAnalysis, options = {}) => {
         if (!dataForAnalysis) return;
+        set(state => {
+            if (state.analysisTimeline.stage === 'persisting') {
+                return {};
+            }
+            return {
+                analysisTimeline: {
+                    ...state.analysisTimeline,
+                    stage: 'profiling',
+                    totalCards: 0,
+                    completedCards: 0,
+                },
+            };
+        });
         const { runId: providedRunId } = options;
         await runWithBusyState(
             {

@@ -7,6 +7,30 @@ import { executePlan } from '../../utils/dataProcessor';
 
 const ALLOWED_AGGREGATIONS: Set<AggregationType> = new Set(['sum', 'count', 'avg']);
 
+const inferGroupByColumn = (plan: AnalysisPlan, columns: ColumnProfile[]): string | null => {
+    const categoricalTypes = new Set<ColumnProfile['type']>(['categorical', 'date', 'time']);
+    const candidates = columns.filter(col => categoricalTypes.has(col.type));
+    const fallback =
+        candidates.find(col => col.name !== plan.valueColumn) ?? candidates[0] ?? columns.find(col => col.name !== plan.valueColumn);
+    return fallback?.name ?? null;
+};
+
+const normalizeGeneratedPlan = (plan: AnalysisPlan, columns: ColumnProfile[]): AnalysisPlan => {
+    const normalized = { ...plan };
+    if (
+        normalized.chartType &&
+        normalized.chartType !== 'scatter' &&
+        normalized.chartType !== 'combo' &&
+        !normalized.groupByColumn
+    ) {
+        const inferred = inferGroupByColumn(normalized, columns);
+        if (inferred) {
+            normalized.groupByColumn = inferred;
+        }
+    }
+    return normalized;
+};
+
 // Helper to validate a plan object from the AI
 const isValidPlan = (plan: any): plan is AnalysisPlan => {
     if (!plan || typeof plan !== 'object' || !plan.chartType || !plan.title) {
@@ -70,13 +94,16 @@ You MUST respond with JSON that adheres exactly to the provided schema (an array
         plans = robustlyParseJsonArray(content);
     }
 
-    return plans.filter(isValidPlan);
+    return plans
+        .map(plan => normalizeGeneratedPlan(plan, columns))
+        .filter(isValidPlan);
 };
 
 // Helper function for the second step: the AI Quality Gate
 const refineAndConfigurePlans = async (
     plansWithData: { plan: AnalysisPlan; aggregatedSample: CsvRow[] }[],
     settings: Settings,
+    columns: ColumnProfile[],
     signal?: AbortSignal
 ): Promise<AnalysisPlan[]> => {
     let rawPlans: any[];
@@ -109,7 +136,9 @@ You MUST respond with JSON that strictly adheres to the provided schema (an arra
         return p;
     });
 
-    return normalizedPlans.filter(isValidPlan);
+    return normalizedPlans
+        .map(plan => normalizeGeneratedPlan(plan, columns))
+        .filter(isValidPlan);
 };
 
 
@@ -153,7 +182,7 @@ const generatePlansWithQualityGate = async (
     }
     
     // Step 3: AI Quality Gate - Ask AI to review and refine the plans (already validated inside the function)
-    const refinedPlans = await refineAndConfigurePlans(plansWithDataForReview, settings, options?.signal);
+    const refinedPlans = await refineAndConfigurePlans(plansWithDataForReview, settings, columns, options?.signal);
 
     // Ensure we have a minimum number of plans
     let finalPlans = refinedPlans;

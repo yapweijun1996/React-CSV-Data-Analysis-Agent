@@ -485,13 +485,25 @@ const rowsAreEqual = (rowA: CsvRow, rowB: CsvRow): boolean => {
     return true;
 };
 
+const normalizeTransformBody = (body: string): string => {
+    const trimmed = body.trim();
+    const wrap = (fnExpr: string) => `const __transform = ${fnExpr}; return __transform(data, _util);`;
+    const functionRegex = /^(?:async\s+)?function\s*(?:[\w$]+)?\s*\(/i;
+    const arrowRegex = /^(?:async\s*)?\(?[\w\s,$]*\)?\s*=>/;
+    if (functionRegex.test(trimmed) || arrowRegex.test(trimmed)) {
+        return wrap(trimmed);
+    }
+    return body;
+};
+
 export const executeJavaScriptDataTransform = (
     data: CsvRow[],
     jsFunctionBody: string,
 ): { data: CsvRow[]; meta: DataTransformMeta } => {
     try {
         const _util = createUtilObject();
-        const transformFunction = new Function('data', '_util', jsFunctionBody);
+        const normalizedBody = normalizeTransformBody(jsFunctionBody);
+        const transformFunction = new Function('data', '_util', normalizedBody);
         const result = transformFunction(data, _util);
 
         if (!Array.isArray(result)) {

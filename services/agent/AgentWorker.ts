@@ -1,5 +1,6 @@
 import type { GetState, SetState } from 'zustand';
 import { executeJavaScriptDataTransform, executeJavaScriptFilter, profileData } from '../../utils/dataProcessor';
+import { extractQuickChoices } from '../../utils/questionChoices';
 import { generateChatResponse } from '../aiService';
 import type { ChatResponseOptions } from '../aiService';
 import { vectorStore } from '../vectorStore';
@@ -2145,6 +2146,7 @@ const runPlannerWorkflow = async (
     let retryAttempts = 0;
     let validationRetries = 0;
     let usedFallbackPlanPrompt = false;
+    let usedRestatementPrompt = false;
     let continuationAttempts = 0;
     const withIntentNotes = (prompt: string) => appendIntentNotesToPrompt(prompt, runtime.intentNotes);
     const executionPolicy = resolveIntentExecutionPolicy(runtime.detectedIntent);
@@ -2187,6 +2189,23 @@ const runPlannerWorkflow = async (
                 recordValidationTelemetry(runtime, validation.details, validation.retryInstruction);
                 runtime.get().addProgress(validation.userMessage, 'error');
                 if (validationRetries >= validationLimit) {
+                    if (!usedRestatementPrompt) {
+                        usedRestatementPrompt = true;
+                        validationRetries = 0;
+                        runtime.get().addProgress(
+                            'Plan validation failed; asking the AI to restate your request and try again.',
+                            'system',
+                        );
+                        enterAgentPhase(runtime, 'planning', 'Restating your request before continuing...');
+                        ({ response, meta: responseMeta } = await requestAgentResponse(
+                            withIntentNotes(
+                                `${runtime.userMessage}\n\nSYSTEM NOTE: Restate the user's latest request in your own words to confirm understanding, then provide a valid plan_state_update that follows the shared schema exactly.`,
+                            ),
+                            'Restating your request...',
+                            { mode: resolvePromptModeForRuntime(runtime) },
+                        ));
+                        continue;
+                    }
                     if (!usedFallbackPlanPrompt && allowFallbackPlanPrompt) {
                         usedFallbackPlanPrompt = true;
                         validationRetries = 0;
@@ -2469,6 +2488,35 @@ const handleTextResponseAction: AgentActionExecutor = async ({ action, runtime, 
                 errorCode: ACTION_ERROR_CODES.MISSING_TEXT,
             },
         };
+    }
+
+    if (action.meta?.awaitUser) {
+        const quickChoices = extractQuickChoices(action.text ?? '');
+        if (quickChoices.length === 0) {
+            const retryPrompt =
+                'SYSTEM NOTE: Your previous message asked the user for a choice but did not include explicit options. Restate the question and list at least two options using a numbered format (e.g., "1) … 2) …").';
+            runtime
+                .get()
+                .addProgress('Await-user question lacked explicit options. Asking the AI to restate it with numbered choices...', 'error');
+            markTrace('failed', 'Await-user prompt missing options.', {
+                errorCode: ACTION_ERROR_CODES.VALIDATION_FAILED,
+            });
+            return {
+                type: 'retry',
+                reason: 'Await-user prompt missing selectable options.',
+                retryPrompt,
+                userFacingMessage: 'The assistant needed to restate the question with concrete options. Retrying...',
+                progressMessage: 'Requesting a multiple-choice restatement from the assistant...',
+                phaseMessage: 'Rephrasing question to include explicit options...',
+                statusMessage: 'Rebuilding prompt with options...',
+                promptMode: 'full',
+                observation: {
+                    status: 'error',
+                    errorCode: ACTION_ERROR_CODES.VALIDATION_FAILED,
+                    outputs: { issue: 'missing_options' },
+                },
+            };
+        }
     }
 
     const shouldAttachMemory = !runtime.memoryTagAttached && runtime.memorySnapshot.length > 0;
@@ -2961,6 +3009,25 @@ const handleClarificationRequestAction: AgentActionExecutor = async ({ action, r
                 status: 'error',
                 errorCode: ACTION_ERROR_CODES.CLARIFICATION_NO_OPTIONS,
             },
+        };
+    }
+
+    if (!filteredClarification.options || filteredClarification.options.length === 0) {
+        const retryPrompt =
+            'SYSTEM NOTE: Clarification requests must include at least two concrete options the user can pick. Please restate the clarification with enumerated options (e.g., Option A, Option B).';
+        markTrace('failed', 'Clarification request missing options.', {
+            errorCode: ACTION_ERROR_CODES.CLARIFICATION_NO_OPTIONS,
+        });
+        runtime.get().addProgress('Clarification request missing options. Asking the AI to restate with explicit choices...', 'error');
+        return {
+            type: 'retry',
+            reason: 'Clarification request missing options.',
+            retryPrompt,
+            userFacingMessage: 'Clarification was missing explicit options, so I asked the AI to restate it.',
+            progressMessage: 'Requesting a clarification with explicit options...',
+            phaseMessage: 'Retrying clarification step...',
+            statusMessage: 'Rebuilding clarification request...',
+            promptMode: 'full',
         };
     }
 
