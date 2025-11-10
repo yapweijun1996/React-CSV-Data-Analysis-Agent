@@ -167,6 +167,17 @@ const clarificationRequestSchema = {
     required: ['question', 'options', 'pendingPlan', 'targetProperty']
 };
 
+const planStepSchema = {
+    type: Type.OBJECT,
+    description: 'Declarative representation of a pending plan step.',
+    properties: {
+        id: { type: Type.STRING, minLength: 3, description: 'Stable identifier (kebab-case recommended) used to reference this step in future actions.' },
+        label: { type: Type.STRING, minLength: 4, description: 'Human-readable summary of the step.' },
+    },
+    required: ['id', 'label'],
+    additionalProperties: false,
+};
+
 const planStateSnapshotSchema = {
     type: Type.OBJECT,
     description: "Structured summary of the agent's current goal, progress, and blockers.",
@@ -178,7 +189,7 @@ const planStateSnapshotSchema = {
             type: Type.ARRAY,
             description: 'Concrete upcoming actions, ordered by priority.',
             minItems: 1,
-            items: { type: Type.STRING, minLength: 4 },
+            items: planStepSchema,
         },
         blockedBy: { type: Type.STRING, description: 'Describe any blockers or open questions. Omit if none.' },
         observationIds: {
@@ -210,6 +221,7 @@ export const multiActionChatResponseSchema = {
                 properties: {
                     thought: { type: Type.STRING, description: "The AI's reasoning or thought process before performing the action. This explains *why* this action is being taken. This is a mandatory part of the ReAct pattern." },
                     stateTag: { type: Type.STRING, description: "Optional short tag summarizing the assistant's internal state (e.g., 'context_ready', 'awaiting_data')." },
+                    stepId: { type: Type.STRING, description: "The identifier of the plan step this action is advancing. Required for every action except plan_state_update." },
                     responseType: { type: Type.STRING, enum: ['text_response', 'plan_creation', 'dom_action', 'execute_js_code', 'proceed_to_analysis', 'filter_spreadsheet', 'clarification_request', 'plan_state_update'] },
                     text: { type: Type.STRING, description: "A conversational text response to the user. Required for 'text_response'." },
                     cardId: { type: Type.STRING, description: "Optional. The ID of the card this text response refers to. Used to link text to a specific chart." },
@@ -298,6 +310,8 @@ const strictAdditionalPropsPaths = new Set([
     'properties.actions.items.properties.clarification',
     'properties.actions.items.properties.clarification.properties.options.items',
     'properties.actions.items.properties.clarification.properties.pendingPlan',
+    'properties.actions.items.properties.planState',
+    'properties.actions.items.properties.planState.properties.nextSteps.items',
 ]);
 
 const strictAllPropsRequiredPaths = new Set([
@@ -309,6 +323,7 @@ const strictAllPropsRequiredPaths = new Set([
 const nullablePropertyPaths = new Set([
     'properties.actions.items.properties.text',
     'properties.actions.items.properties.stateTag',
+    'properties.actions.items.properties.stepId',
     'properties.actions.items.properties.cardId',
     'properties.actions.items.properties.plan',
     'properties.actions.items.properties.plan.properties.aggregation',

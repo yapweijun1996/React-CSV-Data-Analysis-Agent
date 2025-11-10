@@ -147,11 +147,16 @@ export interface AgentValidationEvent {
     retryInstruction?: string;
 }
 
+export interface AgentPlanStep {
+    id: string;
+    label: string;
+}
+
 export interface AgentPlanState {
     goal: string;
     contextSummary?: string | null;
     progress: string;
-    nextSteps: string[];
+    nextSteps: AgentPlanStep[];
     blockedBy?: string | null;
     observationIds?: string[];
     confidence?: number | null;
@@ -288,7 +293,7 @@ export interface AppState {
     interactiveSelectionFilter: SelectionDrilldownFilter | null;
     plannerSession: PlannerSessionState;
     agentPhase: AgentPhaseState;
-    plannerPendingSteps: string[];
+    plannerPendingSteps: AgentPlanStep[];
 }
 
 export interface DomAction {
@@ -308,6 +313,7 @@ export interface AiAction {
   thought?: string; // The AI's reasoning for this action (ReAct pattern).
   responseType: AgentActionType;
   stateTag?: AgentStateTag;
+  stepId?: string | null;
   plan?: AnalysisPlan;
   text?: string;
   cardId?: string; // For text_response, the ID of the card being discussed
@@ -317,7 +323,7 @@ export interface AiAction {
     jsFunctionBody: string;
   };
   args?: { // For actions like filter_spreadsheet
-    query: string;
+    query?: string | null;
   };
   clarification?: ClarificationRequestPayload;
   planState?: AgentPlanState;

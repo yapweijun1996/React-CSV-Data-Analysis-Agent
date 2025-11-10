@@ -26,7 +26,7 @@ const run = (name: string, fn: () => void) => {
     }
 };
 
-run('prompt instructs plan-state loop when no plan state present', () => {
+run('prompt instructs plan-state protocol when no plan state present', () => {
     const prompt = createChatPrompt(
         baseArgs.columns,
         baseArgs.chatHistory,
@@ -42,7 +42,7 @@ run('prompt instructs plan-state loop when no plan state present', () => {
         baseArgs.recentActionTraces,
         baseArgs.rawDataFilterSummary,
     );
-    assert.ok(prompt.includes('Plan-State Loop'), 'should mention Plan-State Loop instructions');
+    assert.ok(prompt.includes('PLAN TRACKER PROTOCOL'), 'should mention plan tracker instructions');
     assert.ok(prompt.includes('No structured goal has been recorded yet'), 'should instruct agent to emit plan_state_update first');
 });
 
@@ -51,7 +51,10 @@ run('prompt embeds current plan state snapshot when available', () => {
         goal: 'Cut churn by 5%',
         contextSummary: 'Focused on APAC subscribers',
         progress: 'Identified top churn cohorts',
-        nextSteps: ['Explore retention offers', 'Model churn vs tenure'],
+        nextSteps: [
+            { id: 'retention-offers', label: 'Explore retention offers' },
+            { id: 'model-churn-vs-tenure', label: 'Model churn vs tenure' },
+        ],
         blockedBy: 'Need latest retention data',
         observationIds: ['obs-123'],
         confidence: 0.73,

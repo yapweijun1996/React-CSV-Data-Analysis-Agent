@@ -23,6 +23,7 @@ import {
     ExternalCsvPayload,
     AgentObservation,
     AgentPlanState,
+    AgentPlanStep,
     PlannerSessionState,
     AgentValidationEvent,
     VectorStoreDocument,
@@ -75,6 +76,15 @@ const triggerAutoSaveImmediately = () => {
 
 const getNextAwaitingClarificationId = (clarifications: ClarificationRequest[]): string | null =>
     clarifications.find(c => c.status === 'pending')?.id ?? null;
+
+const normalizePlanSteps = (steps: AgentPlanStep[] | undefined | null): AgentPlanStep[] => {
+    return (steps ?? [])
+        .map(step => ({
+            id: typeof step?.id === 'string' ? step.id.trim() : '',
+            label: typeof step?.label === 'string' ? step.label.trim() : '',
+        }))
+        .filter(step => step.id.length >= 3 && step.label.length >= 3);
+};
 
 const sanitizeFileStemFromHeader = (header?: string | null) => {
     if (!header) return 'report';
@@ -1235,9 +1245,10 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             set(state => ({ plannerSession: { ...state.plannerSession, observations: [] } }));
         },
         updatePlannerPlanState: (planState: AgentPlanState) => {
+            const normalizedSteps = normalizePlanSteps(planState.nextSteps);
             set(state => ({
-                plannerSession: { ...state.plannerSession, planState },
-                plannerPendingSteps: planState.nextSteps ?? [],
+                plannerSession: { ...state.plannerSession, planState: { ...planState, nextSteps: normalizedSteps } },
+                plannerPendingSteps: normalizedSteps,
             }));
         },
         clearPlannerPlanState: () => {
@@ -1246,9 +1257,8 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 plannerPendingSteps: [],
             }));
         },
-        setPlannerPendingSteps: (steps: string[]) => {
-            const normalized = (steps || []).map(step => step.trim()).filter(Boolean);
-            set({ plannerPendingSteps: normalized });
+        setPlannerPendingSteps: (steps: AgentPlanStep[]) => {
+            set({ plannerPendingSteps: normalizePlanSteps(steps) });
         },
         completePlannerPendingStep: () => {
             set(state =>

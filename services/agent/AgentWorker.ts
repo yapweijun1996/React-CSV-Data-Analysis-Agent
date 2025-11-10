@@ -22,6 +22,7 @@ import type {
     AgentObservation,
     AgentObservationStatus,
     AgentPlanState,
+    AgentPlanStep,
     AgentPhase,
     PendingPlan,
     AgentActionType,
@@ -318,6 +319,21 @@ const deriveStepKey = (step: string | undefined | null): string | null => {
     return key.length >= 3 ? key : null;
 };
 
+const normalizePlanStepsPayload = (steps: AgentPlanStep[] | undefined | null): AgentPlanStep[] => {
+    if (!Array.isArray(steps)) return [];
+    const normalized: AgentPlanStep[] = [];
+    const seenIds = new Set<string>();
+    for (const raw of steps) {
+        const id = typeof raw?.id === 'string' ? raw.id.trim() : '';
+        const label = typeof raw?.label === 'string' ? raw.label.trim() : '';
+        if (id.length >= 3 && label.length >= 3 && !seenIds.has(id)) {
+            normalized.push({ id, label });
+            seenIds.add(id);
+        }
+    }
+    return normalized;
+};
+
 const thoughtMentionsStep = (thought: string | undefined, stepKey: string | null): boolean => {
     if (!stepKey) return true;
     if (!thought) return false;
@@ -382,8 +398,8 @@ const hasExecutableCodePayload = (action: AiAction): action is AiAction & {
     );
 };
 
-const hasFilterArgsPayload = (action: AiAction): action is AiAction & { args: { query: string } } => {
-    return typeof action.args?.query === 'string' && action.args.query.trim().length > 0;
+const hasFilterArgsPayload = (action: AiAction): action is AiAction & { args: { query?: string | null } } => {
+    return typeof action.args === 'object';
 };
 
 const hasClarificationPayload = (
@@ -397,7 +413,15 @@ const hasPlanStatePayload = (action: AiAction): action is AiAction & { planState
     if (!payload) return false;
     const hasGoal = typeof payload.goal === 'string' && payload.goal.trim().length > 0;
     const hasProgress = typeof payload.progress === 'string' && payload.progress.trim().length > 0;
-    const hasNextSteps = Array.isArray(payload.nextSteps) && payload.nextSteps.length > 0;
+    const hasNextSteps =
+        Array.isArray(payload.nextSteps) &&
+        payload.nextSteps.some(
+            step =>
+                typeof step?.id === 'string' &&
+                step.id.trim().length >= 3 &&
+                typeof step?.label === 'string' &&
+                step.label.trim().length > 0,
+        );
     return hasGoal && hasProgress && hasNextSteps;
 };
 
@@ -414,7 +438,9 @@ const plannerHasPendingSteps = (
     const hasSteps = !!(
         planState &&
         Array.isArray(planState.nextSteps) &&
-        planState.nextSteps.some(step => typeof step === 'string' && step.trim().length > 0)
+        planState.nextSteps.some(
+            step => typeof step?.id === 'string' && step.id.trim().length > 0 && typeof step?.label === 'string',
+        )
     );
     return {
         hasPendingSteps: hasSteps,
@@ -521,24 +547,29 @@ const MAX_PLAN_STEP_VIOLATIONS = 3;
 
 const stateConsistencyMiddleware: ActionMiddleware = async (context, next) => {
     const runId = context.runtime.runId;
-    if (
+    const isPlanOrText =
         context.action.responseType === 'plan_state_update' ||
-        context.action.responseType === 'text_response'
-    ) {
+        context.action.responseType === 'text_response';
+    if (isPlanOrText) {
         planStepViolationCounts[runId] = 0;
         return next();
     }
 
     const pendingSteps = context.runtime.get().plannerPendingSteps || [];
     const expectedStep = pendingSteps[0];
-    const stepKey = deriveStepKey(expectedStep);
+    if (!expectedStep) {
+        planStepViolationCounts[runId] = 0;
+        return next();
+    }
 
-    if (
-        expectedStep &&
-        stepKey &&
-        !thoughtMentionsStep(context.action.thought, stepKey) &&
-        !planActionMatchesStep(context.action, stepKey)
-    ) {
+    const actionStepId = typeof context.action.stepId === 'string' ? context.action.stepId.trim() : '';
+    const structuredMatch = actionStepId.length > 0 && actionStepId === expectedStep.id;
+    const stepKey = deriveStepKey(expectedStep.label);
+    const fallbackMatch =
+        !!stepKey &&
+        (thoughtMentionsStep(context.action.thought, stepKey) || planActionMatchesStep(context.action, stepKey));
+
+    if (!structuredMatch && !fallbackMatch) {
         const nextCount = (planStepViolationCounts[runId] ?? 0) + 1;
         planStepViolationCounts[runId] = nextCount;
 
@@ -555,34 +586,45 @@ const stateConsistencyMiddleware: ActionMiddleware = async (context, next) => {
             return next();
         }
 
+        const stepLabel = `"${expectedStep.label}" [${expectedStep.id}]`;
         context.runtime
             .get()
             .addProgress(
-                `State consistency check failed. Next planned step is "${expectedStep}". Reference it explicitly before taking other actions.`,
+                `State consistency check failed. Next planned step is ${stepLabel}. Reference it explicitly and set stepId="${expectedStep.id}" before taking other actions.`,
                 'error',
             );
         context.markTrace('failed', 'Plan step order violation.', {
             errorCode: ACTION_ERROR_CODES.PLAN_STEP_OUT_OF_ORDER,
-            metadata: { expectedStep },
+            metadata: { expectedStepId: expectedStep.id, expectedStepLabel: expectedStep.label },
         });
         return {
             type: 'retry',
-            reason: `You attempted to skip the next plan step. Focus on "${expectedStep}" before moving on.`,
+            reason: `You attempted to skip the step ${stepLabel}. Focus on it before moving on.`,
             observation: {
                 status: 'error',
                 errorCode: ACTION_ERROR_CODES.PLAN_STEP_OUT_OF_ORDER,
-                outputs: { expectedStep },
+                outputs: { expectedStepId: expectedStep.id, expectedStepLabel: expectedStep.label },
             },
         };
     }
 
     const originalMarkTrace = context.markTrace;
     context.markTrace = (status, details, telemetry) => {
-        if (status === 'succeeded' && expectedStep) {
-            context.runtime.get().completePlannerPendingStep();
-        }
         if (status === 'succeeded') {
             planStepViolationCounts[runId] = 0;
+            if (expectedStep && (structuredMatch || fallbackMatch)) {
+                if (!structuredMatch) {
+                    context.runtime
+                        .get()
+                        .addProgress(
+                            `Step ${expectedStep.id} completed via fallback inference. Future actions must include stepId="${expectedStep.id}" to avoid guard warnings.`,
+                            'error',
+                        );
+                }
+                if (typeof context.runtime.get().completePlannerPendingStep === 'function') {
+                    context.runtime.get().completePlannerPendingStep();
+                }
+            }
         }
         originalMarkTrace(status, details, telemetry);
     };
@@ -813,8 +855,13 @@ const describeNoOpDomAction = (runtime: PlannerRuntime, domAction: DomAction): s
     return null;
 };
 
-const validateFilterArgsPayload = (query: string): string | null => {
+const validateFilterArgsPayload = (query?: string | null): string | null => {
+    if (typeof query !== 'string') return null;
     const trimmed = query.trim();
+    if (trimmed.length === 0) {
+        // Empty queries are allowed and mapped to "show all rows" fallback.
+        return null;
+    }
     if (trimmed.length < 3) {
         return 'Filter query must be at least 3 characters.';
     }
@@ -905,6 +952,17 @@ const validateAgentResponse = (
 
     for (let index = 0; index < response.actions.length; index++) {
         const action = response.actions[index];
+        const requiresStepId = action.responseType !== 'plan_state_update';
+        if (requiresStepId) {
+            if (typeof action.stepId !== 'string' || action.stepId.trim().length < 3) {
+                return buildPayloadValidationFailure(
+                    action,
+                    index,
+                    'stepId is missing or invalid.',
+                    'Every action (except plan_state_update) must include stepId matching the pending plan step id (>=3 characters, typically kebab-case).',
+                );
+            }
+        }
         switch (action.responseType) {
             case 'plan_state_update':
                 if (!hasPlanStatePayload(action)) {
@@ -980,7 +1038,7 @@ const validateAgentResponse = (
                     );
                 }
                 {
-                    const filterIssue = validateFilterArgsPayload(action.args!.query);
+                    const filterIssue = validateFilterArgsPayload(action.args?.query ?? null);
                     if (filterIssue) {
                         return buildPayloadValidationFailure(
                             action,
@@ -1146,7 +1204,11 @@ const runPlannerWorkflow = async (
                     runtime.userMessage,
                     '',
                     `SYSTEM NOTE: Continue executing your plan. Current goal: ${planState?.goal ?? 'N/A'}.`,
-                    planState?.nextSteps?.length ? `Remaining steps: ${planState.nextSteps.join(' | ')}` : null,
+                    planState?.nextSteps?.length
+                        ? `Remaining steps: ${planState.nextSteps
+                              .map(step => `[${step.id}] ${step.label}`)
+                              .join(' | ')}`
+                        : null,
                     planState?.blockedBy ? `Known blockers: ${planState.blockedBy}` : null,
                 ]
                     .filter(Boolean)
@@ -1236,7 +1298,14 @@ const dispatchAgentActions = async (
             runtime.get().updateAgentActionTrace(traceId, status, details, telemetry);
         };
         const normalizedStateTag = normalizeStateTag(action.stateTag);
-        const initialTelemetry = normalizedStateTag ? { metadata: { stateTag: normalizedStateTag } } : undefined;
+        const metadata: Record<string, any> = {};
+        if (normalizedStateTag) {
+            metadata.stateTag = normalizedStateTag;
+        }
+        if (typeof action.stepId === 'string' && action.stepId.trim().length > 0) {
+            metadata.stepId = action.stepId.trim();
+        }
+        const initialTelemetry = Object.keys(metadata).length > 0 ? { metadata } : undefined;
         markTrace('executing', undefined, initialTelemetry);
 
         const stepResult = await runActionThroughRegistry(action, runtime, remainingAutoRetries, markTrace);
@@ -1309,10 +1378,11 @@ const handlePlanStateUpdateAction: AgentActionExecutor = async ({ action, runtim
     }
 
     const payload = action.planState;
+    const normalizedSteps = normalizePlanStepsPayload(payload.nextSteps);
     const normalizedState: AgentPlanState = {
         goal: payload.goal.trim(),
         progress: payload.progress.trim(),
-        nextSteps: payload.nextSteps.map(step => step.trim()).filter(Boolean),
+        nextSteps: normalizedSteps,
         blockedBy: payload.blockedBy?.trim() || null,
         contextSummary: payload.contextSummary?.trim() || null,
         observationIds: Array.isArray(payload.observationIds)
@@ -1567,9 +1637,11 @@ const handleExecuteCodeAction: AgentActionExecutor = async ({ action, runtime, r
     }
 };
 
+const SHOW_ALL_FILTER_QUERY = 'show entire table';
+
 const handleFilterSpreadsheetAction: AgentActionExecutor = async ({ action, runtime, markTrace }) => {
     if (!hasFilterArgsPayload(action)) {
-        markTrace('failed', 'Missing filter query.', { errorCode: ACTION_ERROR_CODES.FILTER_QUERY_MISSING });
+        markTrace('failed', 'Missing filter payload.', { errorCode: ACTION_ERROR_CODES.FILTER_QUERY_MISSING });
         return {
             type: 'continue',
             observation: {
@@ -1579,18 +1651,29 @@ const handleFilterSpreadsheetAction: AgentActionExecutor = async ({ action, runt
         };
     }
 
-    runtime.get().addProgress('AI is filtering the data explorer based on your request.');
-    await runtime.get().handleNaturalLanguageQuery(action.args.query);
+    const rawQuery = typeof action.args?.query === 'string' ? action.args.query : '';
+    const trimmed = rawQuery.trim();
+    const isShowAll = trimmed.length === 0;
+    const finalQuery = isShowAll ? SHOW_ALL_FILTER_QUERY : rawQuery;
+
+    runtime
+        .get()
+        .addProgress(
+            isShowAll
+                ? 'Showing the full raw dataset for you. Apply a natural-language filter any time.'
+                : 'AI is filtering the data explorer based on your request.',
+        );
+    await runtime.get().handleNaturalLanguageQuery(finalQuery);
     runtime.set({ isSpreadsheetVisible: true });
     setTimeout(() => {
         document.getElementById('raw-data-explorer')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }, 100);
-    markTrace('succeeded', `Filter query: ${action.args.query}`);
+    markTrace('succeeded', `Filter query: ${finalQuery}`);
     return {
         type: 'continue',
         observation: {
             status: 'success',
-            outputs: { query: action.args.query },
+            outputs: { query: finalQuery, showAll: isShowAll },
             uiDelta: 'filter_spreadsheet',
         },
     };

@@ -22,6 +22,7 @@ import type {
     AgentActionTrace,
     AgentObservation,
     AgentPlanState,
+    AgentPlanStep,
     AgentPhase,
 } from '../types';
 
@@ -135,7 +136,7 @@ export interface StoreActions {
     resetPlannerObservations: () => void;
     updatePlannerPlanState: (state: AgentPlanState) => void;
     clearPlannerPlanState: () => void;
-    setPlannerPendingSteps: (steps: string[]) => void;
+    setPlannerPendingSteps: (steps: AgentPlanStep[]) => void;
     completePlannerPendingStep: () => void;
     queuePendingDataTransform: (preview: PendingDataTransform) => void;
     confirmPendingDataTransform: () => Promise<void>;

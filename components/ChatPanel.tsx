@@ -848,7 +848,10 @@ const PlannerGoalTracker = React.memo(() => {
                     <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">Next steps</p>
                     <ol className="list-decimal list-inside text-sm text-slate-700 space-y-0.5">
                         {nextSteps.map(step => (
-                            <li key={step}>{step}</li>
+                            <li key={step.id}>
+                                <span className="font-mono text-[11px] text-slate-500 mr-1">[{step.id}]</span>
+                                {step.label}
+                            </li>
                         ))}
                     </ol>
                 </div>

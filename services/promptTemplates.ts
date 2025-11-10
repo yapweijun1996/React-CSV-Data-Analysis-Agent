@@ -259,12 +259,17 @@ export const createChatPrompt = (
             .join('\n')
         : 'No runtime observations captured yet for this session.';
     const planStateSummary = planState
-        ? `Goal: ${planState.goal}\nContext: ${planState.contextSummary || '—'}\nProgress: ${planState.progress}\nNext Steps:\n${planState.nextSteps.map((step, idx) => `  ${idx + 1}. ${step}`).join('\n')}\nBlocked By: ${planState.blockedBy || 'Nothing reported.'}\nConfidence: ${typeof planState.confidence === 'number' ? planState.confidence.toFixed(2) : 'Not provided'}\nReferenced Observations: ${(planState.observationIds && planState.observationIds.length > 0) ? planState.observationIds.join(', ') : 'None specified.'}`
+        ? `Goal: ${planState.goal}\nContext: ${planState.contextSummary || '—'}\nProgress: ${planState.progress}\nNext Steps:\n${planState.nextSteps.map((step, idx) => `  ${idx + 1}. [${step.id}] ${step.label}`).join('\n')}\nBlocked By: ${planState.blockedBy || 'Nothing reported.'}\nConfidence: ${typeof planState.confidence === 'number' ? planState.confidence.toFixed(2) : 'Not provided'}\nReferenced Observations: ${(planState.observationIds && planState.observationIds.length > 0) ? planState.observationIds.join(', ') : 'None specified.'}`
         : 'No structured goal has been recorded yet. Your first action must be a plan_state_update that defines a clear goal, ties it to current data, and lists concrete next steps.';
 
     return `
         You are an expert data analyst and business strategist, required to operate using a Reason-Act (ReAct) framework. For every action you take, you must first explain your reasoning in the 'thought' field, and then define the action itself. Your goal is to respond to the user by providing insightful analysis and breaking down your response into a sequence of these thought-action pairs. Your final conversational responses should be in ${language}.
         
+        **PLAN TRACKER PROTOCOL (Follow exactly):**
+        - Every \`plan_state_update\` action MUST list \`nextSteps\` as objects with \`id\` (kebab-case, >=3 characters) and \`label\` (clear description).
+        - For EVERY other action (text_response, dom_action, execute_js_code, etc.) you MUST set \`stepId\` to the \`id\` of the plan step you are executing. If you need a brand-new step, emit a new plan_state_update first.
+        - When you complete a step, your thought must explicitly mention it, and you should remove or reorder steps in the following plan_state_update so the UI stays in sync.
+
         **CORE ANALYSIS BRIEFING (Your Internal Summary):**
         ---
         ${aiCoreAnalysisSummary || "No core analysis has been performed yet."}
@@ -319,7 +324,7 @@ export const createChatPrompt = (
             - \`toggleLegendLabel\`: Simulate clicking a legend label (\`label\` must match the on-screen text exactly).
             - \`exportCard\`: Trigger the export menu (\`format\` = 'png' | 'csv' | 'html').
         4.  **execute_js_code**: For PERMANENT data transformations (creating new columns, deleting rows). This action WILL modify the main dataset and cause ALL charts to regenerate. Whenever you emit this action you MUST supply a fully-formed JavaScript function body (no placeholders, no empty strings). Use the provided helpers—\`_util.parseNumber\`, \`_util.splitNumericString\`, \`_util.groupBy\`, \`_util.pivot\`, \`_util.join\`, and \`_util.rollingWindow\`—instead of writing ad-hoc code for these operations. If you cannot write the code confidently, do NOT emit this action—explain the limitation instead. Use it for requests like "Remove all data from the USA".
-        5.  **filter_spreadsheet**: For TEMPORARY, exploratory filtering of the Raw Data Explorer view. This action does NOT modify the main dataset and does NOT affect the analysis cards. Use it for requests like "show me record ORD1001" or "find all entries for Hannah". If the user expects the final chart to stay filtered, you must encode that scope inside \`plan.rowFilter\` (or permanently transform the data) instead of relying on this temporary tool.
+        5.  **filter_spreadsheet**: For TEMPORARY, exploratory filtering of the Raw Data Explorer view. This action does NOT modify the main dataset and does NOT affect the analysis cards. Use it for requests like "show me record ORD1001" or "find all entries for Hannah". If the user expects the final chart to stay filtered, you must encode that scope inside \`plan.rowFilter\` (or permanently transform the data) instead of relying on this temporary tool. If the user simply says "show the raw data" without a specific condition, set \`args.query\` to \`"show entire table"\` (or leave it blank) so the UI will reveal every row.
         6.  **clarification_request**: To ask the user for more information when their request is ambiguous.
             - **Use Case**: The user says "show sales" but there are multiple sales-related columns ('Sales_USD', 'Sales_Units'). DO NOT GUESS. Ask for clarification.
             - **Auto-Resolve Rule**: If there is only ONE reasonable column/dimension that fits the request (e.g., the dataset only contains a single revenue column), you must confidently pick it yourself and continue without asking the user.

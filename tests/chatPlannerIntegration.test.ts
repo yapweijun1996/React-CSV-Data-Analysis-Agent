@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { runPlannerWorkflow } from '../store/slices/chatSlice';
-import type { AiChatResponse, ChatMessage, ColumnProfile, CsvData, DomAction, AgentValidationEvent } from '../types';
+import type {
+    AiChatResponse,
+    AgentPlanStep,
+    ChatMessage,
+    ColumnProfile,
+    CsvData,
+    DomAction,
+    AgentValidationEvent,
+} from '../types';
 
 if (typeof globalThis.document === 'undefined') {
     const noop = () => undefined;
@@ -17,7 +25,7 @@ type PlannerStore = {
     chatHistory: ChatMessage[];
     agentActionTraces: PlannerTrace[];
     plannerSession: { planState: any; observations: any[] };
-    plannerPendingSteps: string[];
+    plannerPendingSteps: AgentPlanStep[];
     progressLog: string[];
     pendingClarifications: any[];
     activeClarificationId: string | null;
@@ -30,6 +38,8 @@ type PlannerStore = {
     lastFilterQuery: string | null;
     validationEvents: AgentValidationEvent[];
 };
+
+const DEFAULT_TEST_TIMEOUT_MS = Number(process.env.PLANNER_TEST_TIMEOUT_MS ?? '20000');
 
 const defaultStore = (): PlannerStore => ({
     chatHistory: [],
@@ -152,7 +162,7 @@ const createPlannerHarness = (overrides: Partial<PlannerStore> = {}) => {
                 (trace as any).metadata = { ...(trace as any).metadata, ...metadata };
             }
         },
-        setPlannerPendingSteps: (steps: string[]) => {
+        setPlannerPendingSteps: (steps: AgentPlanStep[]) => {
             store.plannerPendingSteps = steps;
         },
         completePlannerPendingStep: () => {
@@ -217,15 +227,43 @@ const buildMultiResponseContext = (responses: AiChatResponse[]) => {
     };
 };
 
-const test = async (name: string, fn: () => Promise<void>) => {
+const test = async (name: string, fn: () => Promise<void>, timeoutMs = DEFAULT_TEST_TIMEOUT_MS) => {
+    const startedAt = Date.now();
+    console.log(`⏳ ${name}`);
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => {
+            reject(new Error(`Test "${name}" timed out after ${timeoutMs}ms. Set PLANNER_TEST_TIMEOUT_MS to override.`));
+        }, timeoutMs);
+    });
     try {
-        await fn();
-        console.log(`✅ ${name}`);
+        await Promise.race([fn(), timeoutPromise]);
+        const duration = Date.now() - startedAt;
+        console.log(`✅ ${name} (${duration}ms)`);
     } catch (error) {
-        console.error(`❌ ${name}`);
+        const duration = Date.now() - startedAt;
+        console.error(`❌ ${name} (${duration}ms)`);
         throw error;
+    } finally {
+        if (timeoutId) clearTimeout(timeoutId);
     }
 };
+
+const buildSteps = (...labels: string[]): AgentPlanStep[] =>
+    labels.map((label, idx) => {
+        const normalized = label
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-+|-+$/g, '');
+        return {
+            id: normalized || `step-${idx + 1}`,
+            label,
+        };
+    });
+
+const primaryPlanSteps = buildSteps('Draft cohort analysis', 'Run pipeline forecast');
+const FIRST_STEP_ID = primaryPlanSteps[0].id;
+const SECOND_STEP_ID = primaryPlanSteps[1].id;
 
 const planStateAction = {
     responseType: 'plan_state_update' as const,
@@ -234,7 +272,7 @@ const planStateAction = {
         goal: 'Increase ARR by 10%',
         contextSummary: 'Focus on enterprise deals',
         progress: 'Outlined metrics',
-        nextSteps: ['Draft cohort analysis', 'Run pipeline forecast'],
+        nextSteps: primaryPlanSteps,
         blockedBy: null,
         observationIds: ['obs-1'],
         confidence: 0.66,
@@ -247,6 +285,7 @@ await test('runPlannerWorkflow executes plan_state then reply', async () => {
         responseType: 'text_response' as const,
         thought: 'Acknowledge plan',
         text: 'Plan noted. Starting with cohort analysis.',
+        stepId: FIRST_STEP_ID,
     };
     const fakeResponse: AiChatResponse = {
         actions: [planStateAction, textResponseAction],
@@ -275,6 +314,7 @@ await test('missing plan_state_update triggers validation retry', async () => {
         responseType: 'text_response' as const,
         thought: 'Jump straight to reply',
         text: 'On it.',
+        stepId: FIRST_STEP_ID,
     };
     const correctedResponse: AiChatResponse = {
         actions: [planStateAction, textResponseAction],
@@ -308,6 +348,7 @@ await test('invalid dom_action payload triggers validation telemetry before retr
     const invalidDomAction = {
         responseType: 'dom_action' as const,
         thought: 'Highlight the chart',
+        stepId: FIRST_STEP_ID,
         domAction: {
             toolName: 'highlightCard' as const,
             args: { cardId: '' },
@@ -316,6 +357,7 @@ await test('invalid dom_action payload triggers validation telemetry before retr
     const validDomAction = {
         responseType: 'dom_action' as const,
         thought: 'Highlight the chart',
+        stepId: FIRST_STEP_ID,
         domAction: {
             toolName: 'highlightCard' as const,
             args: { cardId: 'card-123' },
@@ -349,11 +391,13 @@ await test('too-short filter query triggers validation retry', async () => {
         responseType: 'filter_spreadsheet' as const,
         thought: 'Need to scan entries',
         args: { query: 'hi' },
+        stepId: FIRST_STEP_ID,
     };
     const validFilterAction = {
         responseType: 'filter_spreadsheet' as const,
         thought: 'Zoom into Hannah orders',
         args: { query: 'show orders for Hannah in March' },
+        stepId: FIRST_STEP_ID,
     };
 
     const { runtime, store } = createPlannerHarness();
@@ -387,6 +431,7 @@ await test('execute_js_code without return statement is rejected before retry', 
             explanation: 'Scale totals',
             jsFunctionBody: 'data.map(row => ({ ...row, Revenue_total: row.Revenue_total * 1.1 }));',
         },
+        stepId: FIRST_STEP_ID,
     };
     const validTransformAction = {
         responseType: 'execute_js_code' as const,
@@ -396,6 +441,7 @@ await test('execute_js_code without return statement is rejected before retry', 
             jsFunctionBody:
                 'return data.map(row => ({ ...row, Revenue_total: Number(row.Revenue_total) * 1.1 }));',
         },
+        stepId: FIRST_STEP_ID,
     };
 
     const { runtime, store } = createPlannerHarness();
@@ -425,6 +471,7 @@ await test('runPlannerWorkflow halts when clarification is required', async () =
     const clarificationAction = {
         responseType: 'clarification_request' as const,
         thought: 'Need target metric',
+        stepId: FIRST_STEP_ID,
         clarification: {
             question: 'Which revenue metric should I use?',
             options: [
@@ -492,6 +539,7 @@ await test('clarification resolution allows planner to continue with plan execut
     const planCreationAction = {
         responseType: 'plan_creation' as const,
         thought: 'Execute requested chart',
+        stepId: FIRST_STEP_ID,
         plan: {
             chartType: 'bar',
             title: 'Revenue trend',
@@ -505,6 +553,7 @@ await test('clarification resolution allows planner to continue with plan execut
         responseType: 'text_response' as const,
         thought: 'Explain result',
         text: 'Created the revenue chart.',
+        stepId: SECOND_STEP_ID,
     };
 
     await runPlannerWorkflow(
@@ -526,6 +575,7 @@ await test('single-option clarification auto-resolves and continues immediately'
     const clarificationAction = {
         responseType: 'clarification_request' as const,
         thought: 'Need metric column',
+        stepId: FIRST_STEP_ID,
         clarification: {
             question: 'Confirm revenue metric?',
             options: [
@@ -544,6 +594,7 @@ await test('single-option clarification auto-resolves and continues immediately'
     const planCreationAction = {
         responseType: 'plan_creation' as const,
         thought: 'Execute after auto clarification',
+        stepId: SECOND_STEP_ID,
         plan: {
             chartType: 'bar',
             title: 'Revenue forecast',
@@ -571,6 +622,9 @@ await test('single-option clarification auto-resolves and continues immediately'
 });
 
 await test('planner continues when plan_state next steps remain', async () => {
+    const continuationPlanSteps = buildSteps('Generate continuation chart');
+    const followUpSteps = buildSteps('Build continuation chart', 'Finalize summary');
+
     const continuationPlanState = {
         responseType: 'plan_state_update' as const,
         thought: 'Need to keep going',
@@ -578,7 +632,7 @@ await test('planner continues when plan_state next steps remain', async () => {
             goal: 'Deliver continuation chart',
             contextSummary: 'User wants more detail',
             progress: 'Outlined the approach',
-            nextSteps: ['Generate continuation chart'],
+            nextSteps: continuationPlanSteps,
             blockedBy: null,
             observationIds: [],
             confidence: 0.7,
@@ -593,7 +647,7 @@ await test('planner continues when plan_state next steps remain', async () => {
             goal: 'Deliver continuation chart',
             contextSummary: 'User wants more detail',
             progress: 'Running the requested chart',
-            nextSteps: ['Finalize summary'],
+            nextSteps: followUpSteps,
             blockedBy: null,
             observationIds: [],
             confidence: 0.8,
@@ -604,6 +658,7 @@ await test('planner continues when plan_state next steps remain', async () => {
     const planCreationAction = {
         responseType: 'plan_creation' as const,
         thought: 'Build continuation chart',
+        stepId: followUpSteps[0].id,
         plan: {
             chartType: 'bar',
             title: 'Continuation Chart',
@@ -646,7 +701,7 @@ await test('planner halts continuation when stateTag is blocked', async () => {
             goal: 'Await clarification',
             contextSummary: 'Need user to confirm column',
             progress: 'Asked user for more info',
-            nextSteps: ['Resume plan after user replies'],
+            nextSteps: buildSteps('Resume plan after user replies'),
             blockedBy: 'Clarification required',
             observationIds: [],
             confidence: 0.4,
@@ -673,6 +728,7 @@ await test('execute_js_code failure triggers auto-retry flow', async () => {
     const failingTransformAction = {
         responseType: 'execute_js_code' as const,
         thought: 'Transform dataset',
+        stepId: FIRST_STEP_ID,
         code: {
             explanation: 'Attempt transform',
             jsFunctionBody: 'return data.map(row => { throw new Error("Boom"); });',
@@ -682,6 +738,7 @@ await test('execute_js_code failure triggers auto-retry flow', async () => {
         responseType: 'text_response' as const,
         thought: 'Explain retry result',
         text: 'Transformation failed, so I shared the error details.',
+        stepId: SECOND_STEP_ID,
     };
 
     const responseSequence: AiChatResponse[] = [
@@ -720,6 +777,7 @@ await test('execute_js_code success queues pending data transform', async () => 
     const transformAction = {
         responseType: 'execute_js_code' as const,
         thought: 'Normalize revenue columns',
+        stepId: FIRST_STEP_ID,
         code: {
             explanation: 'Trim whitespace from columns',
             jsFunctionBody: 'return data.map(row => ({ ...row, Revenue_total: Number(row.Revenue_total) * 1.05 }));',
@@ -729,6 +787,7 @@ await test('execute_js_code success queues pending data transform', async () => 
         responseType: 'text_response' as const,
         thought: 'Inform user of pending transform',
         text: 'I staged a data cleanup. Please review before applying.',
+        stepId: SECOND_STEP_ID,
     };
 
     const { runtime, store } = createPlannerHarness();
@@ -749,6 +808,7 @@ await test('approving pending transform updates dataset before next plan', async
     const transformAction = {
         responseType: 'execute_js_code' as const,
         thought: 'Scale revenue for inflation',
+        stepId: FIRST_STEP_ID,
         code: {
             explanation: 'Increase revenue totals by 5%',
             jsFunctionBody: 'return data.map(row => ({ ...row, Revenue_total: Number(row.Revenue_total) * 1.05 }));',
@@ -757,6 +817,7 @@ await test('approving pending transform updates dataset before next plan', async
     const planCreationAction = {
         responseType: 'plan_creation' as const,
         thought: 'Build chart using adjusted revenue',
+        stepId: SECOND_STEP_ID,
         plan: {
             chartType: 'bar',
             title: 'Adjusted Revenue Trend',
@@ -797,6 +858,7 @@ await test('discarding pending transform keeps dataset unchanged and planner con
     const transformAction = {
         responseType: 'execute_js_code' as const,
         thought: 'Attempt risky transform',
+        stepId: FIRST_STEP_ID,
         code: {
             explanation: 'Normalize totals',
             jsFunctionBody: 'return data.map(row => ({ ...row, Revenue_total: Number(row.Revenue_total) * 2 }));',
@@ -805,6 +867,7 @@ await test('discarding pending transform keeps dataset unchanged and planner con
     const planCreationAction = {
         responseType: 'plan_creation' as const,
         thought: 'Proceed without prior transform',
+        stepId: SECOND_STEP_ID,
         plan: {
             chartType: 'bar',
             title: 'Original Revenue Trend',
