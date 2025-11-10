@@ -16,6 +16,7 @@ import type {
     ClarificationRequestPayload,
     ClarificationStatus,
     CsvData,
+    CsvRow,
     DomAction,
     MemoryReference,
     AgentActionStatus,
@@ -2735,6 +2736,18 @@ const handleExecuteCodeAction: AgentActionExecutor = async ({ action, runtime, r
     }
 
     try {
+        const extractColumnNames = (profiles: { name: string }[], sampleRows: CsvRow[]): string[] => {
+            if (Array.isArray(profiles) && profiles.length > 0) {
+                return profiles.map(profile => profile.name);
+            }
+            const sampleRow = sampleRows.find(row => row && typeof row === 'object');
+            return sampleRow ? Object.keys(sampleRow) : [];
+        };
+        const formatColumnPreview = (columns: string[]): string => {
+            if (!columns || columns.length === 0) return '(none)';
+            const preview = columns.slice(0, 8).join(', ');
+            return columns.length > 8 ? `${preview}, …` : preview;
+        };
         const aliasMap = runtime.get().columnAliasMap;
         const dataForTransform = cloneRowsWithAliases(dataset.data, aliasMap);
         const transformResult = executeJavaScriptDataTransform(dataForTransform, action.code.jsFunctionBody.trim());
@@ -2742,6 +2755,18 @@ const handleExecuteCodeAction: AgentActionExecutor = async ({ action, runtime, r
         const newData: CsvData = { ...dataset, data: normalizedRows };
         const updatedProfiles = profileData(newData.data);
         const updatedAliasMap = buildColumnAliasMap(updatedProfiles.map(p => p.name));
+        const beforeColumns = extractColumnNames(runtime.get().columnProfiles, dataset.data);
+        const afterColumns = extractColumnNames(updatedProfiles, normalizedRows);
+        const removedColumns = beforeColumns.filter(name => !afterColumns.includes(name));
+        const addedColumns = afterColumns.filter(name => !beforeColumns.includes(name));
+        const columnDiffSummary = [
+            `Before (${beforeColumns.length}): ${formatColumnPreview(beforeColumns)}`,
+            `After (${afterColumns.length}): ${formatColumnPreview(afterColumns)}`,
+            removedColumns.length ? `Removed: ${formatColumnPreview(removedColumns)}` : null,
+            addedColumns.length ? `Added: ${formatColumnPreview(addedColumns)}` : null,
+        ]
+            .filter(Boolean)
+            .join('\n');
         const { rowsBefore, rowsAfter, removedRows, addedRows, modifiedRows } = transformResult.meta;
         const summaryParts = [
             `${rowsBefore} → ${rowsAfter} rows`,
@@ -2762,10 +2787,12 @@ const handleExecuteCodeAction: AgentActionExecutor = async ({ action, runtime, r
             nextAliasMap: updatedAliasMap,
             sourceCode: action.code.jsFunctionBody.trim(),
             createdAt: new Date().toISOString(),
+            beforeColumns,
+            afterColumns,
         });
         const aiMessage: ChatMessage = {
             sender: 'ai',
-            text: `I drafted a data transformation (${summaryDescription}). Please review the banner above the dashboard to confirm or discard it.`,
+            text: `I drafted a data transformation (${summaryDescription}). Please review the banner above the dashboard to confirm or discard it.\n\n${columnDiffSummary}`,
             timestamp: new Date(),
             type: 'ai_message',
             cardId: action.cardId,

@@ -74,6 +74,8 @@ export interface PendingDataTransform {
     nextAliasMap: Record<string, string>;
     sourceCode?: string;
     createdAt: string;
+    beforeColumns?: string[];
+    afterColumns?: string[];
 }
 
 export interface AppliedDataTransformRecord {

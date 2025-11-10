@@ -614,6 +614,38 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             });
             get().addProgress('Applied the AI data transformation after confirmation.');
             await get().regenerateAnalyses(pending.nextData);
+            const formatColumnPreview = (columns: string[]): string => {
+                if (!columns || columns.length === 0) return '(none)';
+                const preview = columns.slice(0, 8).join(', ');
+                return columns.length > 8 ? `${preview}, …` : preview;
+            };
+            const extractColumns = (profiles: ColumnProfile[], fallbackRows: CsvRow[] | undefined): string[] => {
+                if (profiles && profiles.length > 0) return profiles.map(profile => profile.name);
+                const sampleRow = fallbackRows?.find(row => row && typeof row === 'object');
+                return sampleRow ? Object.keys(sampleRow) : [];
+            };
+            const beforeColumns =
+                pending.beforeColumns ?? extractColumns(previousProfiles, previousData?.data ?? undefined);
+            const afterColumns = pending.afterColumns ?? pending.nextColumnProfiles.map(profile => profile.name);
+            const removedColumns = beforeColumns.filter(name => !afterColumns.includes(name));
+            const addedColumns = afterColumns.filter(name => !beforeColumns.includes(name));
+            const columnDiffSummary = [
+                `Before (${beforeColumns.length}): ${formatColumnPreview(beforeColumns)}`,
+                `After (${afterColumns.length}): ${formatColumnPreview(afterColumns)}`,
+                removedColumns.length ? `Removed: ${formatColumnPreview(removedColumns)}` : null,
+                addedColumns.length ? `Added: ${formatColumnPreview(addedColumns)}` : null,
+            ]
+                .filter(Boolean)
+                .join('\n');
+            const aiMessage: ChatMessage = {
+                sender: 'ai',
+                text: `Applied transform "${pending.summary}".\n${columnDiffSummary}`,
+                timestamp: new Date(),
+                type: 'ai_message',
+            };
+            set(prev => ({
+                chatHistory: [...prev.chatHistory, aiMessage],
+            }));
         },
         discardPendingDataTransform: () => {
             if (!get().pendingDataTransform) {
