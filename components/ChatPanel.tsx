@@ -686,7 +686,7 @@ export const ChatPanel: React.FC = () => {
                                     onClick={() => handleShowCardFromChat(cardId)}
                                     className="mt-2 text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-md hover:bg-blue-200 transition-colors w-full text-left font-medium"
                                 >
-                                    → Show Related Card
+                                    → Show Related Card ({cardId})
                                 </button>
                             ))}
                          {msg.cta?.type === 'open_data_preview' && (
