@@ -3,7 +3,7 @@ import { vectorStore } from '../../services/vectorStore';
 import { COLUMN_TARGET_PROPERTIES, columnHasUsableData, resolveColumnChoice } from '../../utils/clarification';
 import { applyFriendlyPlanCopy } from '../../utils/planCopy';
 import { runWithBusyState } from '../../utils/runWithBusy';
-import { inferGroupByColumn } from '../../utils/planValidation';
+import { inferGroupByColumn } from '../../utils/groupByInference';
 import type { AnalysisPlan, ChatMessage, ClarificationOption } from '../../types';
 import type { AppStore, ChatSlice } from '../appStoreTypes';
 import { AgentWorker, ChatSliceDependencies } from '../../services/agent/AgentWorker';

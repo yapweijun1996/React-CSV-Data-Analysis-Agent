@@ -4,6 +4,8 @@ import { ProgressMessage, ChatMessage, AgentActionTrace, AgentObservation, Agent
 import { useAppStore } from '../store/useAppStore';
 import { useAutosizeTextArea } from '../hooks/useAutosizeTextArea';
 import { getUiVisibilityConfig } from '../services/bootstrapConfig';
+import { getGroupableColumnCandidates } from '../utils/groupByInference';
+import type { GroupByCandidate } from '../utils/groupByInference';
 
 const HideIcon: React.FC = () => (
     <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -193,6 +195,8 @@ const useChatCore = () =>
             activeClarificationId: state.activeClarificationId,
             handleClarificationResponse: state.handleClarificationResponse,
             skipClarification: state.skipClarification,
+            columnProfiles: state.columnProfiles,
+            csvData: state.csvData,
             focusDataPreview: state.focusDataPreview,
             isCancellationRequested: state.isCancellationRequested,
             chatMemoryPreview: state.chatMemoryPreview,
@@ -223,6 +227,8 @@ export const ChatPanel: React.FC = () => {
         activeClarificationId,
         handleClarificationResponse,
         skipClarification,
+        columnProfiles,
+        csvData,
         focusDataPreview,
         isCancellationRequested,
         chatMemoryPreview,
@@ -234,6 +240,7 @@ export const ChatPanel: React.FC = () => {
     } = core;
 
     const [input, setInput] = useState('');
+    const [manualGroupSelections, setManualGroupSelections] = useState<Record<string, string>>({});
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     useAutosizeTextArea(textareaRef, input, { maxHeight: MAX_CHAT_INPUT_HEIGHT });
@@ -242,6 +249,21 @@ export const ChatPanel: React.FC = () => {
     const timeline = useMemo(
         () => [...progressMessages, ...chatHistory].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime()),
         [progressMessages, chatHistory],
+    );
+    const datasetRows = csvData?.data ?? [];
+    const manualGroupCandidates: GroupByCandidate[] = useMemo(
+        () => {
+            if (!columnProfiles || columnProfiles.length === 0) return [];
+            const ranked = getGroupableColumnCandidates(columnProfiles, datasetRows);
+            if (ranked.length > 0) return ranked;
+            return columnProfiles
+                .filter(profile => ['categorical', 'date', 'time'].includes(profile.type))
+                .map(profile => ({
+                    profile,
+                    uniqueValues: typeof profile.uniqueValues === 'number' ? profile.uniqueValues : 0,
+                }));
+        },
+        [columnProfiles, datasetRows],
     );
     
     const selectedMemoryCount = chatMemoryPreview.filter(mem => !chatMemoryExclusions.includes(mem.id)).length;
@@ -284,6 +306,19 @@ export const ChatPanel: React.FC = () => {
             return;
         }
         scrollToFileUploadPanel();
+    };
+
+    const updateManualGroupingChoice = (clarificationId: string, columnName: string) => {
+        setManualGroupSelections(prev => ({ ...prev, [clarificationId]: columnName }));
+    };
+
+    const submitManualGroupingChoice = (clarificationId: string) => {
+        const columnName = manualGroupSelections[clarificationId];
+        if (!columnName) return;
+        handleClarificationResponse(clarificationId, {
+            label: `Manual grouping: ${columnName}`,
+            value: columnName,
+        });
     };
 
     const helperDescriptor: HelperDescriptor = (() => {
@@ -439,6 +474,9 @@ export const ChatPanel: React.FC = () => {
                 const isProcessing = status === 'resolving';
                 const isActive = (isAwaiting || isProcessing) && linkedClarification?.id === activeClarificationId;
                 const canSkip = linkedClarification ? status === 'pending' : false;
+                const isGroupByClarification = msg.clarificationRequest.targetProperty === 'groupByColumn';
+                const manualGroupSelection = manualGroupSelections[msg.clarificationRequest.id] ?? '';
+                const canUseManualGroupFallback = isGroupByClarification && manualGroupCandidates.length > 0;
                 const statusClassMap: Record<string, string> = {
                     pending: isActive ? 'bg-blue-100 text-blue-800 border-blue-200' : 'bg-slate-100 text-slate-600 border-slate-200',
                     resolving: 'bg-amber-100 text-amber-800 border-amber-200',
@@ -489,6 +527,40 @@ export const ChatPanel: React.FC = () => {
                                 </button>
                             ))}
                         </div>
+                        {canUseManualGroupFallback && (
+                            <div className="mt-3 border-t border-slate-200 pt-3">
+                                <p className="text-xs text-slate-500 mb-2">
+                                    🔁 找不到合適欄位？請手動選擇分組欄位 / Pick a grouping column manually
+                                </p>
+                                <div className="flex flex-col sm:flex-row gap-2">
+                                    <select
+                                        className="flex-1 border border-slate-200 rounded-md px-3 py-2 text-sm text-slate-700 bg-white"
+                                        value={manualGroupSelection}
+                                        onChange={event =>
+                                            updateManualGroupingChoice(msg.clarificationRequest.id, event.target.value)
+                                        }
+                                        disabled={!isAwaiting || isProcessing}
+                                    >
+                                        <option value="">請選擇分組欄位 / Choose a grouping column…</option>
+                                        {manualGroupCandidates.map(candidate => (
+                                            <option key={`${msg.clarificationRequest.id}-${candidate.profile.name}`} value={candidate.profile.name}>
+                                                {candidate.profile.name}
+                                                {candidate.uniqueValues
+                                                    ? ` (${candidate.uniqueValues} distinct)`
+                                                    : ' (distinct unknown)'}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    <button
+                                        onClick={() => submitManualGroupingChoice(msg.clarificationRequest.id)}
+                                        disabled={!isAwaiting || isBusy || !manualGroupSelection}
+                                        className="text-sm px-4 py-2 rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                        使用此欄位 / Use column
+                                    </button>
+                                </div>
+                            </div>
+                        )}
                         <div className="flex justify-end mt-3">
                             <button
                                 onClick={() => skipClarification(msg.clarificationRequest.id)}
