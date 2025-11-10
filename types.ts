@@ -144,6 +144,8 @@ export type AgentIntent =
     | 'clarification'
     | 'chart_request'
     | 'greeting'
+    | 'smalltalk'
+    | 'ask_user_choice'
     | 'unknown';
 
 export interface RequiredToolHint {
@@ -179,7 +181,7 @@ export interface AgentValidationEvent {
     retryInstruction?: string;
 }
 
-export type AgentPlanStepStatus = 'ready' | 'in_progress' | 'done';
+export type AgentPlanStepStatus = 'ready' | 'in_progress' | 'done' | 'waiting_user';
 
 export interface AgentPlanStep {
     id: string;
@@ -289,6 +291,7 @@ export interface ChatMessage {
         helperText?: string;
     };
     usedMemories?: MemoryReference[]; // Snapshot of memories that informed this response
+    meta?: AgentActionMeta;
 }
 
 export interface Settings {
@@ -336,6 +339,8 @@ export interface AppState {
     plannerPendingSteps: AgentPlanStep[];
     agentPromptMetrics: AgentPromptMetric[];
     plannerDatasetHash: string | null;
+    agentAwaitingUserInput: boolean;
+    agentAwaitingPromptId: string | null;
 }
 
 export interface DomActionTarget {
@@ -359,6 +364,13 @@ export interface DomAction {
     args: { [key: string]: any };
 }
 
+export interface AgentActionMeta {
+    awaitUser?: boolean;
+    haltAfter?: boolean;
+    resumePlanner?: boolean;
+    promptId?: string;
+}
+
 export interface AiAction {
   type?: AgentActionType;
   thought?: string; // The AI's reasoning for this action (ReAct pattern).
@@ -369,6 +381,7 @@ export interface AiAction {
   text?: string;
   cardId?: string; // For text_response, the ID of the card being discussed
   domAction?: DomAction;
+  meta?: AgentActionMeta;
   code?: {
     explanation: string;
     jsFunctionBody: string;

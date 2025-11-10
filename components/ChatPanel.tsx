@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { shallow } from 'zustand/shallow';
 import { ProgressMessage, ChatMessage, AgentActionTrace, AgentObservation, AgentObservationStatus, AgentPhaseState } from '../types';
 import { useAppStore } from '../store/useAppStore';
@@ -6,6 +6,7 @@ import { useAutosizeTextArea } from '../hooks/useAutosizeTextArea';
 import { getUiVisibilityConfig } from '../services/bootstrapConfig';
 import { getGroupableColumnCandidates } from '../utils/groupByInference';
 import type { GroupByCandidate } from '../utils/groupByInference';
+import QuestionCard from './QuestionCard';
 
 const HideIcon: React.FC = () => (
     <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -205,6 +206,8 @@ const useChatCore = () =>
             toggleMemoryPreviewSelection: state.toggleMemoryPreviewSelection,
             isMemoryPreviewLoading: state.isMemoryPreviewLoading,
             agentPhase: state.agentPhase,
+            agentAwaitingUserInput: state.agentAwaitingUserInput,
+            agentAwaitingPromptId: state.agentAwaitingPromptId,
         }),
         shallow,
     );
@@ -237,6 +240,8 @@ export const ChatPanel: React.FC = () => {
         toggleMemoryPreviewSelection,
         isMemoryPreviewLoading,
         agentPhase,
+        agentAwaitingUserInput,
+        agentAwaitingPromptId,
     } = core;
 
     const [input, setInput] = useState('');
@@ -247,8 +252,8 @@ export const ChatPanel: React.FC = () => {
 
     const hasAwaitingClarification = pendingClarifications.some(req => req.status === 'pending');
     const timeline = useMemo(
-        () => [...progressMessages, ...chatHistory].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime()),
-        [progressMessages, chatHistory],
+        () => [...chatHistory].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime()),
+        [chatHistory],
     );
     const datasetRows = csvData?.data ?? [];
     const manualGroupCandidates: GroupByCandidate[] = useMemo(
@@ -264,6 +269,15 @@ export const ChatPanel: React.FC = () => {
                 }));
         },
         [columnProfiles, datasetRows],
+    );
+    const handlePromptResponse = useCallback(
+        (promptId: string, value: string) => {
+            const trimmed = value.trim();
+            if (!trimmed || isBusy || !isApiKeySet) return;
+            const payload = promptId ? `[prompt:${promptId}] ${trimmed}` : trimmed;
+            handleChatMessage(payload);
+        },
+        [handleChatMessage, isBusy, isApiKeySet],
     );
     
     const selectedMemoryCount = chatMemoryPreview.filter(mem => !chatMemoryExclusions.includes(mem.id)).length;
@@ -355,6 +369,14 @@ export const ChatPanel: React.FC = () => {
                           },
                       ]
                     : undefined,
+            };
+        }
+        if (agentAwaitingUserInput) {
+            return {
+                tone: 'info',
+                icon: '✋',
+                message: 'Waiting on your response to continue.',
+                helperText: 'Use the question card above to answer so the agent can resume.',
             };
         }
         if (continuationMatch) {
@@ -454,6 +476,7 @@ export const ChatPanel: React.FC = () => {
     const getPlaceholder = () => {
         if (!isApiKeySet) return "Set API Key in settings to chat";
         if (hasAwaitingClarification) return "Please resolve or skip the clarification above";
+        if (agentAwaitingUserInput) return "Answer the AI question above to resume";
         switch (currentView) {
             case 'analysis_dashboard':
                 return "New analysis or transformation?";
@@ -672,17 +695,20 @@ export const ChatPanel: React.FC = () => {
                                 </div>
                             </div>
                          )}
+                         {msg.meta?.awaitUser && msg.meta?.promptId && (
+                            <div className="mt-3">
+                                <QuestionCard
+                                    promptId={msg.meta.promptId}
+                                    message={msg.text}
+                                    onSubmit={value => handlePromptResponse(msg.meta!.promptId!, value)}
+                                    disabled={isBusy || !isApiKeySet}
+                                    isActive={!agentAwaitingPromptId || agentAwaitingPromptId === msg.meta.promptId}
+                                />
+                            </div>
+                         )}
                     </div>
                 </div>
             );
-        } else { // It's a ProgressMessage
-            const msg = item as ProgressMessage;
-             return (
-                 <div key={`prog-${index}`} className={`flex text-xs ${msg.type === 'error' ? 'text-red-600' : 'text-slate-500'}`}>
-                    <span className="mr-2 text-slate-400">{msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                    <span>{msg.text}</span>
-                </div>
-            )
         }
     }
 
@@ -723,6 +749,7 @@ export const ChatPanel: React.FC = () => {
                 <AgentPhaseIndicator />
                 <PlannerGoalTracker />
                 <AgentActionLogPanel />
+                <SystemLogPanel />
                 <AgentObservationTimeline />
                 {timeline.map(renderMessage)}
                 <div ref={messagesEndRef} />
@@ -765,7 +792,7 @@ export const ChatPanel: React.FC = () => {
                             onChange={(e) => setInput(e.target.value)}
                             onKeyDown={handleKeyDown}
                             placeholder={getPlaceholder()}
-                            disabled={!isApiKeySet || currentView === 'file_upload' || hasAwaitingClarification}
+                            disabled={!isApiKeySet || currentView === 'file_upload' || hasAwaitingClarification || agentAwaitingUserInput}
                             aria-describedby="chat-input-char-count"
                             className="w-full bg-white border border-slate-300 rounded-md py-2 pl-3 pr-14 text-sm leading-5 text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 resize-none"
                             style={{ minHeight: '40px', maxHeight: `${MAX_CHAT_INPUT_HEIGHT}px`, overflowY: 'hidden' }}
@@ -779,7 +806,7 @@ export const ChatPanel: React.FC = () => {
                     </div>
                      <button
                         type="submit"
-                        disabled={isBusy || !input.trim() || !isApiKeySet || currentView === 'file_upload' || hasAwaitingClarification}
+                        disabled={isBusy || !input.trim() || !isApiKeySet || currentView === 'file_upload' || hasAwaitingClarification || agentAwaitingUserInput}
                         className="flex-shrink-0 px-4 h-10 flex items-center justify-center gap-2 bg-blue-600 text-white font-semibold rounded-md hover:bg-blue-700 transition-colors disabled:bg-blue-300 disabled:cursor-not-allowed"
                         aria-label={isBusy ? (isCancellationRequested ? "Cancelling request" : "Sending message") : "Send message"}
                     >
@@ -820,6 +847,74 @@ export const ChatPanel: React.FC = () => {
         </div>
     );
 };
+
+const condenseSystemLogs = (logs: ProgressMessage[]): ProgressMessage[] => {
+    const condensed: ProgressMessage[] = [];
+    let continuationCount = 0;
+    let lastContinuationTimestamp: Date | null = null;
+    logs.forEach(log => {
+        if (log.text.startsWith('Continuing plan')) {
+            continuationCount += 1;
+            lastContinuationTimestamp = log.timestamp;
+            return;
+        }
+        if (continuationCount > 0) {
+            condensed.push({
+                text: continuationCount === 1 ? 'Continuing plan' : `Continuing plan retried ×${continuationCount}`,
+                type: 'system',
+                timestamp: lastContinuationTimestamp ?? log.timestamp,
+            });
+            continuationCount = 0;
+            lastContinuationTimestamp = null;
+        }
+        condensed.push(log);
+    });
+    if (continuationCount > 0) {
+        condensed.push({
+            text: continuationCount === 1 ? 'Continuing plan' : `Continuing plan retried ×${continuationCount}`,
+            type: 'system',
+            timestamp: lastContinuationTimestamp ?? new Date(),
+        });
+    }
+    return condensed.slice(-30);
+};
+
+const SystemLogPanel = React.memo(() => {
+    const progressMessages = useAppStore(state => state.progressMessages);
+    const [isCollapsed, setIsCollapsed] = useState(true);
+    const condensedLogs = useMemo(() => condenseSystemLogs(progressMessages), [progressMessages]);
+    if (condensedLogs.length === 0) return null;
+    return (
+        <div className="mb-4 rounded-lg border border-slate-200 bg-white shadow-sm">
+            <button
+                type="button"
+                onClick={() => setIsCollapsed(prev => !prev)}
+                className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-slate-600"
+            >
+                <span className="uppercase tracking-wide">System log</span>
+                <span className="text-[11px] text-slate-400">
+                    {condensedLogs.length} events · {isCollapsed ? 'Show' : 'Hide'}
+                </span>
+            </button>
+            {!isCollapsed && (
+                <div className="max-h-56 overflow-y-auto divide-y divide-slate-100">
+                    {condensedLogs.map((entry, index) => (
+                        <div
+                            key={`${entry.timestamp.getTime()}-${index}`}
+                            className={`px-3 py-2 text-xs flex gap-2 ${entry.type === 'error' ? 'text-red-600' : 'text-slate-600'}`}
+                        >
+                            <span className="text-slate-400">
+                                {entry.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                            <span className="leading-snug">{entry.text}</span>
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+});
+SystemLogPanel.displayName = 'SystemLogPanel';
 
 const PlannerGoalTracker = React.memo(() => {
     const planState = useAppStore(state => state.plannerSession?.planState ?? null);

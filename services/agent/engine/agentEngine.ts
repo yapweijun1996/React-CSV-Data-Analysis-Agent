@@ -31,7 +31,7 @@ const intentMatchesAction = (intent: string | undefined, action: AiAction): bool
     if (intent === 'clarification') {
         return action.responseType === 'clarification_request';
     }
-    if (intent === 'greeting') {
+    if (intent === 'greeting' || intent === 'smalltalk' || intent === 'ask_user_choice') {
         return action.responseType === 'text_response';
     }
     return false;

@@ -6,6 +6,8 @@ const FILTER_REGEX = /(filter|show|find)\s+(all\s+)?(rows|entries|records|data)/
 const TRANSFORM_REGEX = /(clean|transform|restructure|normalize|standardize|add\s+column|create\s+column|calculate)/i;
 const CLARIFICATION_REGEX = /(which|what)\s+(column|field|value)/i;
 const GREETING_REGEX = /^(hi|hello|hey|hola|ciao|salut|嗨+|哈囉|你好|您好|早上好|晚上好|早安|晚安)([!.?\s]|$)/i;
+const SMALLTALK_REGEX = /(how\s+are\s+you|很好|thanks|thank\s+you|謝謝|你呢|what'?s\s+up|聊聊)/i;
+const CHOICE_REGEX = /^\s*(?:option|choice)?\s*(?:[1-3]|[abc])(?:[\s.:,-].*)?$/i;
 
 export const detectUserIntent = (message: string, store: AppStore): DetectedIntent => {
     const text = (message || '').trim();
@@ -15,6 +17,14 @@ export const detectUserIntent = (message: string, store: AppStore): DetectedInte
 
     if (GREETING_REGEX.test(text)) {
         return { intent: 'greeting', confidence: 0.9 };
+    }
+
+    if (SMALLTALK_REGEX.test(text)) {
+        return { intent: 'smalltalk', confidence: 0.75 };
+    }
+
+    if (CHOICE_REGEX.test(text)) {
+        return { intent: 'ask_user_choice', confidence: 0.8 };
     }
 
     if (REMOVE_CARD_REGEX.test(text)) {

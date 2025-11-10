@@ -137,6 +137,8 @@ const buildSerializableAppState = (state: AppStore): AppState => ({
     plannerPendingSteps: state.plannerPendingSteps,
     agentPromptMetrics: state.agentPromptMetrics,
     plannerDatasetHash: state.plannerDatasetHash,
+    agentAwaitingUserInput: state.agentAwaitingUserInput,
+    agentAwaitingPromptId: state.agentAwaitingPromptId,
 });
 
 const buildFileNameFromHeader = (header?: string | null) => {
@@ -243,6 +245,8 @@ const initialAppState: AppState = {
     plannerPendingSteps: [],
     agentPromptMetrics: [],
     plannerDatasetHash: null,
+    agentAwaitingUserInput: false,
+    agentAwaitingPromptId: null,
 };
 
 export const useAppStore = create<StoreState & StoreActions>((set, get) => {
@@ -1144,6 +1148,8 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             vectorStore.clear();
             set({ 
                 ...report.appState, 
+                agentAwaitingUserInput: report.appState.agentAwaitingUserInput ?? false,
+                agentAwaitingPromptId: report.appState.agentAwaitingPromptId ?? null,
                 currentView: 'analysis_dashboard', 
                 isHistoryPanelOpen: false,
                 chatMemoryPreview: [],

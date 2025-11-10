@@ -30,6 +30,7 @@ import type {
     AgentPromptMetric,
     DetectedIntent,
     RequiredToolHint,
+    AgentIntent,
 } from '../../types';
 import { AGENT_STATE_TAGS } from '../../types';
 import type { AppStore } from '../../store/appStoreTypes';
@@ -112,6 +113,7 @@ const THOUGHTLESS_TOAST_THROTTLE_MS = 8000;
 const PLAN_PRIMER_INSTRUCTION =
     'Begin every response with a plan_state_update that lists your goal, context, progress, next steps, blockers (or null), referenced observations, confidence, and updatedAt before any other action.';
 const MAX_PLAN_CONTINUATIONS = 3;
+const MAX_VALIDATION_RETRIES = 2;
 const MAX_ACTIONS_PER_RESPONSE = 2;
 const CONTINUATION_STATE_TAG_DENYLIST = new Set<AgentStateTag>(['awaiting_clarification', 'blocked']);
 const FALLBACK_TEXT_RESPONSE_STEP_ID = 'ad_hoc_response';
@@ -157,6 +159,193 @@ const messageRequestsPlanReset = (message: string): boolean => {
     return false;
 };
 
+const CANONICAL_ACTION_TYPES: AgentActionType[] = [
+    'text_response',
+    'plan_creation',
+    'dom_action',
+    'execute_js_code',
+    'proceed_to_analysis',
+    'filter_spreadsheet',
+    'clarification_request',
+    'plan_state_update',
+];
+
+const ACTION_TYPE_ALIAS_MAP: Record<string, AgentActionType> = {
+    plan_update: 'plan_state_update',
+    planstateupdate: 'plan_state_update',
+    planstep: 'plan_state_update',
+    domaction: 'dom_action',
+    agent_action: 'text_response',
+    agentmessage: 'text_response',
+    respond: 'text_response',
+};
+
+const LOW_INTENT_INTENTS = new Set<AgentIntent>(['greeting', 'smalltalk', 'ask_user_choice']);
+
+interface IntentExecutionPolicy {
+    maxValidationRetries: number;
+    allowPlanFallbackPrompt: boolean;
+    allowAutoContinuation: boolean;
+}
+
+const DEFAULT_INTENT_EXECUTION_POLICY: IntentExecutionPolicy = {
+    maxValidationRetries: MAX_VALIDATION_RETRIES,
+    allowPlanFallbackPrompt: true,
+    allowAutoContinuation: true,
+};
+
+const resolveIntentExecutionPolicy = (detectedIntent?: DetectedIntent | null): IntentExecutionPolicy => {
+    if (detectedIntent && LOW_INTENT_INTENTS.has(detectedIntent.intent)) {
+        return {
+            maxValidationRetries: 0,
+            allowPlanFallbackPrompt: false,
+            allowAutoContinuation: false,
+        };
+    }
+    return DEFAULT_INTENT_EXECUTION_POLICY;
+};
+
+const normalizeActionTypeAlias = (raw?: string | null): AgentActionType | null => {
+    if (!raw) return null;
+    const normalized = raw.trim().toLowerCase();
+    if (!normalized) return null;
+    if (CANONICAL_ACTION_TYPES.includes(normalized as AgentActionType)) {
+        return normalized as AgentActionType;
+    }
+    return ACTION_TYPE_ALIAS_MAP[normalized] ?? null;
+};
+
+const clipActionsToPolicy = (actions: AiAction[]): AiAction[] => {
+    if (!Array.isArray(actions) || actions.length === 0) {
+        return [];
+    }
+    const ordered = actions.filter(Boolean);
+    const planAction = ordered.find(action => action.responseType === 'plan_state_update');
+    const atomicAction = ordered.find(action => action.responseType !== 'plan_state_update');
+    const result: AiAction[] = [];
+    if (planAction) {
+        result.push(planAction);
+    }
+    if (atomicAction) {
+        result.push(atomicAction);
+    }
+    if (result.length === 0) {
+        result.push(ordered[0]);
+    }
+    return result;
+};
+
+const applyResponseEnvelopeAutoHeal = (response: AiChatResponse, runtime: PlannerRuntime) => {
+    if (!Array.isArray(response.actions)) {
+        response.actions = [];
+        return;
+    }
+    const mintedBase = Date.now();
+    let mintedSeq = 0;
+    const mintTag = (hint?: string) => `${mintedBase + ++mintedSeq}-${mintedSeq}${hint ? `-${hint}` : ''}`;
+    const healed: AiAction[] = [];
+    for (const rawAction of response.actions) {
+        if (!rawAction) continue;
+        const canonicalType =
+            normalizeActionTypeAlias(rawAction.type) ??
+            normalizeActionTypeAlias(rawAction.responseType) ??
+            (rawAction.domAction ? 'dom_action' : rawAction.plan ? 'plan_creation' : rawAction.text ? 'text_response' : null);
+        if (!canonicalType) continue;
+        const nextAction: AiAction = {
+            ...rawAction,
+            type: canonicalType,
+            responseType: canonicalType,
+        };
+        const normalizedTag = normalizeStateTag(nextAction.stateTag);
+        nextAction.stateTag = normalizedTag ?? mintTag(canonicalType);
+        if (typeof nextAction.stepId !== 'string' || nextAction.stepId.trim().length < 3) {
+            nextAction.stepId = pickPlannerStepIdForAutoAction(runtime);
+        } else {
+            nextAction.stepId = nextAction.stepId.trim();
+        }
+        healed.push(nextAction);
+    }
+    if (healed.length === 0) {
+        response.actions = [];
+        return;
+    }
+    const clipped = clipActionsToPolicy(healed);
+    if (clipped.length < healed.length) {
+        runtime.get().addProgress('Trimmed extra actions to keep this turn atomic.', 'system');
+    }
+    response.actions = clipped;
+};
+
+interface PlannerMetaSignal {
+    awaitUser: boolean;
+    haltAfter: boolean;
+    resumePlanner: boolean;
+    promptId: string | null;
+}
+
+const BLANK_META_SIGNAL: PlannerMetaSignal = {
+    awaitUser: false,
+    haltAfter: false,
+    resumePlanner: false,
+    promptId: null,
+};
+
+const extractPlannerMetaSignal = (actions?: AiAction[] | null): PlannerMetaSignal => {
+    if (!Array.isArray(actions) || actions.length === 0) {
+        return { ...BLANK_META_SIGNAL };
+    }
+    return actions.reduce<PlannerMetaSignal>((acc, action) => {
+        if (!action?.meta) return acc;
+        return {
+            awaitUser: acc.awaitUser || !!action.meta.awaitUser,
+            haltAfter: acc.haltAfter || !!action.meta.haltAfter,
+            resumePlanner: acc.resumePlanner || !!action.meta.resumePlanner,
+            promptId: action.meta.promptId ?? acc.promptId,
+        };
+    }, { ...BLANK_META_SIGNAL });
+};
+
+const markAwaitingUserInput = (runtime: PlannerRuntime, promptId?: string | null) => {
+    runtime.set(() => ({
+        agentAwaitingUserInput: true,
+        agentAwaitingPromptId: promptId ?? null,
+    }));
+    const store = runtime.get();
+    store.addProgress('Paused the plan – waiting for your input to continue.');
+    if (typeof store.setAgentPhase === 'function') {
+        store.setAgentPhase('idle', 'Waiting for your input...');
+    }
+};
+
+const clearAwaitingUserInput = (runtime: PlannerRuntime) => {
+    runtime.set(() => ({
+        agentAwaitingUserInput: false,
+        agentAwaitingPromptId: null,
+    }));
+};
+
+const pausePlannerForUser = (runtime: PlannerRuntime, signal: PlannerMetaSignal) => {
+    markAwaitingUserInput(runtime, signal.promptId);
+    const store = runtime.get();
+    const planState = store.plannerSession.planState;
+    if (!planState) {
+        return;
+    }
+    const baseSteps =
+        Array.isArray(planState.steps) && planState.steps.length > 0 ? planState.steps : planState.nextSteps;
+    const updatedSteps = baseSteps?.map(step =>
+        step.id === planState.currentStepId
+            ? { ...step, status: 'waiting_user' as AgentPlanStep['status'] }
+            : step,
+    );
+    store.updatePlannerPlanState({
+        ...planState,
+        steps: updatedSteps ?? planState.steps,
+        nextSteps: [],
+        blockedBy: planState.blockedBy ?? 'Waiting for user input',
+    });
+};
+
 const buildIntentNotes = (detectedIntent: DetectedIntent | null | undefined, store: AppStore): string[] => {
     if (!detectedIntent) return [];
     switch (detectedIntent.intent) {
@@ -184,6 +373,14 @@ const buildIntentNotes = (detectedIntent: DetectedIntent | null | undefined, sto
         case 'clarification':
             return [
                 'USER INTENT: Needs clarification. ACTION REQUIREMENT: Ask a clarification_request that lists concrete options or explicitly states the missing detail.',
+            ];
+        case 'smalltalk':
+            return [
+                'USER INTENT: Casual smalltalk. Keep the reply lightweight and do not run tools until the user asks for a concrete analysis.',
+            ];
+        case 'ask_user_choice':
+            return [
+                'USER INTENT: Responding to a multiple-choice prompt. Acknowledge the selection, restate what it maps to, and resume the pending step without rebuilding the entire plan.',
             ];
         default:
             return [];
@@ -1713,21 +1910,36 @@ const runPlannerWorkflow = async (
     runtime: PlannerRuntime,
 ): Promise<void> => {
     const MAX_AUTO_RETRIES = 1;
-    const MAX_VALIDATION_RETRIES = 2;
     const PLAN_CORRECTION_STATUS = 'Requesting corrected plan outline...';
     let retryAttempts = 0;
     let validationRetries = 0;
     let usedFallbackPlanPrompt = false;
     let continuationAttempts = 0;
     const withIntentNotes = (prompt: string) => appendIntentNotesToPrompt(prompt, runtime.intentNotes);
+    const executionPolicy = resolveIntentExecutionPolicy(runtime.detectedIntent);
+    const validationLimit = executionPolicy.maxValidationRetries;
+    const allowFallbackPlanPrompt = executionPolicy.allowPlanFallbackPrompt;
+    const allowAutoContinuation = executionPolicy.allowAutoContinuation;
+
+    const requestAgentResponse = async (
+        prompt: string,
+        statusMessage: string,
+        options?: ChatResponseOptions,
+    ): Promise<{ response: AiChatResponse; meta: PlannerMetaSignal }> => {
+        const aiResponse = await planAgentActions(prompt, plannerContext, runtime, statusMessage, options);
+        applyResponseEnvelopeAutoHeal(aiResponse, runtime);
+        const metaSignal = extractPlannerMetaSignal(aiResponse.actions);
+        if (metaSignal.resumePlanner) {
+            clearAwaitingUserInput(runtime);
+        }
+        return { response: aiResponse, meta: metaSignal };
+    };
 
     enterAgentPhase(runtime, 'observing', 'Reviewing the current dataset and prior context...');
     try {
         enterAgentPhase(runtime, 'planning', 'Thinking through your question...');
-        let response = await planAgentActions(
+        let { response, meta: responseMeta } = await requestAgentResponse(
             withIntentNotes(originalPrompt),
-            plannerContext,
-            runtime,
             'Thinking through your question...',
             { mode: resolvePromptModeForRuntime(runtime) },
         );
@@ -1743,19 +1955,17 @@ const runPlannerWorkflow = async (
                 validationRetries++;
                 recordValidationTelemetry(runtime, validation.details, validation.retryInstruction);
                 runtime.get().addProgress(validation.userMessage, 'error');
-                if (validationRetries >= MAX_VALIDATION_RETRIES) {
-                    if (!usedFallbackPlanPrompt) {
+                if (validationRetries >= validationLimit) {
+                    if (!usedFallbackPlanPrompt && allowFallbackPlanPrompt) {
                         usedFallbackPlanPrompt = true;
                         validationRetries = 0;
                         runtime.get().addProgress('Plan validation failed twice; requesting a simplified plan snapshot...', 'system');
                         enterAgentPhase(runtime, 'planning', 'Rebuilding the plan outline...');
-                        response = await planAgentActions(
+                        ({ response, meta: responseMeta } = await requestAgentResponse(
                             appendIntentNotesToPrompt(buildFallbackPlanPrompt(runtime), runtime.intentNotes),
-                            plannerContext,
-                            runtime,
                             FALLBACK_PLAN_STATUS,
                             { mode: 'plan_only' },
-                        );
+                        ));
                         continue;
                     }
                     runtime.get().addProgress('Unable to obtain a valid plan update after multiple attempts.', 'error');
@@ -1770,13 +1980,11 @@ const runPlannerWorkflow = async (
                     return;
                 }
                 enterAgentPhase(runtime, 'planning', 'Revising the plan outline based on validation feedback...');
-                response = await planAgentActions(
+                ({ response, meta: responseMeta } = await requestAgentResponse(
                     withIntentNotes(`${runtime.userMessage}\n\nSYSTEM NOTE: ${validation.retryInstruction}`),
-                    plannerContext,
-                    runtime,
                     PLAN_CORRECTION_STATUS,
                     { mode: resolvePromptModeForRuntime(runtime) },
-                );
+                ));
                 continue;
             }
 
@@ -1814,16 +2022,24 @@ const runPlannerWorkflow = async (
                 runtime.set(prev => ({ chatHistory: [...prev.chatHistory, retryMessage] }));
                 runtime.get().addProgress(`Auto-retrying data transformation (attempt ${nextAttemptNumber})...`);
                 enterAgentPhase(runtime, 'planning', 'Adjusting the plan after a failed attempt...');
-                response = await planAgentActions(
+                ({ response, meta: responseMeta } = await requestAgentResponse(
                     withIntentNotes(
                         `${runtime.userMessage}\n\nSYSTEM NOTE: Previous data transformation failed because ${dispatchResult.reason}. Please adjust the code and try again.`,
                     ),
-                    plannerContext,
-                    runtime,
                     'Retrying data transformation...',
                     { mode: 'full' },
-                );
+                ));
                 continue;
+            }
+
+            if (responseMeta.awaitUser) {
+                pausePlannerForUser(runtime, responseMeta);
+                return;
+            }
+
+            if (responseMeta.haltAfter) {
+                runtime.get().addProgress('Stopped auto-continue per AI instruction.');
+                return;
             }
 
             enterAgentPhase(runtime, 'verifying', 'Reviewing what just happened before continuing...');
@@ -1831,6 +2047,7 @@ const runPlannerWorkflow = async (
             const isStateTagBlocked = stateTag ? CONTINUATION_STATE_TAG_DENYLIST.has(stateTag) : false;
             if (
                 dispatchResult.type === 'complete' &&
+                allowAutoContinuation &&
                 continuationAttempts < MAX_PLAN_CONTINUATIONS &&
                 hasPendingSteps &&
                 !isStateTagBlocked &&
@@ -1857,13 +2074,11 @@ const runPlannerWorkflow = async (
                     continuationAttempts === 1 ? 'Continuing plan' : `Continuing plan (cycle ${continuationAttempts}/${MAX_PLAN_CONTINUATIONS})`;
                 runtime.get().addProgress(continuationLabel);
                 enterAgentPhase(runtime, 'planning', 'Continuing with the remaining plan steps...');
-                response = await planAgentActions(
+                ({ response, meta: responseMeta } = await requestAgentResponse(
                     withIntentNotes(continuationPrompt),
-                    plannerContext,
-                    runtime,
                     continuationAttempts === 1 ? 'Continuing plan...' : `Continuing plan (cycle ${continuationAttempts})...`,
                     { mode: 'full' },
-                );
+                ));
                 continue;
             }
 
@@ -2010,6 +2225,7 @@ const handleTextResponseAction: AgentActionExecutor = async ({ action, runtime, 
         type: 'ai_message',
         cardId: action.cardId,
         usedMemories: shouldAttachMemory ? runtime.memorySnapshot : undefined,
+        meta: action.meta,
     };
 
     runtime.set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
@@ -2131,6 +2347,35 @@ const handleDomAction: AgentActionExecutor = async ({ action, runtime, markTrace
             observation: {
                 status: 'error',
                 errorCode: ACTION_ERROR_CODES.DOM_PAYLOAD_MISSING,
+            },
+        };
+    }
+
+    const hasTarget =
+        typeof action.domAction.target?.byId === 'string' ||
+        typeof action.domAction.target?.byTitle === 'string' ||
+        typeof action.domAction.target?.selector === 'string' ||
+        typeof action.domAction.args?.cardId === 'string' ||
+        typeof action.domAction.args?.cardTitle === 'string';
+    if (!hasTarget) {
+        const warning = 'I need you to pick a specific chart before I can perform that action.';
+        runtime.get().addProgress(warning, 'error');
+        const aiMessage: ChatMessage = {
+            sender: 'ai',
+            text: `${warning} Please tap the chart or tell me its title so I can continue.`,
+            timestamp: new Date(),
+            type: 'ai_message',
+            isError: true,
+        };
+        runtime.set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
+        markTrace('succeeded', 'DOM action skipped due to missing target.', {
+            metadata: { downgraded: true },
+        });
+        return {
+            type: 'continue',
+            observation: {
+                status: 'success',
+                outputs: { downgraded: true },
             },
         };
     }
@@ -2572,6 +2817,8 @@ export class AgentWorker {
                 stateSnapshot.addProgress('Greeting detected; starting a fresh plan for this interaction.');
             }
         }
+
+        this.set({ agentAwaitingUserInput: false, agentAwaitingPromptId: null });
 
         const runId = this.get().beginBusy('Working on your request...', { cancellable: true });
         this.set(prev => ({ chatHistory: [...prev.chatHistory, userMessage] }));

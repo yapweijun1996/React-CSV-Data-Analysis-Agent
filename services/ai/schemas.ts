@@ -205,7 +205,11 @@ const planStateSnapshotSchema = {
                     id: { type: Type.STRING, description: 'Stable identifier for the step.' },
                     label: { type: Type.STRING, description: 'Human-readable summary.' },
                     intent: { type: Type.STRING, description: 'High-level intent (e.g., conversation, remove_card).' },
-                    status: { type: Type.STRING, enum: ['ready', 'in_progress', 'done'], description: 'Current status for the step.' },
+                    status: {
+                        type: Type.STRING,
+                        enum: ['ready', 'in_progress', 'done', 'waiting_user'],
+                        description: 'Current status for the step.',
+                    },
                 },
                 required: ['id', 'label', 'status'],
                 additionalProperties: false,
@@ -245,6 +249,17 @@ export const multiActionChatResponseSchema = {
                     responseType: { type: Type.STRING, enum: ['text_response', 'plan_creation', 'dom_action', 'execute_js_code', 'proceed_to_analysis', 'filter_spreadsheet', 'clarification_request', 'plan_state_update'] },
                     text: { type: Type.STRING, description: "A conversational text response to the user. Required for 'text_response'." },
                     cardId: { type: Type.STRING, description: "Optional. The ID of the card this text response refers to. Used to link text to a specific chart." },
+                    meta: {
+                        type: Type.OBJECT,
+                        description: 'Optional runner hints controlling halt/wait behavior.',
+                        properties: {
+                            awaitUser: { type: Type.BOOLEAN, description: 'Set true to pause planning until the user responds.' },
+                            haltAfter: { type: Type.BOOLEAN, description: 'Set true to stop auto-continuations after this turn.' },
+                            resumePlanner: { type: Type.BOOLEAN, description: 'Set true to explicitly resume the planner after a previous pause.' },
+                            promptId: { type: Type.STRING, description: 'Stable identifier for matching follow-up UI (e.g., question cards).' },
+                        },
+                        additionalProperties: false,
+                    },
                     plan: {
                         ...singlePlanSchema,
                         description: "Analysis plan object. Required for 'plan_creation'."
