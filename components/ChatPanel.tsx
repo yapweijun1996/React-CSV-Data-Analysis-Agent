@@ -660,6 +660,16 @@ export const ChatPanel: React.FC = () => {
                 );
             }
             // AI message
+            const referencedCardIds: string[] = [];
+            if (!msg.isError) {
+                if (msg.cardId) referencedCardIds.push(msg.cardId);
+                extractCardIdsFromText(msg.text).forEach(id => {
+                    if (!referencedCardIds.includes(id)) {
+                        referencedCardIds.push(id);
+                    }
+                });
+            }
+
             return (
                 <div key={`chat-${index}`} className="flex">
                     <div className={`rounded-lg px-3 py-2 max-w-xs lg:max-w-md ${msg.isError ? 'bg-red-100' : 'bg-slate-200'}`}>
@@ -669,14 +679,16 @@ export const ChatPanel: React.FC = () => {
                          >
                             {msg.text}
                          </p>
-                         {msg.cardId && !msg.isError && (
-                            <button 
-                                onClick={() => handleShowCardFromChat(msg.cardId!)}
-                                className="mt-2 text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-md hover:bg-blue-200 transition-colors w-full text-left font-medium"
-                            >
-                                → Show Related Card
-                            </button>
-                         )}
+                         {!msg.isError &&
+                            referencedCardIds.map(cardId => (
+                                <button
+                                    key={`${cardId}-${index}`}
+                                    onClick={() => handleShowCardFromChat(cardId)}
+                                    className="mt-2 text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-md hover:bg-blue-200 transition-colors w-full text-left font-medium"
+                                >
+                                    → Show Related Card
+                                </button>
+                            ))}
                          {msg.cta?.type === 'open_data_preview' && (
                             <button
                                 onClick={focusDataPreview}
