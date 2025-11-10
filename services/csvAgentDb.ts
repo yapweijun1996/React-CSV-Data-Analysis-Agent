@@ -11,6 +11,7 @@ export interface DatasetProvenanceRecord {
 
 interface CleanRowChunkRecord {
     chunkId: string;
+    datasetId: string;
     rowCount: number;
     startRow: number;
     endRow: number;
@@ -19,7 +20,7 @@ interface CleanRowChunkRecord {
 }
 
 export interface ColumnStoreRecord {
-    id: 'columns';
+    datasetId: string;
     columnCount: number;
     rowCount: number;
     columns: ColumnProfile[];
@@ -28,6 +29,7 @@ export interface ColumnStoreRecord {
 
 export interface ViewStoreRecord<DataRef = any> {
     id: string;
+    datasetId: string;
     title: string;
     kind: string;
     dataRef: DataRef;
@@ -47,29 +49,38 @@ export interface CardDataRef {
 }
 
 const DB_NAME = 'csv_agent_db';
-const BASE_VERSION = 2;
+const BASE_VERSION = 3;
 const PROVENANCE_STORE = 'provenance';
+const CLEAN_ROWS_STORE = 'clean_rows';
+const COLUMNS_STORE = 'columns';
+const VIEWS_STORE = 'views';
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
 
-const getStoreNamesForDataset = (datasetId: string) => ({
-    clean: `clean_rows_${datasetId}`,
-    columns: `columns_${datasetId}`,
-    views: `views_${datasetId}`,
-});
+const resetDatabase = async () => {
+    await new Promise<void>((resolve, reject) => {
+        const request = indexedDB.deleteDatabase(DB_NAME);
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+        request.onblocked = () => console.warn('IndexedDB delete blocked. Close other tabs to proceed.');
+    });
+    dbPromise = null;
+};
 
 const createStore = (db: IDBPDatabase, storeName: string) => {
     if (db.objectStoreNames.contains(storeName)) return;
-    if (storeName.startsWith('clean_rows_')) {
-        db.createObjectStore(storeName, { keyPath: 'chunkId' });
+    if (storeName === CLEAN_ROWS_STORE) {
+        const store = db.createObjectStore(storeName, { keyPath: 'chunkId' });
+        store.createIndex('by_dataset', 'datasetId', { unique: false });
         return;
     }
-    if (storeName.startsWith('columns_')) {
-        db.createObjectStore(storeName, { keyPath: 'id' });
+    if (storeName === COLUMNS_STORE) {
+        db.createObjectStore(storeName, { keyPath: 'datasetId' });
         return;
     }
-    if (storeName.startsWith('views_')) {
-        db.createObjectStore(storeName, { keyPath: 'id' });
+    if (storeName === VIEWS_STORE) {
+        const store = db.createObjectStore(storeName, { keyPath: 'id' });
+        store.createIndex('by_dataset', 'datasetId', { unique: false });
         return;
     }
     if (storeName === PROVENANCE_STORE) {
@@ -85,41 +96,38 @@ const handleVersionMismatch = async <T>(fn: () => Promise<T>): Promise<T> => {
     } catch (error) {
         if (error instanceof DOMException && error.name === 'VersionError') {
             console.warn('IndexedDB version mismatch detected. Resetting csv_agent_db...', error);
-            await new Promise<void>((resolve, reject) => {
-                const deleteRequest = indexedDB.deleteDatabase(DB_NAME);
-                deleteRequest.onsuccess = () => resolve();
-                deleteRequest.onerror = () => reject(deleteRequest.error);
-                deleteRequest.onblocked = () => console.warn('Delete csv_agent_db blocked. Close other tabs.');
-            });
+            await resetDatabase();
             return fn();
         }
         throw error;
     }
 };
 
+const DEFAULT_STORE_SET = [PROVENANCE_STORE, CLEAN_ROWS_STORE, COLUMNS_STORE, VIEWS_STORE];
+
 const openDatabase = async (upgradeStores: string[] = []): Promise<IDBPDatabase> => {
+    const storesToEnsure = Array.from(new Set([...DEFAULT_STORE_SET, ...upgradeStores]));
     const openWithVersion = (version: number, stores: string[]) =>
         openDB(DB_NAME, version, {
             upgrade(db) {
-                createStore(db, PROVENANCE_STORE);
                 stores.forEach(store => createStore(db, store));
             },
         });
 
     if (!dbPromise) {
-        dbPromise = handleVersionMismatch(() => openWithVersion(BASE_VERSION, upgradeStores));
+        dbPromise = handleVersionMismatch(() => openWithVersion(BASE_VERSION, storesToEnsure));
         return dbPromise;
     }
 
     const db = await dbPromise;
-    const missingStores = upgradeStores.filter(store => !db.objectStoreNames.contains(store));
+    const missingStores = storesToEnsure.filter(store => !db.objectStoreNames.contains(store));
     if (missingStores.length === 0) {
         return db;
     }
 
     db.close();
     const nextVersion = db.version + 1;
-    dbPromise = handleVersionMismatch(() => openWithVersion(nextVersion, [...upgradeStores, ...missingStores]));
+    dbPromise = handleVersionMismatch(() => openWithVersion(nextVersion, storesToEnsure));
     return dbPromise;
 };
 
@@ -141,51 +149,63 @@ export const persistCleanDataset = async (options: {
     const { datasetId, rows, columns, provenance: provOverrides, chunkSize = 20000 } = options;
     if (!datasetId) throw new Error('persistCleanDataset requires datasetId.');
 
-    const storeNames = Object.values(getStoreNamesForDataset(datasetId));
-    const db = await openDatabase(storeNames);
-    const { clean: cleanStoreName, columns: columnStoreName } = getStoreNamesForDataset(datasetId);
+    const runPersist = async () => {
+        const db = await openDatabase([CLEAN_ROWS_STORE, COLUMNS_STORE, VIEWS_STORE]);
 
-    const tx = db.transaction([cleanStoreName, columnStoreName, PROVENANCE_STORE], 'readwrite');
-    const cleanStore = tx.objectStore(cleanStoreName);
-    const columnStore = tx.objectStore(columnStoreName);
-    const provenanceStore = tx.objectStore(PROVENANCE_STORE);
+        const tx = db.transaction([CLEAN_ROWS_STORE, COLUMNS_STORE, PROVENANCE_STORE], 'readwrite');
+        const cleanStore = tx.objectStore(CLEAN_ROWS_STORE);
+        const columnStore = tx.objectStore(COLUMNS_STORE);
+        const provenanceStore = tx.objectStore(PROVENANCE_STORE);
 
-    await cleanStore.clear();
-    const rowsChunks = chunkRows(rows, chunkSize);
-    const now = new Date().toISOString();
-    for (let index = 0; index < rowsChunks.length; index += 1) {
-        const chunk = rowsChunks[index];
-        const record: CleanRowChunkRecord = {
-            chunkId: `${datasetId}-chunk-${index}`,
-            rowCount: chunk.length,
-            startRow: index * chunkSize,
-            endRow: index * chunkSize + chunk.length - 1,
-            rows: chunk,
-            createdAt: now,
+        await cleanStore.clear();
+        const rowsChunks = chunkRows(rows, chunkSize);
+        const now = new Date().toISOString();
+        for (let index = 0; index < rowsChunks.length; index += 1) {
+            const chunk = rowsChunks[index];
+            const record: CleanRowChunkRecord = {
+                chunkId: `${datasetId}-chunk-${index}`,
+                datasetId,
+                rowCount: chunk.length,
+                startRow: index * chunkSize,
+                endRow: index * chunkSize + chunk.length - 1,
+                rows: chunk,
+                createdAt: now,
+            };
+            await cleanStore.put(record);
+        }
+
+        const columnPayload: ColumnStoreRecord = {
+            datasetId,
+            columnCount: columns.length,
+            columns,
+            rowCount: rows.length,
+            updatedAt: now,
         };
-        await cleanStore.put(record);
+        await columnStore.put(columnPayload);
+
+        const provenancePayload: DatasetProvenanceRecord = {
+            datasetId,
+            fileName: provOverrides.fileName,
+            bytes: provOverrides.bytes,
+            checksum: provOverrides.checksum,
+            cleanedAt: provOverrides.cleanedAt,
+        };
+        await provenanceStore.put(provenancePayload);
+
+        await tx.done;
+        return { chunkCount: rowsChunks.length, rowCount: rows.length };
+    };
+
+    try {
+        return await runPersist();
+    } catch (error) {
+        if (error instanceof DOMException && error.name === 'NotFoundError') {
+            console.warn('IndexedDB store missing detected. Resetting and retrying persist...', error);
+            await resetDatabase();
+            return runPersist();
+        }
+        throw error;
     }
-
-    const columnPayload: ColumnStoreRecord = {
-        id: 'columns',
-        columnCount: columns.length,
-        columns,
-        rowCount: rows.length,
-        updatedAt: now,
-    };
-    await columnStore.put(columnPayload);
-
-    const provenancePayload: DatasetProvenanceRecord = {
-        datasetId,
-        fileName: provOverrides.fileName,
-        bytes: provOverrides.bytes,
-        checksum: provOverrides.checksum,
-        cleanedAt: provOverrides.cleanedAt,
-    };
-    await provenanceStore.put(provenancePayload);
-
-    await tx.done;
-    return { chunkCount: rowsChunks.length, rowCount: rows.length };
 };
 
 export const saveCardResult = async (options: {
@@ -197,10 +217,9 @@ export const saveCardResult = async (options: {
     dataRef: CardDataRef;
 }): Promise<string> => {
     const { datasetId, title, kind, queryHash, explainer, dataRef } = options;
-    const { views: storeName } = getStoreNamesForDataset(datasetId);
-    const db = await openDatabase([storeName]);
-    const tx = db.transaction(storeName, 'readwrite');
-    const store = tx.objectStore(storeName);
+    const db = await openDatabase([VIEWS_STORE]);
+    const tx = db.transaction(VIEWS_STORE, 'readwrite');
+    const store = tx.objectStore(VIEWS_STORE);
     const randomId =
         typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
             ? crypto.randomUUID()
@@ -208,6 +227,7 @@ export const saveCardResult = async (options: {
     const id = `${datasetId}-view-${randomId}`;
     const record: ViewStoreRecord<CardDataRef> = {
         id,
+        datasetId,
         title,
         kind,
         queryHash,
@@ -221,12 +241,12 @@ export const saveCardResult = async (options: {
 };
 
 export const readCardResults = async <T = CardDataRef>(datasetId: string): Promise<Array<ViewStoreRecord<T>>> => {
-    const { views: storeName } = getStoreNamesForDataset(datasetId);
-    const db = await openDatabase([storeName]);
+    const db = await openDatabase([VIEWS_STORE]);
     try {
-        const tx = db.transaction(storeName, 'readonly');
-        const store = tx.objectStore(storeName);
-        const values = (await store.getAll()) as Array<ViewStoreRecord<T>>;
+        const tx = db.transaction(VIEWS_STORE, 'readonly');
+        const store = tx.objectStore(VIEWS_STORE);
+        const index = store.index('by_dataset');
+        const values = (await index.getAll(datasetId)) as Array<ViewStoreRecord<T>>;
         await tx.done;
         return values;
     } catch (error) {
@@ -245,11 +265,10 @@ export const readProvenance = async (datasetId: string): Promise<DatasetProvenan
 };
 
 export const readColumnStoreRecord = async (datasetId: string): Promise<ColumnStoreRecord | null> => {
-    const { columns } = getStoreNamesForDataset(datasetId);
-    const db = await openDatabase([columns]);
-    const tx = db.transaction(columns, 'readonly');
-    const store = tx.objectStore(columns);
-    const record = (await store.get('columns')) as ColumnStoreRecord | undefined;
+    const db = await openDatabase([COLUMNS_STORE]);
+    const tx = db.transaction(COLUMNS_STORE, 'readonly');
+    const store = tx.objectStore(COLUMNS_STORE);
+    const record = (await store.get(datasetId)) as ColumnStoreRecord | undefined;
     await tx.done;
     return record ?? null;
 };
@@ -263,15 +282,15 @@ const iterateChunks = async (
     datasetId: string,
     handler: (chunk: CleanRowChunkRecord, stop: () => void) => void | Promise<void>,
 ): Promise<void> => {
-    const { clean } = getStoreNamesForDataset(datasetId);
-    const db = await openDatabase([clean]);
-    const tx = db.transaction(clean, 'readonly');
-    const store = tx.objectStore(clean);
+    const db = await openDatabase([CLEAN_ROWS_STORE]);
+    const tx = db.transaction(CLEAN_ROWS_STORE, 'readonly');
+    const store = tx.objectStore(CLEAN_ROWS_STORE);
+    const index = store.index('by_dataset');
     let shouldStop = false;
     const stop = () => {
         shouldStop = true;
     };
-    let cursor = await store.openCursor();
+    let cursor = await index.openCursor(datasetId);
     while (cursor && !shouldStop) {
         const chunk = cursor.value as CleanRowChunkRecord;
         await handler(chunk, stop);
@@ -304,10 +323,14 @@ export const readAllRows = async (datasetId: string): Promise<CsvRow[]> => {
 };
 
 export const clearCardResults = async (datasetId: string): Promise<void> => {
-    const { views } = getStoreNamesForDataset(datasetId);
-    const db = await openDatabase([views]);
-    const tx = db.transaction(views, 'readwrite');
-    const store = tx.objectStore(views);
-    await store.clear();
+    const db = await openDatabase([VIEWS_STORE]);
+    const tx = db.transaction(VIEWS_STORE, 'readwrite');
+    const store = tx.objectStore(VIEWS_STORE);
+    const index = store.index('by_dataset');
+    let cursor = await index.openCursor(datasetId);
+    while (cursor) {
+        await cursor.delete();
+        cursor = await cursor.continue();
+    }
     await tx.done;
 };

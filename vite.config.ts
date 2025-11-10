@@ -22,8 +22,8 @@ export default defineConfig(({ mode }) => {
       build: {
         rollupOptions: {
           output: {
-            entryFileNames: chunk => `agent_csv_${chunk.name ?? 'entry'}.js`,
-            chunkFileNames: chunk => `agent_csv_${chunk.name ?? 'chunk'}.js`,
+            entryFileNames: 'agent_csv_[name]-[hash].js',
+            chunkFileNames: 'agent_csv_[name]-[hash].js',
           },
         },
       },
@@ -31,8 +31,8 @@ export default defineConfig(({ mode }) => {
         format: 'es',
         rollupOptions: {
           output: {
-            entryFileNames: chunk => `agent_csv_${chunk.name ?? 'worker'}.js`,
-            chunkFileNames: chunk => `agent_csv_${chunk.name ?? 'worker_chunk'}.js`,
+            entryFileNames: 'agent_csv_[name]-[hash].js',
+            chunkFileNames: 'agent_csv_[name]-[hash].js',
           },
         },
       },
