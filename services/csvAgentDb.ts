@@ -47,7 +47,7 @@ export interface CardDataRef {
 }
 
 const DB_NAME = 'csv_agent_db';
-const BASE_VERSION = 1;
+const BASE_VERSION = 2;
 const PROVENANCE_STORE = 'provenance';
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
@@ -79,14 +79,35 @@ const createStore = (db: IDBPDatabase, storeName: string) => {
     throw new Error(`Unsupported store name: ${storeName}`);
 };
 
+const handleVersionMismatch = async <T>(fn: () => Promise<T>): Promise<T> => {
+    try {
+        return await fn();
+    } catch (error) {
+        if (error instanceof DOMException && error.name === 'VersionError') {
+            console.warn('IndexedDB version mismatch detected. Resetting csv_agent_db...', error);
+            await new Promise<void>((resolve, reject) => {
+                const deleteRequest = indexedDB.deleteDatabase(DB_NAME);
+                deleteRequest.onsuccess = () => resolve();
+                deleteRequest.onerror = () => reject(deleteRequest.error);
+                deleteRequest.onblocked = () => console.warn('Delete csv_agent_db blocked. Close other tabs.');
+            });
+            return fn();
+        }
+        throw error;
+    }
+};
+
 const openDatabase = async (upgradeStores: string[] = []): Promise<IDBPDatabase> => {
-    if (!dbPromise) {
-        dbPromise = openDB(DB_NAME, BASE_VERSION, {
+    const openWithVersion = (version: number, stores: string[]) =>
+        openDB(DB_NAME, version, {
             upgrade(db) {
                 createStore(db, PROVENANCE_STORE);
-                upgradeStores.forEach(store => createStore(db, store));
+                stores.forEach(store => createStore(db, store));
             },
         });
+
+    if (!dbPromise) {
+        dbPromise = handleVersionMismatch(() => openWithVersion(BASE_VERSION, upgradeStores));
         return dbPromise;
     }
 
@@ -98,13 +119,7 @@ const openDatabase = async (upgradeStores: string[] = []): Promise<IDBPDatabase>
 
     db.close();
     const nextVersion = db.version + 1;
-    dbPromise = openDB(DB_NAME, nextVersion, {
-        upgrade(upgradeDb) {
-            createStore(upgradeDb, PROVENANCE_STORE);
-            upgradeStores.forEach(store => createStore(upgradeDb, store));
-            missingStores.forEach(store => createStore(upgradeDb, store));
-        },
-    });
+    dbPromise = handleVersionMismatch(() => openWithVersion(nextVersion, [...upgradeStores, ...missingStores]));
     return dbPromise;
 };
 

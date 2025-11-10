@@ -81,6 +81,10 @@ const QuestionCard: React.FC<QuestionCardProps> = ({ promptId, message, onSubmit
     const [hasSubmitted, setHasSubmitted] = useState(false);
     const isDisabled = disabled || hasSubmitted;
 
+    if (quickChoices.length === 0) {
+        return null;
+    }
+
     const submitValue = (value: string) => {
         const trimmed = value.trim();
         if (!trimmed) return;

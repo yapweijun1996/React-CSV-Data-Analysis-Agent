@@ -2,13 +2,26 @@
 
 import { profileData } from '../utils/dataProcessor';
 import type { CsvRow, ColumnProfile } from '../types';
-import {
-    readSampledRows,
-    readAllRows,
-    readColumnStoreRecord,
-} from '../services/csvAgentDb';
 
 declare const self: DedicatedWorkerGlobalScope;
+
+type CsvAgentDbModule = typeof import('../services/csvAgentDb');
+
+let dbModulePromise: Promise<CsvAgentDbModule> | null = null;
+
+const hasIndexedDbSupport = (): boolean => {
+    return typeof indexedDB !== 'undefined' && 'IDBDatabase' in self;
+};
+
+const ensureDbModule = async (): Promise<CsvAgentDbModule> => {
+    if (!hasIndexedDbSupport()) {
+        throw new Error('IndexedDB is not available inside the worker context.');
+    }
+    if (!dbModulePromise) {
+        dbModulePromise = import('../services/csvAgentDb');
+    }
+    return dbModulePromise;
+};
 
 type MetricFn = 'sum' | 'avg' | 'count' | 'min' | 'max';
 
@@ -156,9 +169,10 @@ const buildProfileResult = async (
     if (!datasetId) {
         throw new Error('datasetId is required for profiling.');
     }
+    const dbModule = await ensureDbModule();
     const [columnRecord, sampleRows] = await Promise.all([
-        readColumnStoreRecord(datasetId),
-        readSampledRows(datasetId, sampleSize),
+        dbModule.readColumnStoreRecord(datasetId),
+        dbModule.readSampledRows(datasetId, sampleSize),
     ]);
 
     if (!columnRecord) {
@@ -407,7 +421,8 @@ const aggregateRows = (
 };
 
 const runAggregate = async (payload: AggregatePayload): Promise<AggregateResult> => {
-    const columnRecord = await readColumnStoreRecord(payload.datasetId);
+    const dbModule = await ensureDbModule();
+    const columnRecord = await dbModule.readColumnStoreRecord(payload.datasetId);
     if (!columnRecord) {
         throw new Error('No cached metadata for aggregation.');
     }
@@ -416,8 +431,8 @@ const runAggregate = async (payload: AggregatePayload): Promise<AggregateResult>
     try {
         const rows =
             mode === 'full'
-                ? await readAllRows(payload.datasetId)
-                : await readSampledRows(payload.datasetId, sampleSize);
+                ? await dbModule.readAllRows(payload.datasetId)
+                : await dbModule.readSampledRows(payload.datasetId, sampleSize);
         if (rows.length === 0) {
             throw new Error('No rows available for aggregation.');
         }
@@ -429,7 +444,7 @@ const runAggregate = async (payload: AggregatePayload): Promise<AggregateResult>
             });
         }
         if (error instanceof Error && error.message === 'AGG_TIMEOUT' && mode === 'full') {
-            const fallbackRows = await readSampledRows(payload.datasetId, sampleSize);
+            const fallbackRows = await dbModule.readSampledRows(payload.datasetId, sampleSize);
             const fallback = aggregateRows(fallbackRows, { ...payload, mode: 'sample' }, columnRecord.rowCount);
             fallback.provenance.warnings.push('Full scan timed out. Showing sampled results.');
             return fallback;
@@ -445,9 +460,10 @@ const buildSampleResult = async (
     if (!datasetId) {
         throw new Error('datasetId is required for sampling.');
     }
+    const dbModule = await ensureDbModule();
     const [rows, columnRecord] = await Promise.all([
-        readSampledRows(datasetId, n),
-        withColumns ? readColumnStoreRecord(datasetId) : Promise.resolve(null),
+        dbModule.readSampledRows(datasetId, n),
+        withColumns ? dbModule.readColumnStoreRecord(datasetId) : Promise.resolve(null),
     ]);
     if (rows.length === 0) {
         throw new Error('No rows available to sample.');
@@ -483,12 +499,15 @@ const handleRequest = async (request: WorkerRequest): Promise<WorkerResponse> =>
             durationMs: performance.now() - startedAt,
         };
     } catch (error) {
-        const reason =
-            error instanceof Error ? error.message : 'Unknown worker error';
-        const hint =
-            error instanceof Error && (error as any).code === 'FULL_SCAN_BLOCKED'
-                ? 'Please confirm full scan with the user, then retry with allowFullScan=true.'
-                : 'Retry with a smaller sample or adjust your query.';
+        const reason = error instanceof Error ? error.message : 'Unknown worker error';
+        let hint: string | undefined;
+        if (error instanceof Error && (error as any).code === 'FULL_SCAN_BLOCKED') {
+            hint = 'Please confirm full scan with the user, then retry with allowFullScan=true.';
+        } else if (reason.includes('IndexedDB')) {
+            hint = 'Browser blocked IndexedDB in this worker; falling back to main thread.';
+        } else {
+            hint = 'Retry with a smaller sample or adjust your query.';
+        }
         return {
             id: request.id,
             ok: false,

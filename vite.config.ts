@@ -27,5 +27,14 @@ export default defineConfig(({ mode }) => {
           },
         },
       },
+      worker: {
+        format: 'es',
+        rollupOptions: {
+          output: {
+            entryFileNames: chunk => `agent_csv_${chunk.name ?? 'worker'}.js`,
+            chunkFileNames: chunk => `agent_csv_${chunk.name ?? 'worker_chunk'}.js`,
+          },
+        },
+      },
     };
 });

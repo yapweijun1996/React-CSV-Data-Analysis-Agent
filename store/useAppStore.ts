@@ -913,6 +913,9 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             const response = await dataTools.aggregate(payload);
             if (!response.ok) {
                 addProgress(`Aggregation worker failed for "${plan.title}": ${response.reason}`, 'error');
+                if (response.reason?.includes('IndexedDB')) {
+                    addProgress('Your browser blocked IndexedDB inside workers; falling back to main thread.', 'error');
+                }
                 return null;
             }
             if (response.data.rows.length === 0) {

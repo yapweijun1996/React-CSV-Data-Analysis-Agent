@@ -109,11 +109,15 @@ const createWorker = (): Worker => {
     };
     worker.onerror = errorEvent => {
         console.error('dataWorker runtime error:', errorEvent);
+        const reason =
+            (errorEvent as ErrorEvent)?.message && typeof (errorEvent as ErrorEvent).message === 'string'
+                ? `Data worker crashed: ${(errorEvent as ErrorEvent).message}`
+                : 'Data worker crashed.';
         pendingRequests.forEach(resolver =>
             resolver({
                 id: 'error',
                 ok: false,
-                reason: 'Data worker crashed.',
+                reason,
                 hint: 'Reload and retry your action.',
             }),
         );
