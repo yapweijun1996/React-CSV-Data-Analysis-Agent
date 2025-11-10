@@ -15,6 +15,21 @@ const analysisPlanItemSchema = {
         secondaryAggregation: { type: Type.STRING, enum: ['sum', 'count', 'avg'], description: 'For combo charts, the aggregation for the secondary value column.' },
         defaultTopN: { type: Type.INTEGER, description: 'Optional. If the analysis has many categories, this suggests a default Top N view (e.g., 8).' },
         defaultHideOthers: { type: Type.BOOLEAN, description: 'Optional. If using defaultTopN, suggests whether to hide the "Others" category by default.' },
+        rowFilter: {
+            type: Type.OBJECT,
+            description: 'Optional row-level filter to limit rows before aggregation (e.g., single customer or region).',
+            properties: {
+                column: { type: Type.STRING, description: 'Column to filter on. Must be categorical.' },
+                values: {
+                    type: Type.ARRAY,
+                    minItems: 1,
+                    description: 'Exact values to keep (case-sensitive, as they appear in the dataset).',
+                    items: { type: Type.STRING },
+                },
+            },
+            required: ['column', 'values'],
+            additionalProperties: false,
+        },
     },
     required: [
         'chartType',
@@ -29,6 +44,7 @@ const analysisPlanItemSchema = {
         'secondaryAggregation',
         'defaultTopN',
         'defaultHideOthers',
+        'rowFilter',
     ],
     additionalProperties: false,
 };
@@ -129,6 +145,18 @@ const clarificationRequestSchema = {
               secondaryAggregation: { type: Type.STRING, enum: ['sum', 'count', 'avg'] },
               defaultTopN: { type: Type.INTEGER },
               defaultHideOthers: { type: Type.BOOLEAN },
+              rowFilter: {
+                  type: Type.OBJECT,
+                  properties: {
+                      column: { type: Type.STRING },
+                      values: {
+                          type: Type.ARRAY,
+                          items: { type: Type.STRING },
+                      },
+                  },
+                  additionalProperties: false,
+                  required: ['column', 'values'],
+              },
             },
         },
         targetProperty: {
@@ -292,6 +320,9 @@ const nullablePropertyPaths = new Set([
     'properties.actions.items.properties.plan.properties.secondaryAggregation',
     'properties.actions.items.properties.plan.properties.defaultTopN',
     'properties.actions.items.properties.plan.properties.defaultHideOthers',
+    'properties.actions.items.properties.plan.properties.rowFilter',
+    'properties.actions.items.properties.plan.properties.rowFilter.properties.column',
+    'properties.actions.items.properties.plan.properties.rowFilter.properties.values',
     'properties.actions.items.properties.domAction',
     'properties.actions.items.properties.domAction.properties.args',
     'properties.actions.items.properties.domAction.properties.args.properties.newType',
@@ -318,6 +349,9 @@ const nullablePropertyPaths = new Set([
     'properties.actions.items.properties.clarification.properties.pendingPlan.properties.secondaryAggregation',
     'properties.actions.items.properties.clarification.properties.pendingPlan.properties.defaultTopN',
     'properties.actions.items.properties.clarification.properties.pendingPlan.properties.defaultHideOthers',
+    'properties.actions.items.properties.clarification.properties.pendingPlan.properties.rowFilter',
+    'properties.actions.items.properties.clarification.properties.pendingPlan.properties.rowFilter.properties.column',
+    'properties.actions.items.properties.clarification.properties.pendingPlan.properties.rowFilter.properties.values',
     'properties.actions.items.properties.planState',
     'properties.actions.items.properties.planState.properties.contextSummary',
     'properties.actions.items.properties.planState.properties.blockedBy',
@@ -331,6 +365,9 @@ const nullablePropertyPaths = new Set([
     'properties.plans.items.properties.secondaryAggregation',
     'properties.plans.items.properties.defaultTopN',
     'properties.plans.items.properties.defaultHideOthers',
+    'properties.plans.items.properties.rowFilter',
+    'properties.plans.items.properties.rowFilter.properties.column',
+    'properties.plans.items.properties.rowFilter.properties.values',
 ]);
 
 const applyNullability = (schema: any) => {

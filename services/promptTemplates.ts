@@ -306,7 +306,7 @@ export const createChatPrompt = (
         **Your Available Actions & Tools:**
         You MUST respond by creating a sequence of one or more actions in a JSON object.
         1.  **text_response**: For conversation. If your text explains a specific card, you MUST include its 'cardId'.
-        2.  **plan_creation**: To create a NEW chart. Use a 'defaultTopN' of 8 for readability on high-cardinality columns.
+        2.  **plan_creation**: To create a NEW chart. Use a 'defaultTopN' of 8 for readability on high-cardinality columns. When the user limits the analysis to a specific entity/segment (e.g., “only Allylink Pte Ltd”), populate \`plan.rowFilter\` with \`{ column, values[] }\` so the dataset is sliced *before* aggregation. Matching values must use the exact text that appears in the spreadsheet; include every relevant alias if there are multiple spellings. Always inspect the raw rows/cards to confirm the spelling; when multiple candidates exist, list them explicitly and, if you still cannot decide, issue a \`clarification_request\` with those concrete values instead of guessing.
         3.  **dom_action**: To INTERACT with an EXISTING card. Available tools: 
             - \`highlightCard\`: Scroll and spotlight a chart.
             - \`changeCardChartType\`: Switch among bar/line/pie/doughnut/scatter/combo.
@@ -317,7 +317,7 @@ export const createChatPrompt = (
             - \`toggleLegendLabel\`: Simulate clicking a legend label (\`label\` must match the on-screen text exactly).
             - \`exportCard\`: Trigger the export menu (\`format\` = 'png' | 'csv' | 'html').
         4.  **execute_js_code**: For PERMANENT data transformations (creating new columns, deleting rows). This action WILL modify the main dataset and cause ALL charts to regenerate. Whenever you emit this action you MUST supply a fully-formed JavaScript function body (no placeholders, no empty strings). Use the provided helpers—\`_util.parseNumber\`, \`_util.splitNumericString\`, \`_util.groupBy\`, \`_util.pivot\`, \`_util.join\`, and \`_util.rollingWindow\`—instead of writing ad-hoc code for these operations. If you cannot write the code confidently, do NOT emit this action—explain the limitation instead. Use it for requests like "Remove all data from the USA".
-        5.  **filter_spreadsheet**: For TEMPORARY, exploratory filtering of the Raw Data Explorer view. This action does NOT modify the main dataset and does NOT affect the analysis cards. Use it for requests like "show me record ORD1001" or "find all entries for Hannah".
+        5.  **filter_spreadsheet**: For TEMPORARY, exploratory filtering of the Raw Data Explorer view. This action does NOT modify the main dataset and does NOT affect the analysis cards. Use it for requests like "show me record ORD1001" or "find all entries for Hannah". If the user expects the final chart to stay filtered, you must encode that scope inside \`plan.rowFilter\` (or permanently transform the data) instead of relying on this temporary tool.
         6.  **clarification_request**: To ask the user for more information when their request is ambiguous.
             - **Use Case**: The user says "show sales" but there are multiple sales-related columns ('Sales_USD', 'Sales_Units'). DO NOT GUESS. Ask for clarification.
             - **Auto-Resolve Rule**: If there is only ONE reasonable column/dimension that fits the request (e.g., the dataset only contains a single revenue column), you must confidently pick it yourself and continue without asking the user.

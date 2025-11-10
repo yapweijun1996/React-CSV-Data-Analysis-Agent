@@ -1,5 +1,5 @@
 import React, { useRef, useState, useMemo, useEffect } from 'react';
-import { AnalysisCardData, ChartType } from '../types';
+import { AnalysisPlanRowFilter, AnalysisCardData, ChartType } from '../types';
 import { ChartRenderer, ChartRendererHandle } from './ChartRenderer';
 import { DataTable } from './DataTable';
 import { exportToPng, exportToCsv, exportToHtml } from '../utils/exportUtils';
@@ -30,6 +30,22 @@ const ClearSelectionIcon: React.FC = () => (
         <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
     </svg>
 );
+
+const RowFilterBadge: React.FC<{ filter: AnalysisPlanRowFilter }> = ({ filter }) => {
+    const MAX_VALUES_PREVIEW = 3;
+    const preview = filter.values.slice(0, MAX_VALUES_PREVIEW).map(value => String(value)).join(', ');
+    const remaining = filter.values.length - MAX_VALUES_PREVIEW;
+    const display = remaining > 0 ? `${preview} +${remaining}` : preview;
+    const tooltip = `Rows limited to ${filter.column} → ${filter.values.map(value => String(value)).join(', ')}`;
+    return (
+        <span
+            className="ml-2 inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700 border border-slate-200"
+            title={tooltip}
+        >
+            Filtered · {filter.column}: {display}
+        </span>
+    );
+};
 
 
 export const AnalysisCard: React.FC<AnalysisCardProps> = ({ cardId }) => {
@@ -172,7 +188,14 @@ export const AnalysisCard: React.FC<AnalysisCardProps> = ({ cardId }) => {
             className="bg-white rounded-lg shadow-lg p-4 flex flex-col transition-all duration-300 hover:shadow-blue-500/20 border border-slate-200 w-full"
         >
             <div className="flex justify-between items-start gap-4 mb-2">
-                <h3 className="text-lg font-bold text-slate-900 flex-1">{plan.title}</h3>
+                <div className="flex flex-col flex-1 min-w-0">
+                    <div className="flex items-center flex-wrap">
+                        <h3 className="text-lg font-bold text-slate-900">{plan.title}</h3>
+                        {plan.rowFilter && (
+                            <RowFilterBadge filter={plan.rowFilter} />
+                        )}
+                    </div>
+                </div>
                 <div className="flex items-center bg-slate-100 rounded-md p-0.5 space-x-0.5 flex-shrink-0">
                     <ChartTypeSwitcher currentType={displayChartType} onChange={(newType) => handleChartTypeChange(id, newType)} />
                     <div className="relative group">

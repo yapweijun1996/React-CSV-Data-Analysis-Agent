@@ -1,4 +1,4 @@
-import { CsvData, CsvRow, AnalysisPlan, ColumnProfile, AggregationType, DataTransformMeta } from '../types';
+import { CsvData, CsvRow, AnalysisPlan, ColumnProfile, AggregationType, DataTransformMeta, AnalysisPlanRowFilter } from '../types';
 
 declare const Papa: any;
 
@@ -546,6 +546,33 @@ export const executeJavaScriptFilter = (data: CsvRow[], jsFunctionBody: string):
     }
 };
 
+const normalizeFilterValue = (value: unknown): string | null => {
+    if (value === null || value === undefined) return null;
+    const text = String(value).trim();
+    return text === '' ? null : text;
+};
+
+const applyPlanRowFilter = (rows: CsvRow[], rowFilter?: AnalysisPlanRowFilter): CsvRow[] => {
+    if (!rowFilter?.column || !Array.isArray(rowFilter.values) || rowFilter.values.length === 0) {
+        return rows;
+    }
+
+    const allowed = new Set(
+        rowFilter.values
+            .map(normalizeFilterValue)
+            .filter((value): value is string => value !== null),
+    );
+
+    if (allowed.size === 0) {
+        return rows;
+    }
+
+    return rows.filter(row => {
+        const candidate = normalizeFilterValue(row[rowFilter.column]);
+        return candidate !== null && allowed.has(candidate);
+    });
+};
+
 const calculateAggregation = (values: number[], aggregation: AggregationType): number => {
     if (values.length === 0) return 0;
     switch (aggregation) {
@@ -562,13 +589,15 @@ const calculateAggregation = (values: number[], aggregation: AggregationType): n
 }
 
 export const executePlan = (data: CsvData, plan: AnalysisPlan): CsvRow[] => {
+    const scopedRows = applyPlanRowFilter(data.data, plan.rowFilter);
+
     // Handle scatter plots separately as they don't aggregate data
     if (plan.chartType === 'scatter') {
         const { xValueColumn, yValueColumn } = plan;
         if (!xValueColumn || !yValueColumn) {
             throw new Error("Scatter plot plan is missing xValueColumn or yValueColumn.");
         }
-        return data.data
+        return scopedRows
             .map(row => ({
                 [xValueColumn]: robustParseFloat(row[xValueColumn]),
                 [yValueColumn]: robustParseFloat(row[yValueColumn]),
@@ -584,7 +613,7 @@ export const executePlan = (data: CsvData, plan: AnalysisPlan): CsvRow[] => {
         
         const groups: { [key: string]: { primaryValues: number[], secondaryValues: number[] } } = {};
         
-        data.data.forEach(row => {
+        scopedRows.forEach(row => {
             const groupKey = String(row[groupByColumn]);
             if (groupKey === 'undefined' || groupKey === 'null') return;
             
@@ -628,7 +657,7 @@ export const executePlan = (data: CsvData, plan: AnalysisPlan): CsvRow[] => {
 
     const groups: { [key: string]: number[] } = {};
 
-    data.data.forEach(row => {
+    scopedRows.forEach(row => {
         const groupKey = String(row[groupByColumn]);
         if (groupKey === 'undefined' || groupKey === 'null') return;
         

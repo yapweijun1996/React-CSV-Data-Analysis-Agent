@@ -37,6 +37,11 @@ export interface SelectionDrilldownFilter {
     createdAt: string;
 }
 
+export interface AnalysisPlanRowFilter {
+    column: string;
+    values: (string | number)[];
+}
+
 export interface PendingDataTransform {
     id: string;
     summary: string;
@@ -171,6 +176,7 @@ export interface AnalysisPlan {
     secondaryAggregation?: AggregationType; // For combo charts
     defaultTopN?: number; // Suggested Top N for charts with many categories
     defaultHideOthers?: boolean; // Suggestion for hiding 'Others' in Top N
+    rowFilter?: AnalysisPlanRowFilter; // Optional row-level filter before aggregation
 }
 
 export interface AnalysisCardData {
