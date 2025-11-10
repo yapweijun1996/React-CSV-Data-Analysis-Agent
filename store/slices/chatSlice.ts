@@ -3,6 +3,7 @@ import { vectorStore } from '../../services/vectorStore';
 import { COLUMN_TARGET_PROPERTIES, columnHasUsableData, resolveColumnChoice } from '../../utils/clarification';
 import { applyFriendlyPlanCopy } from '../../utils/planCopy';
 import { runWithBusyState } from '../../utils/runWithBusy';
+import { inferGroupByColumn } from '../../utils/planValidation';
 import type { AnalysisPlan, ChatMessage, ClarificationOption } from '../../types';
 import type { AppStore, ChatSlice } from '../appStoreTypes';
 import { AgentWorker, ChatSliceDependencies } from '../../services/agent/AgentWorker';
@@ -212,17 +213,10 @@ export const createChatSlice = (
                                 completedPlan.groupByColumn = inferredGroupBy;
                                 get().addProgress(`AI inferred grouping by "${inferredGroupBy}" based on your selection.`);
                             } else {
-                                const suitableColumns = columnProfiles.filter(
-                                    p =>
-                                        p.type === 'categorical' &&
-                                        (p.uniqueValues || 0) < csvData.data.length &&
-                                        (p.uniqueValues || 0) > 1,
-                                );
-
-                                if (suitableColumns.length > 0) {
-                                    suitableColumns.sort((a, b) => (a.uniqueValues || Infinity) - (b.uniqueValues || Infinity));
-                                    completedPlan.groupByColumn = suitableColumns[0].name;
-                                    get().addProgress(`AI inferred grouping by "${suitableColumns[0].name}" as a fallback.`);
+                                const { column } = inferGroupByColumn(columnProfiles, csvData.data);
+                                if (column) {
+                                    completedPlan.groupByColumn = column;
+                                    get().addProgress(`AI inferred grouping by "${column}" based on your dataset.`);
                                 }
                             }
                         }
@@ -239,6 +233,11 @@ export const createChatSlice = (
                             const missingFields = ['chartType', 'groupByColumn', 'aggregation'].filter(
                                 field => !(completedPlan as any)[field],
                             );
+                            if (missingFields.includes('groupByColumn')) {
+                                throw new Error(
+                                    '系統無法推斷要用哪個欄位做分組，請手動選擇一個分類/日期欄位作為 grouping column (system could not infer the grouping column).',
+                                );
+                            }
                             throw new Error(
                                 `The clarified plan is still missing required fields like ${missingFields.join(', ')}.`,
                             );

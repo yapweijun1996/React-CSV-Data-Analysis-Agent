@@ -29,7 +29,10 @@ const countUniqueValues = (rows: CsvRow[], column: string, maxSample = 500): num
     return seen.size;
 };
 
-const inferGroupByColumn = (columnProfiles: ColumnProfile[], rows: CsvRow[]): { column: string | null; inferred: boolean } => {
+export const inferGroupByColumn = (
+    columnProfiles: ColumnProfile[],
+    rows: CsvRow[],
+): { column: string | null; inferred: boolean } => {
     if (!columnProfiles.length) return { column: null, inferred: false };
 
     const profiledCandidates = columnProfiles.map(profile => ({
