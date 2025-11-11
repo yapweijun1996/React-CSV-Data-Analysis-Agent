@@ -2835,81 +2835,81 @@ const dispatchAgentActions = async (
 ): Promise<DispatchResult> => {
     await acquireDispatchSlot();
     try {
-    for (const action of response.actions) {
-        if (runtime.get().isRunCancellationRequested(runtime.runId)) {
-            runtime.get().addProgress('Cancelled remaining actions.');
-            return { type: 'halt' };
-        }
-
-        const traceSummary = summarizeAction(action);
-        const traceId = runtime.get().beginAgentActionTrace(action.responseType, traceSummary, 'chat');
-        const markTrace: TraceRecorder = (status, details, telemetry) => {
-            runtime.get().updateAgentActionTrace(traceId, status, details, telemetry);
-        };
-        const normalizedStateTag = normalizeStateTag(action.stateTag);
-        const metadata: Record<string, any> = {};
-        if (normalizedStateTag) {
-            metadata.stateTag = normalizedStateTag;
-        }
-        if (typeof action.stepId === 'string' && action.stepId.trim().length > 0) {
-            metadata.stepId = action.stepId.trim();
-        }
-        const initialTelemetry = Object.keys(metadata).length > 0 ? { metadata } : undefined;
-        markTrace('executing', undefined, initialTelemetry);
-
-        if (action.responseType === 'dom_action' && action.domAction) {
-            resolveCardIdFromArgs(runtime, action.domAction);
-        }
-        const stepResult = await runActionThroughRegistry(action, runtime, remainingAutoRetries, markTrace);
-        const observationPayload = normalizeObservationPayload(stepResult);
-        const recordedObservation = toAgentObservation(action, traceId, observationPayload);
-        runtime.get().appendPlannerObservation(recordedObservation);
-        recordPostActionObservation(runtime, action, traceId, recordedObservation);
-        const satisfiedByAction =
-            runtime.detectedIntent?.requiredTool &&
-            !runtime.intentRequirementSatisfied &&
-            matchesRequiredTool(action, runtime.detectedIntent.requiredTool) &&
-            recordedObservation.status === 'success';
-        if (satisfiedByAction) {
-            runtime.intentRequirementSatisfied = true;
-            runtime.get().addProgress(
-                `Intent requirement satisfied via ${runtime.detectedIntent.requiredTool.domToolName ?? runtime.detectedIntent.requiredTool.responseType}.`,
-            );
-            runtime.get().annotateAgentActionTrace(traceId, {
-                intentSatisfied: true,
-                intent: runtime.detectedIntent.intent,
-            });
-        }
-        if (stepResult.type === 'retry') {
-            const observationStatus = stepResult.observation?.status ?? null;
-            const awaitingUser = Boolean(
-                stepResult.observation?.outputs && 'awaitUser' in stepResult.observation.outputs
-                    ? stepResult.observation.outputs.awaitUser
-                    : false,
-            );
-            const allowSelfHeal =
-                SELF_HEAL_ELIGIBLE_ACTIONS.has(action.responseType) &&
-                observationStatus === 'error' &&
-                !awaitingUser;
-            if (!allowSelfHeal) {
-                runtime.get().addProgress('Skip auto-heal retry because this action is not eligible.', 'system');
+        for (const action of response.actions) {
+            if (runtime.get().isRunCancellationRequested(runtime.runId)) {
+                runtime.get().addProgress('Cancelled remaining actions.');
                 return { type: 'halt' };
             }
-            return {
-                type: 'retry',
-                reason: stepResult.reason,
-                retryPrompt: stepResult.retryPrompt,
-                userFacingMessage: stepResult.userFacingMessage,
-                progressMessage: stepResult.progressMessage,
-                phaseMessage: stepResult.phaseMessage,
-                statusMessage: stepResult.statusMessage,
-                promptMode: stepResult.promptMode,
+
+            const traceSummary = summarizeAction(action);
+            const traceId = runtime.get().beginAgentActionTrace(action.responseType, traceSummary, 'chat');
+            const markTrace: TraceRecorder = (status, details, telemetry) => {
+                runtime.get().updateAgentActionTrace(traceId, status, details, telemetry);
             };
+            const normalizedStateTag = normalizeStateTag(action.stateTag);
+            const metadata: Record<string, any> = {};
+            if (normalizedStateTag) {
+                metadata.stateTag = normalizedStateTag;
+            }
+            if (typeof action.stepId === 'string' && action.stepId.trim().length > 0) {
+                metadata.stepId = action.stepId.trim();
+            }
+            const initialTelemetry = Object.keys(metadata).length > 0 ? { metadata } : undefined;
+            markTrace('executing', undefined, initialTelemetry);
+
+            if (action.responseType === 'dom_action' && action.domAction) {
+                resolveCardIdFromArgs(runtime, action.domAction);
+            }
+            const stepResult = await runActionThroughRegistry(action, runtime, remainingAutoRetries, markTrace);
+            const observationPayload = normalizeObservationPayload(stepResult);
+            const recordedObservation = toAgentObservation(action, traceId, observationPayload);
+            runtime.get().appendPlannerObservation(recordedObservation);
+            recordPostActionObservation(runtime, action, traceId, recordedObservation);
+            const satisfiedByAction =
+                runtime.detectedIntent?.requiredTool &&
+                !runtime.intentRequirementSatisfied &&
+                matchesRequiredTool(action, runtime.detectedIntent.requiredTool) &&
+                recordedObservation.status === 'success';
+            if (satisfiedByAction) {
+                runtime.intentRequirementSatisfied = true;
+                runtime.get().addProgress(
+                    `Intent requirement satisfied via ${runtime.detectedIntent.requiredTool.domToolName ?? runtime.detectedIntent.requiredTool.responseType}.`,
+                );
+                runtime.get().annotateAgentActionTrace(traceId, {
+                    intentSatisfied: true,
+                    intent: runtime.detectedIntent.intent,
+                });
+            }
+            if (stepResult.type === 'retry') {
+                const observationStatus = stepResult.observation?.status ?? null;
+                const awaitingUser = Boolean(
+                    stepResult.observation?.outputs && 'awaitUser' in stepResult.observation.outputs
+                        ? stepResult.observation.outputs.awaitUser
+                        : false,
+                );
+                const allowSelfHeal =
+                    SELF_HEAL_ELIGIBLE_ACTIONS.has(action.responseType) &&
+                    observationStatus === 'error' &&
+                    !awaitingUser;
+                if (!allowSelfHeal) {
+                    runtime.get().addProgress('Skip auto-heal retry because this action is not eligible.', 'system');
+                    return { type: 'halt' };
+                }
+                return {
+                    type: 'retry',
+                    reason: stepResult.reason,
+                    retryPrompt: stepResult.retryPrompt,
+                    userFacingMessage: stepResult.userFacingMessage,
+                    progressMessage: stepResult.progressMessage,
+                    phaseMessage: stepResult.phaseMessage,
+                    statusMessage: stepResult.statusMessage,
+                    promptMode: stepResult.promptMode,
+                };
+            }
+            if (stepResult.type === 'halt') {
+                return { type: 'halt' };
+            }
         }
-        if (stepResult.type === 'halt') {
-            return { type: 'halt' };
-        }
-    }
 
         return { type: 'complete' };
     } finally {
