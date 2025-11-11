@@ -12,10 +12,5 @@ export const graphDataTools = {
     detectOutliers: runOutlierDetection,
 };
 
-export type {
-    GraphToolResponse,
-    GraphToolMeta,
-    GraphProfileResponse,
-    GraphNormalizationResponse,
-    GraphOutlierResponse,
-} from './facade';
+export type { GraphToolResponse } from './facade';
+export { GraphToolExecutionError } from './facade';

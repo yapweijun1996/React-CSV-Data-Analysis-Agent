@@ -38,8 +38,10 @@ import {
     AwaitUserPayload,
     AwaitInteractionRecord,
     GraphToolCall,
+    GraphToolKind,
     GraphToolInFlightSnapshot,
     LlmUsageEntry,
+    GraphToolMeta,
 } from '../types';
 import type { GraphObservation } from '@/src/graph/schema';
 import { executePlan, applyTopNWithOthers, PlanExecutionError } from '../utils/dataProcessor';
@@ -65,9 +67,10 @@ import { createAiFilterSlice } from './slices/aiFilterSlice';
 import { AutoSaveManager, AutoSaveConfig, deriveAutoSaveConfig } from '../utils/autoSaveManager';
 import { computeDatasetHash } from '../utils/datasetHash';
 import { graphBus } from '../src/bus/client';
-import type { GraphWorkerEvent } from '../src/graph/contracts';
+import { langGraphBus } from '../src/bus/langGraphClient';
+import type { GraphClientEvent, GraphWorkerEvent } from '../src/graph/contracts';
 import { buildAggregatePayloadForPlan } from '@/utils/aggregatePayload';
-import { graphDataTools, type GraphToolMeta } from '@/tools/data';
+import { graphDataTools, GraphToolExecutionError, type GraphToolResponse } from '@/tools/data';
 import { isGraphToolOption } from '@/src/graph/toolSpecs';
 import { toLangChainPlanGraphPayload } from '@/services/langchain/types';
 import type { LangChainPlanEnvelope, LangChainPlanTelemetry } from '@/services/langchain/types';
@@ -114,6 +117,7 @@ const createPromptMetricId = () => `prompt-${Date.now()}-${Math.random().toStrin
 let autoSaveManager: AutoSaveManager | null = null;
 let latestAutoSaveConfig: AutoSaveConfig | null = null;
 let graphBridgeInitialized = false;
+let graphBridgeRuntime: 'legacy' | 'langgraph' | null = null;
 let graphBridgeUnsubscribe: (() => void) | null = null;
 
 const updateAutoSaveConfiguration = (settings: Settings) => {
@@ -152,6 +156,24 @@ const buildToolObservation = (
         meta,
         payload,
     },
+});
+
+const buildToolErrorObservation = (
+    kind: GraphToolCall['kind'],
+    summary: string,
+    payload?: Record<string, unknown>,
+    code?: ErrorCode,
+): AgentObservation => ({
+    id: `obs-tool-${kind}-err-${Date.now().toString(36)}`,
+    actionId: kind,
+    responseType: 'execute_js_code',
+    status: 'error',
+    timestamp: new Date().toISOString(),
+    outputs: {
+        summary,
+        ...(payload ?? {}),
+    },
+    errorCode: code ?? ERROR_CODES.UNKNOWN,
 });
 
 const requestFullScanApproval = (title: string): boolean => {
@@ -450,13 +472,10 @@ interface GraphToolVerificationPayload {
 }
 
 const dispatchGraphToolResult = (verification: GraphToolVerificationPayload) => {
-    if (!graphBus.isSupported) return;
-    graphBus.post({
-        type: 'graph/tool_result',
-        verification,
-        timestamp: Date.now(),
-    });
-    graphBus.post({ type: 'graph/runPipeline', payload: { reason: 'verification' }, timestamp: Date.now() });
+    if (!postGraphClientEvent({ type: 'graph/tool_result', verification, timestamp: Date.now() })) {
+        return;
+    }
+    postGraphClientEvent({ type: 'graph/runPipeline', payload: { reason: 'verification' }, timestamp: Date.now() });
 };
 
 const describeGraphToolCall = (toolCall: GraphToolCall): string => {
@@ -542,6 +561,7 @@ const buildSerializableAppState = (state: AppStore): AppState => ({
     analysisTimeline: state.analysisTimeline,
     langChainLastPlan: state.langChainLastPlan,
     langChainPlannerEnabled: state.langChainPlannerEnabled,
+    useLangGraphRuntime: state.useLangGraphRuntime,
     llmUsageLog: state.llmUsageLog,
     graphObservations: state.graphObservations,
 });
@@ -745,6 +765,7 @@ const initialAppState: AppState = {
     graphToolInFlight: null,
     langChainLastPlan: null,
     langChainPlannerEnabled: true,
+    useLangGraphRuntime: true,
     llmUsageLog: [],
     graphObservations: [],
 };
@@ -762,6 +783,15 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             activeClarificationId: newClarification.id,
         }));
         return newClarification;
+    };
+
+    const getActiveGraphBus = () => (get().useLangGraphRuntime ? langGraphBus : graphBus);
+    const getRuntimeLabel = () => (get().useLangGraphRuntime ? 'LangGraph' : 'Graph');
+    const postGraphClientEvent = (event: GraphClientEvent): boolean => {
+        const bus = getActiveGraphBus();
+        if (!bus.isSupported) return false;
+        bus.post(event);
+        return true;
     };
 
     const updateClarificationStatus = (clarificationId: string, status: ClarificationStatus) => {
@@ -790,18 +820,60 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         });
     };
 
-const beginGraphTool = (toolCall: GraphToolCall) => {
-    const snapshot: GraphToolInFlightSnapshot = {
-        kind: toolCall.kind,
-        label: describeGraphToolCall(toolCall),
-        startedAt: new Date().toISOString(),
+    const beginGraphTool = (toolCall: GraphToolCall) => {
+        const snapshot: GraphToolInFlightSnapshot = {
+            kind: toolCall.kind,
+            label: describeGraphToolCall(toolCall),
+            startedAt: new Date().toISOString(),
+        };
+        set({ graphToolInFlight: snapshot });
     };
-    set({ graphToolInFlight: snapshot });
-};
 
-const endGraphTool = () => {
-    set({ graphToolInFlight: null });
-};
+    const endGraphTool = () => {
+        set({ graphToolInFlight: null });
+    };
+
+    const recordGraphToolSuccess = <K extends GraphToolKind>(
+        response: GraphToolResponse<K>,
+        options?: { description?: string },
+    ) => {
+        const payloadForLog = response.viewId
+            ? { ...response.payload, viewId: response.viewId }
+            : response.payload;
+        const description =
+            options?.description ??
+            graphObservationKindLabel[payloadForLog.kind] ??
+            payloadForLog.kind;
+        set({ graphLastToolSummary: response.summary });
+        get().addProgress(response.summary);
+        dispatchGraphToolResult({
+            description,
+            summary: response.summary,
+            meta: response.meta,
+            payload: payloadForLog,
+        });
+        get().appendPlannerObservation(
+            buildToolObservation(payloadForLog.kind, response.summary, response.meta, payloadForLog),
+        );
+    };
+
+    const recordGraphToolFailure = (
+        kind: GraphToolCall['kind'],
+        code?: ErrorCode,
+        reason?: string,
+        suggestion?: string,
+    ) => {
+        const friendly = describeToolFailure(code, reason);
+        const summary = `${graphObservationKindLabel[kind] ?? kind} failed：${friendly}`;
+        const payload = {
+            suggestion: suggestion ?? friendly,
+            detail: reason ?? null,
+        };
+        set({ graphLastToolSummary: summary });
+        get().addProgress(summary, 'error');
+        get().appendPlannerObservation(buildToolErrorObservation(kind, friendly, payload, code));
+        return summary;
+    };
 
     const executeGraphToolCall = async (toolCall?: GraphToolCall): Promise<boolean> => {
         if (!toolCall) {
@@ -814,38 +886,23 @@ const endGraphTool = () => {
                     get().addProgress('Graph profile request skipped：没有载入的数据集。', 'error');
                     return false;
                 }
+                beginGraphTool(toolCall);
                 try {
-                    beginGraphTool(toolCall);
-                    const sampleSize = typeof toolCall.params?.sampleSize === 'number' ? (toolCall.params.sampleSize as number) : undefined;
+                    const sampleSize =
+                        typeof toolCall.params?.sampleSize === 'number'
+                            ? (toolCall.params.sampleSize as number)
+                            : undefined;
                     const profile = await graphDataTools.profileDataset(datasetId, sampleSize);
-                    const summary = `数据画像：${profile.columns} 列 · ${profile.rowCount.toLocaleString()} 行（采样 ${profile.sampledRows.toLocaleString()}）`;
-                    const meta: GraphToolMeta = {
-                        source: profile.sampledRows === profile.rowCount ? 'full' : 'sample',
-                        rows: profile.rowCount,
-                        warnings: profile.warnings,
-                        processedRows: profile.sampledRows,
-                        totalRows: profile.rowCount,
-                        durationMs: profile.durationMs ?? 0,
-                    };
-                    const payload = {
-                        kind: 'profile_dataset' as const,
-                        columns: profile.columns,
-                        rowCount: profile.rowCount,
-                        sampledRows: profile.sampledRows,
-                    };
-                    set({ graphLastToolSummary: summary });
-                    get().addProgress(summary);
-                    dispatchGraphToolResult({
-                        description: 'Dataset profile',
-                        summary,
-                        meta,
-                        payload,
-                    });
-                    get().appendPlannerObservation(buildToolObservation('profile_dataset', summary, meta, payload));
+                    recordGraphToolSuccess(profile, { description: 'Dataset profile' });
                     return true;
                 } catch (error) {
-                    const reason = error instanceof Error ? error.message : String(error);
-                    get().addProgress(`Graph profile request failed: ${reason}`, 'error');
+                    const graphError = error instanceof GraphToolExecutionError ? error : null;
+                    recordGraphToolFailure(
+                        'profile_dataset',
+                        graphError?.code,
+                        graphError?.message ?? (error instanceof Error ? error.message : String(error)),
+                        graphError?.suggestion,
+                    );
                     return false;
                 } finally {
                     endGraphTool();
@@ -861,33 +918,17 @@ const endGraphTool = () => {
                 beginGraphTool(toolCall);
                 try {
                     const normalization = graphDataTools.normalizeInvoiceMonth(csvData, column);
-                    const totalRows = normalization.normalizedCount + normalization.skippedCount;
-                    const summary = `标准化 ${column}：成功 ${normalization.normalizedCount}，跳过 ${normalization.skippedCount}`;
-                    const meta: GraphToolMeta = {
-                        source: 'full',
-                        rows: normalization.normalizedCount,
-                        warnings: normalization.skippedCount ? [`Skipped ${normalization.skippedCount} rows`] : [],
-                        processedRows: totalRows,
-                        totalRows,
-                        durationMs: 0,
-                    };
-                    const payload = {
-                        kind: 'normalize_invoice_month' as const,
-                        column: normalization.column,
-                        normalizedCount: normalization.normalizedCount,
-                        skippedCount: normalization.skippedCount,
-                        sampleValues: normalization.sampleValues,
-                    };
-                    set({ graphLastToolSummary: summary });
-                    get().addProgress(summary);
-                    dispatchGraphToolResult({
-                        description: `Normalize ${column}`,
-                        summary,
-                        meta,
-                        payload,
-                    });
-                    get().appendPlannerObservation(buildToolObservation('normalize_invoice_month', summary, meta, payload));
+                    recordGraphToolSuccess(normalization, { description: `Normalize ${column}` });
                     return true;
+                } catch (error) {
+                    const graphError = error instanceof GraphToolExecutionError ? error : null;
+                    recordGraphToolFailure(
+                        'normalize_invoice_month',
+                        graphError?.code,
+                        graphError?.message ?? (error instanceof Error ? error.message : String(error)),
+                        graphError?.suggestion,
+                    );
+                    return false;
                 } finally {
                     endGraphTool();
                 }
@@ -907,33 +948,17 @@ const endGraphTool = () => {
                 beginGraphTool(toolCall);
                 try {
                     const outliers = graphDataTools.detectOutliers(csvData, valueColumn, thresholdMultiplier);
-                    const totalRows = csvData.data.length;
-                    const summary = `异常检测 ${valueColumn}：找到 ${outliers.count} 条高于阈值 ${outliers.threshold}`;
-                    const meta: GraphToolMeta = {
-                        source: 'full',
-                        rows: outliers.count,
-                        warnings: [],
-                        processedRows: totalRows,
-                        totalRows,
-                        durationMs: 0,
-                    };
-                    const payload = {
-                        kind: 'detect_outliers' as const,
-                        column: outliers.column,
-                        threshold: outliers.threshold,
-                        count: outliers.count,
-                        rows: outliers.rows,
-                    };
-                    set({ graphLastToolSummary: summary });
-                    get().addProgress(summary);
-                    dispatchGraphToolResult({
-                        description: `Detect outliers (${valueColumn})`,
-                        summary,
-                        meta,
-                        payload,
-                    });
-                    get().appendPlannerObservation(buildToolObservation('detect_outliers', summary, meta, payload));
+                    recordGraphToolSuccess(outliers, { description: `Detect outliers (${valueColumn})` });
                     return true;
+                } catch (error) {
+                    const graphError = error instanceof GraphToolExecutionError ? error : null;
+                    recordGraphToolFailure(
+                        'detect_outliers',
+                        graphError?.code,
+                        graphError?.message ?? (error instanceof Error ? error.message : String(error)),
+                        graphError?.suggestion,
+                    );
+                    return false;
                 } finally {
                     endGraphTool();
                 }
@@ -1375,9 +1400,11 @@ const endGraphTool = () => {
     init: async () => {
         const currentSession = await getReport(CURRENT_SESSION_KEY);
         if (currentSession) {
+            const wasLegacyRuntime = currentSession.appState.useLangGraphRuntime === false;
             set({
                 ...initialAppState,
                 ...currentSession.appState,
+                useLangGraphRuntime: true,
                 isBusy: false,
                 busyMessage: null,
                 canCancelBusy: false,
@@ -1415,6 +1442,9 @@ const endGraphTool = () => {
                 'Restored AI long-term memory from last session.',
             );
             seedAutoSaveCreatedAt(currentSession.createdAt);
+            if (wasLegacyRuntime) {
+                triggerAutoSaveImmediately();
+            }
         } else {
             const cachedDatasetId = getRememberedDatasetId();
             if (cachedDatasetId) {
@@ -1424,23 +1454,28 @@ const endGraphTool = () => {
         await get().loadReportsList();
     },
     connectGraphRuntime: () => {
-        if (graphBridgeInitialized) {
+        const runtimeKey = get().useLangGraphRuntime ? 'langgraph' : 'legacy';
+        const runtimeLabel = runtimeKey === 'langgraph' ? 'LangGraph' : 'Graph';
+        if (graphBridgeInitialized && graphBridgeRuntime === runtimeKey) {
             return;
         }
+        graphBridgeUnsubscribe?.();
+        graphBridgeUnsubscribe = null;
         graphBridgeInitialized = true;
-        if (!graphBus.isSupported) {
+        graphBridgeRuntime = runtimeKey;
+        const activeBus = getActiveGraphBus();
+        if (!activeBus.isSupported) {
             set({
                 graphStatus: 'error',
-                graphStatusMessage: '当前浏览器不支持 Web Worker，Graph runtime 无法启动。',
+                graphStatusMessage: `当前浏览器不支持 ${runtimeLabel} Web Worker，runtime 无法启动。`,
             });
             return;
         }
         set({
             graphStatus: 'connecting',
-            graphStatusMessage: 'Spinning up LangGraph runtime…',
+            graphStatusMessage: `Spinning up ${runtimeLabel} runtime…`,
         });
-        graphBridgeUnsubscribe?.();
-        graphBridgeUnsubscribe = graphBus.subscribe((event: GraphWorkerEvent) => {
+        graphBridgeUnsubscribe = activeBus.subscribe((event: GraphWorkerEvent) => {
             switch (event.type) {
                 case 'graph/ready': {
                     const readyAt = new Date(event.timestamp).toISOString();
@@ -1506,15 +1541,15 @@ const endGraphTool = () => {
                     return;
             }
         });
-        graphBus.ensureWorker();
-        graphBus.post({ type: 'graph/init', origin: 'ui', timestamp: Date.now() });
+        activeBus.ensureWorker();
+        activeBus.post({ type: 'graph/init', origin: 'ui', timestamp: Date.now() });
     },
-    runGraphPipeline: (payload) => {
-        if (!graphBus.isSupported) return;
-        graphBus.post({ type: 'graph/runPipeline', payload, timestamp: Date.now() });
+    runGraphPipeline: payload => {
+        postGraphClientEvent({ type: 'graph/runPipeline', payload, timestamp: Date.now() });
     },
     sendGraphUserReply: async (optionId, freeText) => {
-        if (!graphBus.isSupported) return;
+        const activeBus = getActiveGraphBus();
+        if (!activeBus.isSupported) return;
         const promptSnapshot = get().graphAwaitPrompt;
         const respondedAt = new Date().toISOString();
         const trimmedFreeText = typeof freeText === 'string' ? freeText.trim() : undefined;
@@ -1546,11 +1581,11 @@ const endGraphTool = () => {
                   })
                 : state.graphAwaitHistory,
         }));
-        graphBus.post({ type: 'graph/userReply', optionId, freeText: trimmedFreeText, timestamp: Date.now() });
+        activeBus.post({ type: 'graph/userReply', optionId, freeText: trimmedFreeText, timestamp: Date.now() });
         const state = get();
         const useLangChain = shouldUseLangChainPlannerForReply(state, optionId, trimmedFreeText);
         if (!useLangChain) {
-            graphBus.post({ type: 'graph/runPipeline', payload: { reason: 'user_reply' }, timestamp: Date.now() });
+            activeBus.post({ type: 'graph/runPipeline', payload: { reason: 'user_reply' }, timestamp: Date.now() });
             return;
         }
         try {
@@ -1561,7 +1596,7 @@ const endGraphTool = () => {
             recordPlanTelemetryBatch('langchain_plan', envelope.usageLog);
             const telemetryText = formatLangChainTelemetry(envelope.telemetry);
             get().addProgress(`↺ LangChain plan ready (${telemetryText}) — ${envelope.summary}`);
-            graphBus.post({
+            activeBus.post({
                 type: 'graph/runPipeline',
                 payload: {
                     reason: 'langchain_plan',
@@ -1572,7 +1607,7 @@ const endGraphTool = () => {
         } catch (error) {
             const reason = error instanceof Error ? error.message : String(error);
             get().addProgress(`LangChain planner failed: ${reason}，改用本地 planner。`, 'error');
-            graphBus.post({
+            activeBus.post({
                 type: 'graph/runPipeline',
                 payload: { reason: 'langchain_plan_fallback' },
                 timestamp: Date.now(),
@@ -1597,6 +1632,11 @@ const endGraphTool = () => {
                         }
                         const datasetId = get().datasetHash;
                         const rowCountHint = get().datasetProfile?.rowCount ?? dataset.data.length;
+                        const aggregateCall: GraphToolCall = {
+                            kind: 'aggregate_plan',
+                            params: { planTitle: action.plan.title ?? 'analysis' },
+                        };
+                        beginGraphTool(aggregateCall);
                         try {
                             const preview = await graphDataTools.aggregatePlan({
                                 plan: action.plan,
@@ -1608,32 +1648,17 @@ const endGraphTool = () => {
                                     runtimeConfig: get().datasetRuntimeConfig,
                                 },
                             });
-                            const summary = `预览 ${action.plan.title ?? 'analysis'}: ${preview.meta.rows} 行（${
-                                preview.meta.source
-                            }），警告 ${preview.meta.warnings.length}。`;
-                            set({ graphLastToolSummary: summary });
-                            get().addProgress(summary);
-                            dispatchGraphToolResult({
-                                description: action.plan.title ?? 'analysis',
-                                summary,
-                                meta: preview.meta,
-                                payload: {
-                                    kind: 'aggregate_plan',
-                                    planTitle: action.plan.title ?? 'analysis',
-                                    rows: preview.meta.rows,
-                                    viewId: preview.viewId,
-                                },
-                            });
-                            get().appendPlannerObservation(
-                                buildToolObservation('aggregate_plan', summary, preview.meta, {
-                                    planTitle: action.plan.title ?? 'analysis',
-                                    rows: preview.meta.rows,
-                                    viewId: preview.viewId,
-                                }),
-                            );
+                            recordGraphToolSuccess(preview, { description: action.plan.title ?? 'analysis' });
                         } catch (error) {
-                            const reason = error instanceof Error ? error.message : String(error);
-                            get().addProgress(`Graph aggregate tool failed: ${reason}`, 'error');
+                            const graphError = error instanceof GraphToolExecutionError ? error : null;
+                            recordGraphToolFailure(
+                                'aggregate_plan',
+                                graphError?.code,
+                                graphError?.message ?? (error instanceof Error ? error.message : String(error)),
+                                graphError?.suggestion,
+                            );
+                        } finally {
+                            endGraphTool();
                         }
                         get().addProgress(`Graph executing plan "${action.plan.title ?? 'analysis'}" via data pipeline.`);
                         const runId = createRunId();
@@ -2218,45 +2243,31 @@ const endGraphTool = () => {
                 }
                 get().addProgress('Running quick data profile…');
                 try {
-                    const profileResult = await dataTools.profile(datasetId, get().datasetRuntimeConfig?.profileSampleSize);
-                    if (!profileResult.ok) {
-                        get().addProgress(
-                            `Data profile failed: ${describeToolFailure(profileResult.code, profileResult.reason)}`,
-                            'error',
-                        );
-                        return;
+                    const profileResponse = await graphDataTools.profileDataset(
+                        datasetId,
+                        get().datasetRuntimeConfig?.profileSampleSize,
+                    );
+                    const snapshot = (profileResponse.context ?? null) as ProfileResult | null;
+                    if (snapshot) {
+                        get().applyDatasetProfileSnapshot(snapshot);
                     }
-                    get().applyDatasetProfileSnapshot(profileResult.data);
-                    const quickSummary = `数据画像：${profileResult.data.columns.length} 列 · ${profileResult.data.rowCount.toLocaleString()} 行（采样 ${profileResult.data.sampledRows.toLocaleString()}）`;
-                    set({ graphLastToolSummary: quickSummary });
-                    dispatchGraphToolResult({
-                        description: 'Dataset profile (quick action)',
-                        summary: quickSummary,
-                        meta: {
-                            source: profileResult.data.sampledRows === profileResult.data.rowCount ? 'full' : 'sample',
-                            rows: profileResult.data.rowCount,
-                            warnings: profileResult.data.warnings,
-                            processedRows: profileResult.data.sampledRows,
-                            totalRows: profileResult.data.rowCount,
-                            durationMs: profileResult.durationMs ?? 0,
-                        },
-                        payload: {
-                            kind: 'profile_dataset',
-                            columns: profileResult.data.columns.length,
-                            rowCount: profileResult.data.rowCount,
-                            sampledRows: profileResult.data.sampledRows,
-                        },
-                    });
+                    recordGraphToolSuccess(profileResponse, { description: 'Dataset profile (quick action)' });
+                    const quickSummary = profileResponse.summary;
                     const summaryMessage: ChatMessage = {
                         sender: 'ai',
-                        text: `✅ 数据画像完成：共 ${profileResult.data.columns.length} 列、${profileResult.data.rowCount.toLocaleString()} 行。展开 “Data Profile” 面板即可查看细节。`,
+                        text: `✅ 数据画像完成：共 ${profileResponse.payload.columns} 列、${profileResponse.payload.rowCount.toLocaleString()} 行。展开 “Data Profile” 面板即可查看细节。`,
                         timestamp: new Date(),
                         type: 'ai_message',
                     };
                     set(prev => ({ chatHistory: [...prev.chatHistory, summaryMessage] }));
                 } catch (error) {
-                    const errorMessage = error instanceof Error ? error.message : String(error);
-                    get().addProgress(`Data profile quick action failed: ${errorMessage}`, 'error');
+                    const graphError = error instanceof GraphToolExecutionError ? error : null;
+                    recordGraphToolFailure(
+                        'profile_dataset',
+                        graphError?.code,
+                        graphError?.message ?? (error instanceof Error ? error.message : String(error)),
+                        graphError?.suggestion,
+                    );
                 }
                 break;
             }
@@ -2606,6 +2617,22 @@ const endGraphTool = () => {
     clearLlmUsage: () => {
         set({ llmUsageLog: [] });
     },
+    toggleLangGraphRuntime: enabled => {
+        if (get().useLangGraphRuntime === enabled) {
+            return;
+        }
+        graphBridgeUnsubscribe?.();
+        graphBridgeUnsubscribe = null;
+        graphBridgeInitialized = false;
+        graphBridgeRuntime = null;
+        set({
+            useLangGraphRuntime: enabled,
+            graphStatus: 'idle',
+            graphStatusMessage: 'Graph runtime not connected.',
+            graphVersion: null,
+            graphLastReadyAt: null,
+        });
+    },
     setLangChainLastPlan: plan => {
         set({ langChainLastPlan: plan });
     },
@@ -2745,12 +2772,13 @@ const endGraphTool = () => {
     handleLoadReport: async (id) => {
         get().addProgress(`Loading report ${id}...`);
         const report = await getReport(id);
-        if (report) {
-            vectorStore.clear();
-            set({ 
-                ...report.appState, 
-                agentAwaitingUserInput: report.appState.agentAwaitingUserInput ?? false,
-                agentAwaitingPromptId: report.appState.agentAwaitingPromptId ?? null,
+            if (report) {
+                vectorStore.clear();
+                set({
+                    ...report.appState,
+                    useLangGraphRuntime: true,
+                    agentAwaitingUserInput: report.appState.agentAwaitingUserInput ?? false,
+                    agentAwaitingPromptId: report.appState.agentAwaitingPromptId ?? null,
                 currentView: 'analysis_dashboard', 
                 isHistoryPanelOpen: false,
                 chatMemoryPreview: [],

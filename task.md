@@ -18,9 +18,9 @@
 | --- | --- | --- | --- | --- | --- |
 | 1 | Graph & Worker Skeleton | Worker offloads LangGraph; postMessage bus; UI status pill | `/src/graph/runner.ts`, `/src/bus/client.ts`, Vite worker config, `graph/ready` ping | ✅ Done | Worker handshake + MIME-safe worker bundle + status pill |
 | 2 | GraphState Model & Guards | Single source of truth for plan/await flags; per-turn budget (max 2 actions) | `/src/graph/schema.ts`, `/src/graph/guards.ts`, unit tests | ✅ Done | Guards enforce awaitingUser/plan primer & worker validation event |
-| 3 | Node Pipeline (Diagnose→Adjust) | LangGraph nodes; AskUser emits `await_user`; waits for `USER_REPLY` | LangGraph PoC nodes, state sync, worker bridge | 🚧 In Progress | LangChain 計畫已串入 plan node、telemetry 同步至 GraphState；UI Timeline / Await 提示已完成，接下来要整合 System Log & rollout test |
+| 3 | Node Pipeline (Diagnose→Adjust) | LangGraph nodes; AskUser emits `await_user`; waits for `USER_REPLY` | LangGraph PoC nodes, state sync, worker bridge | ✅ Done | LangGraph runtime 现已默认开启（含 autosave 迁移 + fallback flag）；Graph 工具桥接统一走 LangGraph 观察，待补一次离线 E2E 记录日志即可封盘 |
 | 4 | LLM Provider Adapter | Gemini first, OpenAI optional; tool schema passthrough; in-memory key | `/src/llm/provider.ts`, UI provider panel | 📝 Planned | Add fetch retry wrapper after Task10 |
-| 5 | Data Tools Wrapper | Standardized tool interface for profile/aggregate/normalize/outlier | `/tools/data/index.ts`, `utils/aggregatePayload.ts`, worker bridge | 🚧 In Progress | Added profile/normalize/outlier facades + aggregate meta feeds Verify/Adjust via graph/tool_result；下一步把更多 node 觀測寫入 UI |
+| 5 | Data Tools Wrapper | Standardized tool interface for profile/aggregate/normalize/outlier | `/tools/data/index.ts`, `utils/aggregatePayload.ts`, worker bridge | ✅ Done | Graph 工具 response/meta 统一 `source/rows/duration/warnings/telemetry`，失败输出 `{errorCode,suggestion}` 并同步 observation/System Log；tool in-flight/last summary 皆在 success/fail 后复位 |
 | 6 | IndexedDB Cache & Dedup | Persist sessions/views/profiles/kv; payload hash dedupe | `/src/idb/*`, hash util, migrations doc | 📝 Planned | Lock schema v1; note upgrade path |
 | 7 | Await UI Integration | AwaitCard (options + free text); STATUS banner locks auto-run | `components/AwaitCard.tsx`, bus wiring, UX copy | 🚧 In Progress | AwaitCard + auto-resume + progress log 提示已完成；下一步：提醒/歷史紀錄細節 |
 | 8 | Adaptive Sampling & Full Scan Opt-In | Sampling heuristics + Verify node fallback prompts | dataWorker params, Verify node logic, UI prompts | 📝 Planned | Need cooling period for full scan authorization |
@@ -34,9 +34,9 @@
 
 ## Next Actions / 小步计划
 
-1. **LangChain Node Pipeline 收尾** – 把 observation 日志接入 System Log / autosave，并验证 Await UI 提示（含 cost/token）。  
+1. **LangGraph Default-on 烟雾测试** – 在离线环境执行 Upload→Await→Plan→Tool→Autosave 路径，记录 System Log/TL Diff 供验收。  
 2. **LLM Usage 可視化 2/2** – 把 cost/tokens 數據嵌入 System Log / Timeline，並加上簡易匯出/上限提醒。  
-3. **Task 5 Data Tools Wrapper** – 完成所有工具結果 → GraphState 的標準化（payload schema、error 映射、tool in-flight 狀態）。
+3. **Tool History Storage 策略** – 定稿 IndexedDB Timeline/observation roll-off（N 条 + 自动清理）并写入 docs。
 
 ---
 

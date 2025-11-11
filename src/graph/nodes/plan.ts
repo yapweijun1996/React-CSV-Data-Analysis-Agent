@@ -1,5 +1,5 @@
 import type { PipelineContext, NodeResult } from './types';
-import type { AiAction, AnalysisPlan, GraphToolCall } from '@/types';
+import type { AiAction, GraphToolCall } from '@/types';
 import type { GraphObservation, StepStatus } from '../schema';
 import { getGraphToolSpec } from '../toolSpecs';
 import type { LangChainPlanGraphPayload } from '@/services/langchain/types';
@@ -92,57 +92,28 @@ export const planNode = ({ state, payload }: PipelineContext): NodeResult => {
     }
 
     const langChainPlan = extractLangChainPlan(payload);
-    const summary =
-        pendingReply.optionId ??
-        pendingReply.freeText ??
-        pendingReply.question ??
-        'user-choice';
+    const toolSpec = pendingReply.optionId ? getGraphToolSpec(pendingReply.optionId) : undefined;
+
+    if (!toolSpec) {
+        if (!langChainPlan) {
+            throw new Error('LangChain plan payload missing; cannot construct plan node actions.');
+        }
+        return handleLangChainPlan(state, langChainPlan);
+    }
+
     const readableSummary =
         pendingReply.freeText ||
         pendingReply.options.find(option => option.id === pendingReply.optionId)?.label ||
         pendingReply.optionId ||
         pendingReply.question;
     const planId = state.planId ?? createPlanId();
-    const toolSpec = pendingReply.optionId ? getGraphToolSpec(pendingReply.optionId) : undefined;
-
-    if (!toolSpec && langChainPlan) {
-        return handleLangChainPlan(state, langChainPlan);
-    }
-
-    const shouldCreatePlan = !toolSpec;
-    const analysisPlan: AnalysisPlan = shouldCreatePlan
-        ? {
-              chartType: 'bar',
-              title: readableSummary ?? 'Custom Analysis',
-              description: `Based on your selection ${readableSummary}`,
-              aggregation: 'sum',
-              groupByColumn: 'auto_inferred_column',
-              valueColumn: 'auto_inferred_metric',
-              defaultTopN: 8,
-              defaultHideOthers: true,
-          }
-        : {
-              chartType: 'bar',
-              title: readableSummary ?? 'Data operation',
-              description: readableSummary ?? 'Data operation',
-              aggregation: 'count',
-              groupByColumn: 'auto_inferred_column',
-              valueColumn: 'auto_inferred_metric',
-          };
-    const currentStepId = toolSpec?.stepId ?? (pendingReply.optionId ? `plan-${pendingReply.optionId}` : 'plan-custom');
-    const step: { id: string; intent: string; label: string; status: StepStatus } = toolSpec
-        ? {
-              id: currentStepId,
-              intent: toolSpec.stepIntent,
-              label: toolSpec.stepLabel,
-              status: 'in_progress',
-          }
-        : {
-              id: currentStepId,
-              intent: 'analysis',
-              label: `执行：${readableSummary}`,
-              status: 'in_progress',
-          };
+    const currentStepId = toolSpec.stepId;
+    const step: { id: string; intent: string; label: string; status: StepStatus } = {
+        id: currentStepId,
+        intent: toolSpec.stepIntent,
+        label: toolSpec.stepLabel,
+        status: 'in_progress',
+    };
     const planAction: AiAction = {
         type: 'plan_state_update',
         responseType: 'plan_state_update',
@@ -168,25 +139,14 @@ export const planNode = ({ state, payload }: PipelineContext): NodeResult => {
     };
 
     const actions: AiAction[] = [planAction];
-    if (toolSpec) {
-        actions.push(
-            createToolAction({
-                toolCall: toolSpec.toolCall,
-                stepId: toolSpec.stepId,
-                reason: toolSpec.reason,
-                text: toolSpec.text,
-            }),
-        );
-    }
-
-    const pendingPlanEntry = shouldCreatePlan
-        ? {
-              id: currentStepId,
-              summary: readableSummary ?? summary,
-              plan: analysisPlan,
-              createdAt: new Date().toISOString(),
-          }
-        : null;
+    actions.push(
+        createToolAction({
+            toolCall: toolSpec.toolCall,
+            stepId: toolSpec.stepId,
+            reason: toolSpec.reason,
+            text: toolSpec.text,
+        }),
+    );
 
     return {
         state: {
@@ -194,7 +154,7 @@ export const planNode = ({ state, payload }: PipelineContext): NodeResult => {
             planId,
             steps: [step],
             currentStepId,
-            pendingPlan: pendingPlanEntry,
+            pendingPlan: null,
             pendingUserReply: null,
         },
         actions,

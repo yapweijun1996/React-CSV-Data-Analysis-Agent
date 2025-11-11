@@ -160,6 +160,7 @@ export interface StoreActions {
     setAggregationModePreference: (mode: 'sample' | 'full') => void;
     recordLlmUsage: (entry: Omit<LlmUsageEntry, 'id' | 'timestamp'>) => void;
     clearLlmUsage: () => void;
+    toggleLangGraphRuntime: (enabled: boolean) => void;
     runGraphPipeline: (payload?: Record<string, unknown>) => void;
     sendGraphUserReply: (optionId?: string, freeText?: string) => Promise<void>;
     processGraphActions: (actions: AiAction[]) => Promise<void> | void;

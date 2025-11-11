@@ -1,4 +1,4 @@
-import type { AiAction } from '@/types';
+import type { AiAction, GraphToolMeta } from '@/types';
 import type { GraphState } from './schema';
 
 export type GraphClientEvent =
@@ -41,14 +41,7 @@ export type GraphClientEvent =
           verification: {
               description: string;
               summary?: string;
-              meta: {
-                  source?: 'sample' | 'full';
-                  rows?: number;
-                  warnings?: string[];
-                  processedRows?: number;
-                  totalRows?: number;
-                  durationMs?: number;
-              };
+              meta: GraphToolMeta;
               payload?: Record<string, unknown>;
           };
           timestamp?: number;

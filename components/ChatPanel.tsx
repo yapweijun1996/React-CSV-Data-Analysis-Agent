@@ -4,7 +4,6 @@ import {
     ProgressMessage,
     ChatMessage,
     AgentActionTrace,
-    AgentPhaseState,
     AgentPlanStep,
     AgentPlanStepStatus,
     QuickActionId,
@@ -54,19 +53,6 @@ const LoadingIcon: React.FC = () => (
 const formatMemorySnippet = (text: string, maxLength = 60) =>
     text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
 
-type HelperTone = 'info' | 'warning' | 'muted' | 'progress' | 'neutral';
-
-type HelperDescriptor = {
-    tone: HelperTone;
-    message: string;
-    helperText?: string;
-    icon?: string;
-    actions?: Array<{
-        label: string;
-        onClick: () => void;
-    }>;
-};
-
 const CARD_ID_REGEX = /card-\d+-[0-9.]+/g;
 const extractCardIdsFromText = (text?: string | null): string[] => {
     if (!text) return [];
@@ -75,128 +61,9 @@ const extractCardIdsFromText = (text?: string | null): string[] => {
     return Array.from(new Set(matches));
 };
 
-const helperToneClasses: Record<HelperTone, string> = {
-    info: 'bg-blue-50 text-blue-800 border-blue-200',
-    warning: 'bg-amber-50 text-amber-800 border-amber-200',
-    muted: 'bg-slate-100 text-slate-600 border-slate-200',
-    progress: 'bg-indigo-50 text-indigo-800 border-indigo-200',
-    neutral: 'bg-white text-slate-600 border-slate-200',
-};
-
-const helperToneIcon: Record<HelperTone, string> = {
-    info: '🧩',
-    warning: '🔑',
-    muted: '📁',
-    progress: '⏱️',
-    neutral: '💬',
-};
-
 const MAX_CHAT_INPUT_HEIGHT = 240;
 const uiFlags = getUiVisibilityConfig();
 const AWAIT_HINT_DELAY_MS = 10_000;
-
-const phaseDescriptors: Record<
-    AgentPhaseState['phase'],
-    { label: string; helper: string; icon: string; badge: string }
-> = {
-    idle: {
-        label: 'Idle / Ready',
-        helper: 'Waiting for your next instruction.',
-        icon: '💤',
-        badge: 'border-slate-200 bg-white text-slate-600',
-    },
-    observing: {
-        label: 'Observing data',
-        helper: 'Reviewing dataset context before acting.',
-        icon: '🧐',
-        badge: 'border-sky-200 bg-sky-50 text-sky-700',
-    },
-    planning: {
-        label: 'Planning',
-        helper: 'Breaking the task into actionable steps.',
-        icon: '🧠',
-        badge: 'border-purple-200 bg-purple-50 text-purple-700',
-    },
-    acting: {
-        label: 'Executing',
-        helper: 'Running the next tool or UI action.',
-        icon: '⚙️',
-        badge: 'border-indigo-200 bg-indigo-50 text-indigo-700',
-    },
-    verifying: {
-        label: 'Verifying',
-        helper: 'Checking outputs before sharing updates.',
-        icon: '🔍',
-        badge: 'border-emerald-200 bg-emerald-50 text-emerald-700',
-    },
-    reporting: {
-        label: 'Reporting',
-        helper: 'Summarizing findings back to you.',
-        icon: '📝',
-        badge: 'border-slate-200 bg-slate-50 text-slate-700',
-    },
-    clarifying: {
-        label: 'Needs clarification',
-        helper: 'Waiting on your answer to keep going.',
-        icon: '❓',
-        badge: 'border-amber-200 bg-amber-50 text-amber-800',
-    },
-    retrying: {
-        label: 'Retrying',
-        helper: 'Adjusting after a failed attempt.',
-        icon: '🔁',
-        badge: 'border-rose-200 bg-rose-50 text-rose-700',
-    },
-};
-
-const phaseHelperOverrides: Partial<Record<
-    AgentPhaseState['phase'],
-    Omit<HelperDescriptor, 'helperText'> & { defaultHelperText: string }
->> = {
-    observing: {
-        tone: 'info',
-        icon: '🧐',
-        message: 'Reviewing your dataset…',
-        defaultHelperText: 'Scanning columns, totals, and data freshness before planning.',
-    },
-    planning: {
-        tone: 'info',
-        icon: '🧠',
-        message: 'Planning the next steps…',
-        defaultHelperText: 'Sequencing the right tools to answer your question.',
-    },
-    acting: {
-        tone: 'progress',
-        icon: '⚙️',
-        message: 'Executing the plan…',
-        defaultHelperText: 'Running transformations or updating charts for you.',
-    },
-    verifying: {
-        tone: 'progress',
-        icon: '🔍',
-        message: 'Double-checking results…',
-        defaultHelperText: 'Validating outputs before sharing them.',
-    },
-    reporting: {
-        tone: 'neutral',
-        icon: '📝',
-        message: 'Summarizing findings…',
-        defaultHelperText: 'Preparing the explanation you will see in chat.',
-    },
-    retrying: {
-        tone: 'warning',
-        icon: '🔁',
-        message: 'Retrying after an error…',
-        defaultHelperText: 'Adjusting the last step to recover automatically.',
-    },
-    clarifying: {
-        tone: 'info',
-        icon: '❓',
-        message: 'Waiting for your clarification…',
-        defaultHelperText: 'Answer the question above so I can continue.',
-    },
-};
-
 
 const useChatCore = () =>
     useAppStore(
@@ -224,7 +91,6 @@ const useChatCore = () =>
             previewChatMemories: state.previewChatMemories,
             toggleMemoryPreviewSelection: state.toggleMemoryPreviewSelection,
             isMemoryPreviewLoading: state.isMemoryPreviewLoading,
-        agentPhase: state.agentPhase,
         agentAwaitingUserInput: state.agentAwaitingUserInput,
         agentAwaitingPromptId: state.agentAwaitingPromptId,
         executeQuickAction: state.executeQuickAction,
@@ -267,7 +133,6 @@ export const ChatPanel: React.FC = () => {
         previewChatMemories,
         toggleMemoryPreviewSelection,
         isMemoryPreviewLoading,
-        agentPhase,
         agentAwaitingUserInput,
         agentAwaitingPromptId,
         executeQuickAction,
@@ -423,39 +288,6 @@ export const ChatPanel: React.FC = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     };
 
-    const highlightElement = (element: HTMLElement, colorClass = 'ring-blue-400') => {
-        element.classList.add('ring-2', colorClass);
-        setTimeout(() => element.classList.remove('ring-2', colorClass), 1800);
-    };
-
-    const scrollToPendingClarification = () => {
-        if (!primaryClarificationId || typeof document === 'undefined') return;
-        const element = document.getElementById(`clarification-${primaryClarificationId}`);
-        if (element) {
-            element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            highlightElement(element, 'ring-blue-400');
-        }
-    };
-
-    const scrollToFileUploadPanel = () => {
-        if (typeof document === 'undefined') return;
-        const element = document.getElementById('file-upload-panel');
-        if (element) {
-            element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            highlightElement(element, 'ring-blue-300');
-        }
-    };
-
-    const openFilePicker = () => {
-        if (typeof document === 'undefined') return;
-        const picker = document.getElementById('file-upload') as HTMLInputElement | null;
-        if (picker) {
-            picker.click();
-            return;
-        }
-        scrollToFileUploadPanel();
-    };
-
     const updateManualGroupingChoice = (clarificationId: string, columnName: string) => {
         setManualGroupSelections(prev => ({ ...prev, [clarificationId]: columnName }));
     };
@@ -478,116 +310,6 @@ export const ChatPanel: React.FC = () => {
             setPendingQuickAction(null);
         }
     };
-
-    const helperDescriptor: HelperDescriptor = (() => {
-        const lastProgress = progressMessages[progressMessages.length - 1]?.text ?? '';
-        const continuationMatch = lastProgress.startsWith('Continuing plan');
-        const activePhase = agentPhase?.phase ?? 'idle';
-        const phaseOverride = activePhase !== 'idle' ? phaseHelperOverrides[activePhase] : undefined;
-        const overrideHelperText = agentPhase?.message?.trim() || phaseOverride?.defaultHelperText;
-        if (!isApiKeySet) {
-            return {
-                tone: 'warning',
-                icon: '🔐',
-                message: 'API key missing — add one so Gemini can help.',
-                helperText: 'Open Settings and paste your Google Gemini API key to enable chat + analysis.',
-                actions: [
-                    {
-                        label: 'Open Settings',
-                        onClick: () => setIsSettingsModalOpen(true),
-                    },
-                ],
-            };
-        }
-        if (hasAwaitingClarification) {
-            return {
-                tone: 'info',
-                icon: '🧩',
-                message: 'Clarification pending — answer the follow-up to continue.',
-                helperText: 'Jump to the question, choose the right column, or skip it if it no longer applies.',
-                actions: primaryClarificationId
-                    ? [
-                          {
-                              label: 'Jump to question',
-                              onClick: scrollToPendingClarification,
-                          },
-                      ]
-                    : undefined,
-            };
-        }
-        if (agentAwaitingUserInput) {
-            return {
-                tone: 'info',
-                icon: '✋',
-                message: 'Waiting on your response to continue.',
-                helperText: 'Use the question card above to answer so the agent can resume.',
-            };
-        }
-        if (continuationMatch) {
-            return {
-                tone: 'muted',
-                icon: '🔁',
-                message: lastProgress,
-                helperText: 'The agent is automatically continuing the plan. You can relax or cancel if needed.',
-            };
-        }
-        if (currentView === 'file_upload') {
-            return {
-                tone: 'muted',
-                icon: '📂',
-                message: 'No dataset yet — upload a CSV to unlock the workspace.',
-                helperText: 'Drag & drop directly into the uploader or use Select a file.',
-                actions: [
-                    {
-                        label: 'Scroll to uploader',
-                        onClick: scrollToFileUploadPanel,
-                    },
-                    {
-                        label: 'Select a file',
-                        onClick: openFilePicker,
-                    },
-                ],
-            };
-        }
-        if (isBusy) {
-            if (isCancellationRequested) {
-                return {
-                    tone: 'progress',
-                    icon: '🛑',
-                    message: 'Stopping the last run…',
-                    helperText: 'Once cancelled you can submit a new instruction right away.',
-                };
-            }
-            if (phaseOverride) {
-                return {
-                    tone: phaseOverride.tone,
-                    icon: phaseOverride.icon,
-                    message: phaseOverride.message,
-                    helperText: overrideHelperText,
-                };
-            }
-            return {
-                tone: 'progress',
-                icon: '⚙️',
-                message: 'AI is crunching your request.',
-                helperText: 'Feel free to review earlier messages while the agent works.',
-            };
-        }
-        if (phaseOverride) {
-            return {
-                tone: phaseOverride.tone,
-                icon: phaseOverride.icon,
-                message: phaseOverride.message,
-                helperText: overrideHelperText,
-            };
-        }
-        return {
-            tone: 'neutral',
-            icon: '💬',
-            message: 'Ready for your next instruction.',
-            helperText: 'Try “Sum of sales by region” or “Remove rows for USA”.',
-        };
-    })();
 
     useEffect(scrollToBottom, [timeline]);
 
@@ -931,10 +653,7 @@ export const ChatPanel: React.FC = () => {
                 </div>
             </div>
             <div className="flex-1 p-4 overflow-y-auto space-y-4">
-                <AgentPhaseIndicator />
                 <PlannerGoalTracker />
-                <AgentActionLogPanel />
-                <SystemLogPanel />
                 <GraphObservationTimeline />
                 {timeline.map(renderMessage)}
                 <div ref={messagesEndRef} />
@@ -1038,32 +757,8 @@ export const ChatPanel: React.FC = () => {
                         </span>
                     </button>
                 </form>
-                <div
-                    className={`mt-3 flex flex-wrap items-center gap-2 rounded-md border px-3 py-2 text-xs ${helperToneClasses[helperDescriptor.tone]}`}
-                    role="status"
-                    aria-live="polite"
-                >
-                    <div className="flex items-start gap-2 flex-1 min-w-[200px]">
-                        <span className="text-base leading-5">
-                            {helperDescriptor.icon ?? helperToneIcon[helperDescriptor.tone]}
-                        </span>
-                        <div>
-                            <p className="font-medium">{helperDescriptor.message}</p>
-                            {helperDescriptor.helperText && (
-                                <p className="text-[11px] opacity-90 mt-0.5">{helperDescriptor.helperText}</p>
-                            )}
-                        </div>
-                    </div>
-                    {helperDescriptor.actions?.map(action => (
-                        <button
-                            key={action.label}
-                            type="button"
-                            onClick={action.onClick}
-                            className="text-xs font-semibold text-blue-700 hover:text-blue-800 underline-offset-2 hover:underline"
-                        >
-                            {action.label}
-                        </button>
-                    ))}
+                <div className="mt-3">
+                    <SystemLogPanel className="mt-0" />
                 </div>
             </div>
         </div>
@@ -1101,13 +796,60 @@ const condenseSystemLogs = (logs: ProgressMessage[]): ProgressMessage[] => {
     return condensed.slice(-30);
 };
 
-const SystemLogPanel = React.memo(() => {
-    const progressMessages = useAppStore(state => state.progressMessages);
+const actionStatusColor: Record<AgentActionTrace['status'], string> = {
+    observing: 'bg-slate-400',
+    executing: 'bg-blue-500',
+    succeeded: 'bg-emerald-500',
+    failed: 'bg-red-500',
+};
+
+const actionSourceLabels: Record<AgentActionTrace['source'], string> = {
+    chat: 'Chat',
+    pipeline: 'Analysis Pipeline',
+    system: 'System',
+};
+
+const formatActionTimestamp = (timestamp: AgentActionTrace['timestamp']) => {
+    const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+};
+
+type SystemLogPanelProps = {
+    className?: string;
+};
+
+const SystemLogPanel = React.memo(({ className }: SystemLogPanelProps) => {
+    const { progressMessages, agentActionTraces } = useAppStore(
+        state => ({
+            progressMessages: state.progressMessages,
+            agentActionTraces: state.agentActionTraces,
+        }),
+        shallow,
+    );
     const [isCollapsed, setIsCollapsed] = useState(true);
     const condensedLogs = useMemo(() => condenseSystemLogs(progressMessages), [progressMessages]);
-    if (condensedLogs.length === 0) return null;
+    const actionEntries = useMemo(() => agentActionTraces.slice(-20), [agentActionTraces]);
+    const combinedEntries = useMemo(() => {
+        const progress = condensedLogs.map((entry, index) => ({
+            kind: 'progress' as const,
+            id: `sys-${entry.timestamp.getTime()}-${index}`,
+            timestamp: entry.timestamp,
+            entry,
+        }));
+        const actions = actionEntries.map(trace => ({
+            kind: 'action' as const,
+            id: trace.id,
+            timestamp: trace.timestamp instanceof Date ? trace.timestamp : new Date(trace.timestamp),
+            trace,
+        }));
+        return [...progress, ...actions]
+            .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
+            .slice(0, 40);
+    }, [condensedLogs, actionEntries]);
+    if (combinedEntries.length === 0) return null;
+    const containerClass = `${className ?? 'mb-4'} rounded-lg border border-slate-200 bg-white shadow-sm`.trim();
     return (
-        <div className="mb-4 rounded-lg border border-slate-200 bg-white shadow-sm">
+        <div className={containerClass}>
             <button
                 type="button"
                 onClick={() => setIsCollapsed(prev => !prev)}
@@ -1115,22 +857,46 @@ const SystemLogPanel = React.memo(() => {
             >
                 <span className="uppercase tracking-wide">System log</span>
                 <span className="text-[11px] text-slate-400">
-                    {condensedLogs.length} events · {isCollapsed ? 'Show' : 'Hide'}
+                    {combinedEntries.length} events · {isCollapsed ? 'Show' : 'Hide'}
                 </span>
             </button>
             {!isCollapsed && (
-                <div className="max-h-56 overflow-y-auto divide-y divide-slate-100">
-                    {condensedLogs.map((entry, index) => (
-                        <div
-                            key={`${entry.timestamp.getTime()}-${index}`}
-                            className={`px-3 py-2 text-xs flex gap-2 ${entry.type === 'error' ? 'text-red-600' : 'text-slate-600'}`}
-                        >
-                            <span className="text-slate-400">
-                                {entry.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                            </span>
-                            <span className="leading-snug">{entry.text}</span>
-                        </div>
-                    ))}
+                <div className="max-h-64 overflow-y-auto divide-y divide-slate-100 px-1">
+                    {combinedEntries.map(item => {
+                        if (item.kind === 'progress') {
+                            const { entry } = item;
+                            return (
+                                <div
+                                    key={item.id}
+                                    className={`px-2 py-2 text-xs flex gap-2 ${entry.type === 'error' ? 'text-red-600' : 'text-slate-600'}`}
+                                >
+                                    <span className="text-slate-400">
+                                        {entry.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                    </span>
+                                    <span className="leading-snug">{entry.text}</span>
+                                </div>
+                            );
+                        }
+                        const trace = item.trace;
+                        const status = trace.status ?? 'observing';
+                        const source = trace.source ?? 'chat';
+                        return (
+                            <div key={item.id} className="px-2 py-3 text-sm">
+                                <div className="flex items-center text-xs text-slate-500 gap-2">
+                                    <span className={`w-2 h-2 rounded-full ${actionStatusColor[status]}`}></span>
+                                    <span className="font-medium">{formatActionTimestamp(trace.timestamp)}</span>
+                                    <span>·</span>
+                                    <span>{actionSourceLabels[source] ?? 'AI'}</span>
+                                    <span>·</span>
+                                    <span className="capitalize">{status}</span>
+                                </div>
+                                <p className="text-slate-800 mt-0.5 leading-snug whitespace-pre-line">{trace.summary}</p>
+                                {trace.details && (
+                                    <p className="text-xs text-slate-500 mt-1 leading-snug whitespace-pre-line">{trace.details}</p>
+                                )}
+                            </div>
+                        );
+                    })}
                 </div>
             )}
         </div>
@@ -1364,101 +1130,6 @@ const PlannerGoalTracker = React.memo(() => {
     );
 });
 PlannerGoalTracker.displayName = 'PlannerGoalTracker';
-
-const AgentPhaseIndicator = React.memo(() => {
-    const phaseState = useAppStore(state => state.agentPhase);
-    const { phase, message, enteredAt } = phaseState ?? { phase: 'idle', message: null, enteredAt: null };
-    const descriptor = phaseDescriptors[phase] ?? phaseDescriptors.idle;
-    const detail = message?.trim() || descriptor.helper;
-    const enteredDate = enteredAt ? new Date(enteredAt) : null;
-    const sinceLabel =
-        enteredDate && !Number.isNaN(enteredDate.getTime())
-            ? enteredDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-            : null;
-
-    return (
-        <div
-            className={`mb-4 flex items-center justify-between rounded-lg border px-3 py-2 text-sm ${descriptor.badge}`}
-            role="status"
-            aria-live="polite"
-        >
-            <div className="flex items-center gap-2">
-                <span className="text-base">{descriptor.icon}</span>
-                <div>
-                    <p className="font-semibold">{descriptor.label}</p>
-                    <p className="text-xs opacity-90">{detail}</p>
-                </div>
-            </div>
-            {sinceLabel && (
-                <span className="text-xs text-slate-500 whitespace-nowrap">Since {sinceLabel}</span>
-            )}
-        </div>
-    );
-});
-AgentPhaseIndicator.displayName = 'AgentPhaseIndicator';
-
-const actionStatusColor: Record<AgentActionTrace['status'], string> = {
-    observing: 'bg-slate-400',
-    executing: 'bg-blue-500',
-    succeeded: 'bg-emerald-500',
-    failed: 'bg-red-500',
-};
-
-const actionSourceLabels: Record<AgentActionTrace['source'], string> = {
-    chat: 'Chat',
-    pipeline: 'Analysis Pipeline',
-    system: 'System',
-};
-
-const formatActionTimestamp = (timestamp: AgentActionTrace['timestamp']) => {
-    const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-};
-
-const AgentActionLogPanel = React.memo(() => {
-    const agentTraces = useAppStore(state => state.agentActionTraces);
-    const recentAgentTraces = useMemo(() => agentTraces.slice(-12).reverse(), [agentTraces]);
-
-    if (recentAgentTraces.length === 0) return null;
-
-    return (
-        <div className="mb-4">
-            <div className="flex items-center justify-between mb-2">
-                <h3 className="text-sm font-semibold text-slate-900">AI Action Log</h3>
-                <span className="text-xs text-slate-500">Last {recentAgentTraces.length} events</span>
-            </div>
-            <div className="space-y-3 max-h-56 overflow-y-auto pr-1">
-                {recentAgentTraces.map(trace => {
-                    const source = trace.source ?? 'chat';
-                    const status = trace.status ?? 'observing';
-                    return (
-                        <div key={trace.id} className="flex items-start space-x-3 text-sm">
-                            <div className="flex flex-col items-center mt-1">
-                                <span className={`w-2 h-2 rounded-full ${actionStatusColor[status]}`}></span>
-                            </div>
-                            <div className="flex-1">
-                                <div className="flex items-center text-xs text-slate-500 gap-2">
-                                    <span className="font-medium">{formatActionTimestamp(trace.timestamp)}</span>
-                                    <span>·</span>
-                                    <span>{actionSourceLabels[source] ?? 'AI'}</span>
-                                    <span>·</span>
-                                    <span className="capitalize">{status}</span>
-                                </div>
-                                <p className="text-slate-800 mt-0.5 leading-snug whitespace-pre-line">{trace.summary}</p>
-                                {trace.details && (
-                                    <p className="text-xs text-slate-500 mt-1 leading-snug whitespace-pre-line">
-                                        {trace.details}
-                                    </p>
-                                )}
-                            </div>
-                        </div>
-                    );
-                })}
-            </div>
-        </div>
-    );
-});
-AgentActionLogPanel.displayName = 'AgentActionLogPanel';
 
 const graphObservationKindMeta: Record<
     string,

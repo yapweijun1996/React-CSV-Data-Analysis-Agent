@@ -452,6 +452,28 @@ export interface AwaitInteractionRecord {
 
 export type GraphToolKind = 'profile_dataset' | 'normalize_invoice_month' | 'detect_outliers' | 'aggregate_plan';
 
+export type GraphToolSource = 'sample' | 'full';
+
+export interface GraphToolTelemetry {
+    latencyMs?: number;
+    estimatedCostUsd?: number | null;
+    tokenUsage?: {
+        promptTokens?: number;
+        completionTokens?: number;
+        totalTokens?: number;
+    };
+}
+
+export interface GraphToolMeta {
+    source: GraphToolSource;
+    rows: number;
+    warnings: string[];
+    durationMs: number;
+    processedRows?: number;
+    totalRows?: number;
+    telemetry?: GraphToolTelemetry;
+}
+
 export interface GraphToolCall {
     kind: GraphToolKind;
     params?: Record<string, unknown>;
@@ -514,6 +536,7 @@ export interface AppState {
     graphToolInFlight: GraphToolInFlightSnapshot | null;
     langChainLastPlan: AnalysisPlan | null;
     langChainPlannerEnabled: boolean;
+    useLangGraphRuntime: boolean;
     llmUsageLog: LlmUsageEntry[];
     graphObservations: GraphObservation[];
 }

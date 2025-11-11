@@ -1,7 +1,7 @@
 import { PromptTemplate } from '@langchain/core/prompts';
 import { RunnableLambda, RunnableSequence } from '@langchain/core/runnables';
 import { z } from 'zod';
-import { graphDataTools, type GraphProfileResponse } from '@/tools/data';
+import { graphDataTools, type GraphToolResponse } from '@/tools/data';
 import { generateAnalysisPlans, type PlanGenerationResult } from '@/services/aiService';
 import { estimateLlmCostUsd } from '@/services/ai/llmPricing';
 import type { PlanGenerationUsageEntry } from '@/services/ai/planGenerator';
@@ -32,11 +32,13 @@ const buildPlanPrompt = () =>
         `You are a data analyst. Dataset profile: \n{dataset}\nGenerate ONE chart plan as JSON with keys "title", "description", "chartType" (bar/line/pie).`,
     );
 
-const profileResponseToSnapshot = (profile: GraphProfileResponse): ProfileSnapshot => ({
-    columns: profile.columns,
-    rowCount: profile.rowCount,
-    sampledRows: profile.sampledRows,
-    warnings: profile.warnings,
+type ProfileToolResponse = GraphToolResponse<'profile_dataset'>;
+
+const profileResponseToSnapshot = (profile: ProfileToolResponse): ProfileSnapshot => ({
+    columns: profile.payload.columns,
+    rowCount: profile.payload.rowCount,
+    sampledRows: profile.payload.sampledRows,
+    warnings: profile.meta.warnings,
 });
 
 const fallbackPlanFromProfile = (profile: ProfileSnapshot): AnalysisPlan => ({
