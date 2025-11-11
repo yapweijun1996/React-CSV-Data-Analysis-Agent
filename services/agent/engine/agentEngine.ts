@@ -1,4 +1,4 @@
-import type { AiAction, AiChatResponse } from '../../../types';
+import type { AiAction, AiChatResponse, AgentPlanState, AgentPlanStep } from '../../../types';
 import type { EngineActionCandidate, EngineContext, EnginePlaybook } from './contracts';
 import { lookupToolProfile } from './toolRegistry';
 import { selectPlaybookForIntent } from './playbooks';
@@ -46,6 +46,81 @@ const createPlaybookTextResponse = (playbook: EnginePlaybook, context: EngineCon
     reason: `Applying playbook ${playbook.id} for intent ${playbook.intent}.`,
     text: renderTemplate(playbook.ui.message_template, context),
 });
+
+const GREETING_INTENTS = new Set(['greeting', 'smalltalk', 'ask_user_choice']);
+const GREETING_PLAN_STEP: AgentPlanStep = {
+    id: 'acknowledge_user_greeting',
+    label: 'Acknowledge the greeting and ask what to analyze next.',
+    intent: 'conversation',
+    status: 'in_progress',
+};
+
+const createGreetingPlanState = (): AgentPlanState => ({
+    planId: null,
+    goal: 'Acknowledge the user and gather their request.',
+    contextSummary: 'User greeted the assistant; no task has been specified yet.',
+    progress: 'Greeting acknowledged.',
+    nextSteps: [GREETING_PLAN_STEP],
+    steps: [GREETING_PLAN_STEP],
+    currentStepId: GREETING_PLAN_STEP.id,
+    blockedBy: null,
+    observationIds: [],
+    confidence: 0.5,
+    updatedAt: new Date().toISOString(),
+    stateTag: 'context_ready',
+});
+
+const normalizeGreetingPlanAction = (action: AiAction): AiAction => {
+    const normalizedState: AgentPlanState = {
+        ...(action.planState ?? createGreetingPlanState()),
+        goal: action.planState?.goal || 'Acknowledge the user and gather their request.',
+        contextSummary:
+            action.planState?.contextSummary ?? 'User greeted the assistant; awaiting instructions.',
+        progress: action.planState?.progress || 'Greeting acknowledged.',
+        nextSteps:
+            action.planState?.nextSteps && action.planState.nextSteps.length > 0
+                ? action.planState.nextSteps
+                : [GREETING_PLAN_STEP],
+        steps:
+            action.planState?.steps && action.planState.steps.length > 0
+                ? action.planState.steps
+                : [GREETING_PLAN_STEP],
+        currentStepId: action.planState?.currentStepId ?? GREETING_PLAN_STEP.id,
+        stateTag: 'context_ready',
+        updatedAt: new Date().toISOString(),
+    };
+    return { ...action, planState: normalizedState, stateTag: 'context_ready' };
+};
+
+const enforceGreetingResponse = (
+    actions: AiAction[],
+    context: EngineContext,
+    playbook?: EnginePlaybook,
+): AiAction[] => {
+    if (!GREETING_INTENTS.has(context.detectedIntent?.intent ?? '')) {
+        return actions;
+    }
+    const planCandidate =
+        actions.find(action => action.responseType === 'plan_state_update') ??
+        ({
+            type: 'plan_state_update',
+            responseType: 'plan_state_update',
+            reason: 'Auto-initialized greeting plan tracker.',
+            stepId: context.planState?.currentStepId ?? GREETING_PLAN_STEP.id,
+        } as AiAction);
+    const textCandidate =
+        actions.find(action => action.responseType === 'text_response') ??
+        (playbook
+            ? createPlaybookTextResponse(playbook, context)
+            : {
+                  type: 'text_response',
+                  responseType: 'text_response',
+                  stepId: planCandidate.stepId ?? GREETING_PLAN_STEP.id,
+                  reason: 'Auto-generated greeting response.',
+                  text: '嗨！我在这等你。告诉我想从哪一步开始探索 CSV 数据吧。',
+              });
+    return [normalizeGreetingPlanAction(planCandidate), textCandidate];
+};
 
 const deriveCandidate = (
     action: AiAction,
@@ -170,6 +245,7 @@ export class AgentEngine {
         candidates = enforceGovernance(candidates, playbook);
 
         let actions = limitAtomicActions(candidates, context);
+        actions = enforceGreetingResponse(actions, context, playbook);
         actions = ensureFallbackTextAction(actions, context);
 
         const healed = runAutoHealPipeline(actions, context, hint => this.stateTagFactory.mint(context.now, hint));

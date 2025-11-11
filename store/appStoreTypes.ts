@@ -25,7 +25,9 @@ import type {
     AgentPlanStep,
     AgentPhase,
     AgentPromptMetric,
+    QuickActionId,
 } from '../types';
+import type { ProfileResult } from '../services/dataToolTypes';
 
 export interface StoreState extends AppState {
     busyRunId: string | null;
@@ -78,6 +80,7 @@ export interface StoreActions {
     regenerateAnalyses: (newData: CsvData) => Promise<void>;
     executeDomAction: (action: DomAction) => void;
     handleChatMessage: (message: string) => Promise<void>;
+    executeQuickAction: (actionId: QuickActionId) => Promise<void>;
     previewChatMemories: (query: string) => Promise<void>;
     toggleMemoryPreviewSelection: (id: string) => void;
     clearChatMemoryPreview: () => void;
@@ -86,6 +89,7 @@ export interface StoreActions {
     handleNaturalLanguageQuery: (query: string) => Promise<void>;
     clearAiFilter: () => void;
     cancelAiFilterRequest: () => void;
+    applyDatasetProfileSnapshot: (profile: ProfileResult) => void;
     addToast: (
         message: string,
         type?: 'info' | 'success' | 'error',

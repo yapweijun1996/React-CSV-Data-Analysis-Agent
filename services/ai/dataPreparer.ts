@@ -3,6 +3,7 @@ import { CsvData, ColumnProfile, Settings, DataPreparationPlan } from '../../typ
 import { callGemini, callOpenAI } from './apiClient';
 import { dataPreparationSchema, dataPreparationJsonSchema } from './schemas';
 import { createDataPreparationPrompt } from '../promptTemplates';
+import { robustParseFloat, splitNumericString } from '../../utils/dataProcessor';
 
 interface DataPreparationPlanOptions {
     signal?: AbortSignal;
@@ -51,9 +52,9 @@ export const generateDataPreparationPlan = async (
             if (plan.jsFunctionBody) {
                 try {
                     // This is a mock execution to validate syntax, the real one happens in dataProcessor
-                    const mockUtil = { 
-                        parseNumber: (v: any) => parseFloat(String(v).replace(/[$,%]/g, '')) || 0,
-                        splitNumericString: (v: string) => v.split(','), // Simple mock
+                    const mockUtil = {
+                        parseNumber: (v: any) => robustParseFloat(v) ?? 0,
+                        splitNumericString,
                     };
                     const transformFunction = new Function('data', '_util', plan.jsFunctionBody);
                     const sampleResult = transformFunction(sampleData, mockUtil);

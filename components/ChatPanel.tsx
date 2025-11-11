@@ -1,6 +1,16 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { shallow } from 'zustand/shallow';
-import { ProgressMessage, ChatMessage, AgentActionTrace, AgentObservation, AgentObservationStatus, AgentPhaseState } from '../types';
+import {
+    ProgressMessage,
+    ChatMessage,
+    AgentActionTrace,
+    AgentObservation,
+    AgentObservationStatus,
+    AgentPhaseState,
+    AgentPlanStep,
+    AgentPlanStepStatus,
+    QuickActionId,
+} from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { useAutosizeTextArea } from '../hooks/useAutosizeTextArea';
 import { getUiVisibilityConfig } from '../services/bootstrapConfig';
@@ -198,8 +208,8 @@ const useChatCore = () =>
             setIsAsideVisible: state.setIsAsideVisible,
             setIsSettingsModalOpen: state.setIsSettingsModalOpen,
             setIsMemoryPanelOpen: state.setIsMemoryPanelOpen,
-            handleShowCardFromChat: state.handleShowCardFromChat,
-            currentView: state.currentView,
+        handleShowCardFromChat: state.handleShowCardFromChat,
+        currentView: state.currentView,
             pendingClarifications: state.pendingClarifications,
             activeClarificationId: state.activeClarificationId,
             handleClarificationResponse: state.handleClarificationResponse,
@@ -214,9 +224,10 @@ const useChatCore = () =>
             toggleMemoryPreviewSelection: state.toggleMemoryPreviewSelection,
             isMemoryPreviewLoading: state.isMemoryPreviewLoading,
             agentPhase: state.agentPhase,
-            agentAwaitingUserInput: state.agentAwaitingUserInput,
-            agentAwaitingPromptId: state.agentAwaitingPromptId,
-        }),
+        agentAwaitingUserInput: state.agentAwaitingUserInput,
+        agentAwaitingPromptId: state.agentAwaitingPromptId,
+        executeQuickAction: state.executeQuickAction,
+    }),
         shallow,
     );
 
@@ -250,9 +261,11 @@ export const ChatPanel: React.FC = () => {
         agentPhase,
         agentAwaitingUserInput,
         agentAwaitingPromptId,
+        executeQuickAction,
     } = core;
 
     const [input, setInput] = useState('');
+    const [pendingQuickAction, setPendingQuickAction] = useState<QuickActionId | null>(null);
     const [manualGroupSelections, setManualGroupSelections] = useState<Record<string, string>>({});
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -341,6 +354,16 @@ export const ChatPanel: React.FC = () => {
             label: `Manual grouping: ${columnName}`,
             value: columnName,
         });
+    };
+
+    const handleQuickActionClick = async (actionId: QuickActionId) => {
+        if (pendingQuickAction) return;
+        setPendingQuickAction(actionId);
+        try {
+            await executeQuickAction(actionId);
+        } finally {
+            setPendingQuickAction(null);
+        }
     };
 
     const helperDescriptor: HelperDescriptor = (() => {
@@ -698,6 +721,35 @@ export const ChatPanel: React.FC = () => {
                                 {msg.cta.helperText && <span className="block text-[11px] text-slate-500 mt-0.5">{msg.cta.helperText}</span>}
                             </button>
                          )}
+                         {msg.quickActions && (
+                            <div className="mt-3 border border-slate-300 rounded-lg bg-white p-3 space-y-2">
+                                <div>
+                                    <p className="text-xs font-semibold text-slate-700">
+                                        {msg.quickActions.title ?? 'Quick start actions'}
+                                    </p>
+                                    {msg.quickActions.helperText && (
+                                        <p className="text-[11px] text-slate-500 mt-0.5">
+                                            {msg.quickActions.helperText}
+                                        </p>
+                                    )}
+                                </div>
+                                <div className="space-y-2">
+                                    {msg.quickActions.actions.map(action => (
+                                        <button
+                                            key={`${action.id}-${index}`}
+                                            onClick={() => handleQuickActionClick(action.id)}
+                                            disabled={!!pendingQuickAction}
+                                            className="w-full text-left rounded-md border border-slate-200 bg-blue-50 px-3 py-2 text-sm text-blue-900 hover:bg-blue-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        >
+                                            <span className="font-semibold block">{action.label}</span>
+                                            {action.helperText && (
+                                                <span className="text-xs text-blue-700 block">{action.helperText}</span>
+                                            )}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                         )}
                          {msg.usedMemories && msg.usedMemories.length > 0 && (
                             <div className="mt-2 border border-blue-100 bg-white rounded-md p-2">
                                 <p className="text-[11px] font-semibold text-blue-700 mb-1">
@@ -937,44 +989,226 @@ const SystemLogPanel = React.memo(() => {
 SystemLogPanel.displayName = 'SystemLogPanel';
 
 const PlannerGoalTracker = React.memo(() => {
-    const planState = useAppStore(state => state.plannerSession?.planState ?? null);
+    const {
+        planState,
+        pendingClarifications,
+        handleClarificationResponse,
+        skipClarification,
+        agentAwaitingUserInput,
+        isBusy,
+    } = useAppStore(
+        state => ({
+            planState: state.plannerSession?.planState ?? null,
+            pendingClarifications: state.pendingClarifications,
+            handleClarificationResponse: state.handleClarificationResponse,
+            skipClarification: state.skipClarification,
+            agentAwaitingUserInput: state.agentAwaitingUserInput,
+            isBusy: state.isBusy,
+        }),
+        shallow,
+    );
+
+    const [isCollapsed, setIsCollapsed] = useState(true);
+    const [clarInputs, setClarInputs] = useState<Record<string, string>>({});
+
+    const allSteps = useMemo<AgentPlanStep[]>(() => {
+        if (!planState) return [];
+        if (planState.steps && planState.steps.length > 0) {
+            return planState.steps;
+        }
+        return planState.nextSteps ?? [];
+    }, [planState]);
+
     if (!planState) return null;
-    const nextSteps = planState.nextSteps ?? [];
+
+    const totalSteps = allSteps.length;
+    const completedSteps = allSteps.filter(step => step.status === 'done').length;
+    const currentIndex = planState.currentStepId
+        ? allSteps.findIndex(step => step.id === planState.currentStepId)
+        : -1;
     const updatedAt = planState.updatedAt ? new Date(planState.updatedAt) : new Date();
+    const progressSummary =
+        totalSteps > 0 ? `${completedSteps} / ${totalSteps} completed` : planState.progress ?? 'Tracking…';
+    const currentStepLabel =
+        totalSteps > 0 && currentIndex >= 0
+            ? `Step ${Math.min(currentIndex + 1, totalSteps)} of ${totalSteps}`
+            : totalSteps > 0
+              ? `Tracking ${totalSteps} steps`
+              : null;
+
+    const activeClarification =
+        pendingClarifications.find(req => req.status === 'pending' || req.status === 'resolving') ?? null;
+    const awaitingStep =
+        planState.currentStepId && allSteps.length > 0
+            ? allSteps.find(step => step.id === planState.currentStepId)
+            : null;
+    const shouldShowInlineClarification =
+        !!awaitingStep &&
+        (awaitingStep.status === 'waiting_user' || agentAwaitingUserInput) &&
+        !!activeClarification;
+
+    const statusColorMap: Record<AgentPlanStepStatus, string> = {
+        done: 'bg-emerald-500',
+        in_progress: 'bg-blue-500',
+        ready: 'bg-slate-400',
+        waiting_user: 'bg-amber-500',
+    };
+    const statusLabelMap: Record<AgentPlanStepStatus, string> = {
+        done: 'Done',
+        in_progress: 'In progress',
+        ready: 'Queued',
+        waiting_user: 'Awaiting you',
+    };
+
+    const setClarInput = (id: string, value: string) => {
+        setClarInputs(prev => ({ ...prev, [id]: value }));
+    };
+
+    const submitClarInput = (id: string) => {
+        const value = (clarInputs[id] ?? '').trim();
+        if (!value) return;
+        handleClarificationResponse(id, { label: value, value });
+        setClarInputs(prev => ({ ...prev, [id]: '' }));
+    };
 
     return (
-        <div className="mb-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="flex items-center justify-between mb-2">
-                <h3 className="text-sm font-semibold text-slate-900">Agent Goal Tracker</h3>
-                <span className="text-xs text-slate-500">
+        <div className="mb-4 rounded-xl border border-slate-200 bg-gradient-to-b from-white to-slate-50 shadow-sm">
+            <button
+                type="button"
+                className="w-full px-4 py-3 flex flex-col text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded-t-xl"
+                onClick={() => setIsCollapsed(prev => !prev)}
+            >
+                <div className="flex items-center justify-between">
+                    <div>
+                        <p className="text-sm font-semibold text-slate-900">Agent Working Status</p>
+                        <p className="text-xs text-slate-500">{progressSummary}</p>
+                    </div>
+                    <div className="text-right">
+                        {currentStepLabel && <p className="text-xs text-slate-500">{currentStepLabel}</p>}
+                        <span className="text-[11px] uppercase tracking-wide text-slate-400">
+                            {isCollapsed ? 'Show details' : 'Hide details'}
+                        </span>
+                    </div>
+                </div>
+                {planState.blockedBy && (
+                    <p className="mt-1 text-xs text-amber-600">Blocked: {planState.blockedBy}</p>
+                )}
+                {totalSteps > 0 && (
+                    <div className="mt-3 h-1.5 w-full bg-slate-200 rounded-full overflow-hidden">
+                        <div
+                            className="h-full bg-blue-500 transition-all"
+                            style={{ width: `${Math.min((completedSteps / totalSteps) * 100, 100)}%` }}
+                        />
+                    </div>
+                )}
+                <p className="mt-1 text-[11px] text-slate-400">
                     Updated {updatedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </span>
-            </div>
-            <p className="text-sm text-slate-800 mb-2">
-                <span className="font-medium">Goal:</span> {planState.goal}
-            </p>
-            {planState.progress && (
-                <p className="text-sm text-slate-700 mb-2">
-                    <span className="font-medium">Progress:</span> {planState.progress}
                 </p>
-            )}
-            {nextSteps.length > 0 && (
-                <div className="mb-2">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">Next steps</p>
-                    <ol className="list-decimal list-inside text-sm text-slate-700 space-y-0.5">
-                        {nextSteps.map(step => (
-                            <li key={step.id}>
-                                <span className="font-mono text-[11px] text-slate-500 mr-1">[{step.id}]</span>
-                                {step.label}
-                            </li>
-                        ))}
+            </button>
+            {!isCollapsed && (
+                <div className="px-4 pb-4 space-y-4 text-sm text-slate-700">
+                    {planState.goal && (
+                        <p className="text-sm">
+                            <span className="font-medium text-slate-900">Goal:</span> {planState.goal}
+                        </p>
+                    )}
+                    {planState.contextSummary && (
+                        <p className="text-xs text-slate-500">
+                            <span className="font-semibold text-slate-600">Context:</span> {planState.contextSummary}
+                        </p>
+                    )}
+                    <ol className="relative space-y-3">
+                        {allSteps.map((step, index) => {
+                            const status = step.status ?? 'ready';
+                            const isCurrent = step.id === planState.currentStepId;
+                            const showClarification =
+                                shouldShowInlineClarification && activeClarification && isCurrent;
+                            return (
+                                <li key={step.id ?? index} className="relative pl-6">
+                                    <span
+                                        className={`absolute left-0 top-1.5 h-3 w-3 rounded-full ${
+                                            statusColorMap[status] ?? 'bg-slate-300'
+                                        }`}
+                                        aria-hidden
+                                    />
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div>
+                                            <p
+                                                className={`font-medium ${
+                                                    isCurrent ? 'text-slate-900' : 'text-slate-700'
+                                                }`}
+                                            >
+                                                {step.label}
+                                            </p>
+                                            {step.intent && (
+                                                <p className="text-xs text-slate-500">{step.intent}</p>
+                                            )}
+                                        </div>
+                                        <span className="text-xs text-slate-500">
+                                            {statusLabelMap[status] ?? status}
+                                        </span>
+                                    </div>
+                                    {showClarification && (
+                                        <div className="mt-3 rounded-lg border border-blue-100 bg-blue-50 p-3">
+                                            <p className="text-sm font-medium text-blue-900 flex items-center gap-2 mb-2">
+                                                <span className="text-base">🧩</span>
+                                                {activeClarification.question}
+                                            </p>
+                                            <div className="flex flex-wrap gap-2 mb-3">
+                                                {activeClarification.options.map(option => (
+                                                    <button
+                                                        key={`${activeClarification.id}-${option.value}`}
+                                                        type="button"
+                                                        onClick={() =>
+                                                            handleClarificationResponse(activeClarification.id, option)
+                                                        }
+                                                        disabled={isBusy}
+                                                        className="text-xs px-3 py-1 rounded-full border border-blue-200 bg-white text-blue-700 hover:bg-blue-100 disabled:opacity-60 disabled:cursor-not-allowed"
+                                                    >
+                                                        {option.label}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                            <div className="flex flex-col sm:flex-row gap-2">
+                                                <input
+                                                    type="text"
+                                                    value={clarInputs[activeClarification.id] ?? ''}
+                                                    onChange={event =>
+                                                        setClarInput(activeClarification.id, event.target.value)
+                                                    }
+                                                    placeholder="Type your answer…"
+                                                    className="flex-1 rounded-md border border-blue-100 bg-white px-3 py-2 text-sm text-slate-800 placeholder-slate-400 focus:border-blue-300 focus:ring-1 focus:ring-blue-300"
+                                                    disabled={isBusy}
+                                                />
+                                                <button
+                                                    type="button"
+                                                    onClick={() => submitClarInput(activeClarification.id)}
+                                                    disabled={
+                                                        isBusy || !(clarInputs[activeClarification.id] ?? '').trim()
+                                                    }
+                                                    className="px-4 py-2 rounded-md bg-blue-600 text-white text-xs font-semibold uppercase tracking-wide disabled:opacity-50 disabled:cursor-not-allowed"
+                                                >
+                                                    Send
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => skipClarification(activeClarification.id)}
+                                                    disabled={isBusy}
+                                                    className="px-3 py-2 rounded-md border border-transparent text-xs text-slate-500 hover:text-red-600"
+                                                >
+                                                    Skip
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+                                </li>
+                            );
+                        })}
+                        {allSteps.length === 0 && (
+                            <li className="text-xs text-slate-500">Waiting for the agent to draft a plan…</li>
+                        )}
                     </ol>
                 </div>
-            )}
-            {planState.blockedBy && (
-                <p className="text-sm text-amber-600">
-                    <span className="font-medium">Blocked by:</span> {planState.blockedBy}
-                </p>
             )}
         </div>
     );

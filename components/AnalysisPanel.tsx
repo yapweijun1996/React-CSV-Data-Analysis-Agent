@@ -4,6 +4,7 @@ import { AnalysisCard } from './AnalysisCard';
 import { FinalSummary } from './FinalSummary';
 import { useAppStore } from '../store/useAppStore';
 import { CardLayoutControl, COLUMN_OPTIONS } from './CardLayoutControl';
+import { DataProfilePanel } from './DataProfilePanel';
 
 const MAX_COLUMNS = COLUMN_OPTIONS[COLUMN_OPTIONS.length - 1];
 
@@ -118,6 +119,7 @@ export const AnalysisPanel: React.FC = () => {
     return (
         <div className="p-1" ref={panelRef}>
             <div className="mb-6 space-y-4">
+                <DataProfilePanel />
                 {finalSummary && (
                     <div>
                         <FinalSummary summary={finalSummary} />

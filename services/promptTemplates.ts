@@ -101,7 +101,13 @@ export const createFilterFunctionPrompt = (query: string, columns: ColumnProfile
     }
 `;
 
-export const createCandidatePlansPrompt = (categoricalCols: string[], numericalCols: string[], sampleData: CsvRow[], numPlans: number): string => `
+export const createCandidatePlansPrompt = (
+    categoricalCols: string[],
+    numericalCols: string[],
+    sampleData: CsvRow[],
+    numPlans: number,
+    memoryHighlights: string[] = [],
+): string => `
     You are a senior business intelligence analyst specializing in ERP and financial data. Your task is to generate a diverse list of insightful analysis plan candidates for a given dataset by identifying common data patterns.
     
     Dataset columns:
@@ -109,6 +115,13 @@ export const createCandidatePlansPrompt = (categoricalCols: string[], numericalC
     - Numerical: ${numericalCols.join(', ')}
     Sample Data (first 5 rows):
     ${JSON.stringify(sampleData, null, 2)}
+
+    Historical high-signal views (cached from previous runs):
+    ${
+        memoryHighlights.length > 0
+            ? memoryHighlights.map(item => `- ${item}`).join('\n')
+            : 'None cached yet. Assume this dataset has no prior highlights to reuse.'
+    }
     
     Please generate up to ${numPlans} diverse analysis plans.
     **MANDATORY COPY RULE**: Every plan MUST include a natural-language \`description\` (at least 8 characters) that states what the user will learn. Do not leave it blank or use placeholders.
@@ -147,8 +160,18 @@ export const createCandidatePlansPrompt = (categoricalCols: string[], numericalC
     Do not include any other top-level properties or commentary.
 `;
 
-export const createRefinePlansPrompt = (plansWithData: { plan: any; aggregatedSample: CsvRow[] }[]): string => `
+export const createRefinePlansPrompt = (
+    plansWithData: { plan: any; aggregatedSample: CsvRow[] }[],
+    memoryHighlights: string[] = [],
+): string => `
     You are a Quality Review Data Analyst. Your job is to review a list of proposed analysis plans and their data samples. Your goal is to select ONLY the most insightful and readable charts for the end-user, and configure them for the best default view.
+    
+    Previously approved high-signal views for this dataset:
+    ${
+        memoryHighlights.length > 0
+            ? memoryHighlights.map(item => `- ${item}`).join('\n')
+            : '- None cached yet. Prioritize discovering net-new, high-variance stories.'
+    }
     
     **Review Criteria & Rules:**
     1.  **Discard Low-Value Charts**: This is your most important task. You MUST discard any plan that is not genuinely insightful.

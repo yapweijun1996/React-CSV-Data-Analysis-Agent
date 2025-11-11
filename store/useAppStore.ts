@@ -32,6 +32,7 @@ import {
     AgentPhase,
     AgentPromptMetric,
     CsvRow,
+    QuickActionId,
 } from '../types';
 import { executePlan, applyTopNWithOthers, PlanExecutionError } from '../utils/dataProcessor';
 import {
@@ -62,9 +63,12 @@ import {
     readAllRows,
     readColumnStoreRecord,
     readProvenance,
+    readMemorySnapshots,
+    saveMemorySnapshot,
     type CardDataRef,
     type ViewStoreRecord,
     type CardKind,
+    type MemorySnapshotInput,
 } from '../services/csvAgentDb';
 import {
     rememberDatasetId,
@@ -73,7 +77,8 @@ import {
     LAST_DATASET_STORAGE_KEY,
 } from '../utils/datasetCache';
 import { getErrorMessage } from '../services/errorMessages';
-import type { ErrorCode } from '../services/errorCodes';
+import { ERROR_CODES, type ErrorCode } from '../services/errorCodes';
+import { getGroupableColumnCandidates } from '../utils/groupByInference';
 
 const createClarificationId = () =>
     typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -107,6 +112,81 @@ const triggerAutoSaveImmediately = () => {
 
 const describeToolFailure = (code?: ErrorCode, reason?: string): string =>
     getErrorMessage(code, reason).detail;
+
+const requestFullScanApproval = (title: string): boolean => {
+    if (typeof window === 'undefined') return true;
+    return window.confirm(
+        `“${title}” 需要扫描所有已缓存的行才能完成分析。\n这可能耗时更久。是否启用全量扫描？`,
+    );
+};
+
+const QUICK_ACTION_LABELS: Record<QuickActionId, { label: string; helper: string }> = {
+    profile_dataset: {
+        label: '📊 数据画像',
+        helper: '快速检查列类型、缺失值与示例。',
+    },
+    open_raw_preview: {
+        label: '🧾 查看原始表',
+        helper: '跳到 Raw Data Explorer 检视原始行。',
+    },
+    topn_quick_chart: {
+        label: '🏆 生成 Top-N 图',
+        helper: '选用最佳分类/数值列，自动绘制 Top-N 视图。',
+    },
+};
+
+const NUMERIC_PROFILE_TYPES = new Set<ColumnProfile['type']>(['numerical', 'currency', 'percentage']);
+const CATEGORICAL_PROFILE_TYPES = new Set<ColumnProfile['type']>(['categorical', 'date', 'time']);
+
+const selectMetricColumn = (profiles: ColumnProfile[]): ColumnProfile | null => {
+    return (
+        profiles
+            .filter(profile => NUMERIC_PROFILE_TYPES.has(profile.type))
+            .sort((a, b) => {
+                const aScore = a.numericSampleCount ?? a.nonNullCount ?? 0;
+                const bScore = b.numericSampleCount ?? b.nonNullCount ?? 0;
+                return bScore - aScore;
+            })[0] ?? null
+    );
+};
+
+const buildQuickTopNPlan = (profiles: ColumnProfile[], sampleRows: CsvRow[]): AnalysisPlan | null => {
+    const groupCandidates = getGroupableColumnCandidates(
+        profiles.filter(profile => CATEGORICAL_PROFILE_TYPES.has(profile.type)),
+        sampleRows,
+    );
+    if (groupCandidates.length === 0) return null;
+    const preferredGroup =
+        groupCandidates.find(candidate => {
+            const distinct = candidate.uniqueValues ?? 0;
+            return distinct >= 4 && distinct <= 40;
+        }) ?? groupCandidates[0];
+    const groupByColumn = preferredGroup?.profile?.name;
+    if (!groupByColumn) return null;
+
+    const metricProfile = selectMetricColumn(profiles);
+    const valueColumn = metricProfile?.name ?? null;
+    const planTitle = valueColumn
+        ? `Top ${groupByColumn} by ${valueColumn}`
+        : `Top ${groupByColumn} by count`;
+    const planDescription = valueColumn
+        ? `Summarize the largest ${groupByColumn} values using ${valueColumn}.`
+        : `Show the most frequent ${groupByColumn} categories.`;
+
+    const plan: AnalysisPlan = {
+        chartType: 'bar',
+        title: planTitle,
+        description: planDescription,
+        aggregation: valueColumn ? 'sum' : 'count',
+        groupByColumn,
+        valueColumn: valueColumn ?? undefined,
+        defaultTopN: 8,
+        defaultHideOthers: true,
+        limit: 8,
+        orderBy: [{ column: valueColumn ?? 'count', direction: 'desc' }],
+    };
+    return plan;
+};
 
 const getNextAwaitingClarificationId = (clarifications: ClarificationRequest[]): string | null =>
     clarifications.find(c => c.status === 'pending')?.id ?? null;
@@ -229,6 +309,7 @@ const restoreVectorMemoryFromSnapshot = async (
 const MIN_ASIDE_WIDTH = 320;
 const MAX_ASIDE_WIDTH = 800;
 const MIN_MAIN_WIDTH = 600;
+const SNAPSHOT_PREVIEW_LIMIT = 12;
 
 const MAX_AGENT_TRACE_HISTORY = 40;
 const MAX_PLANNER_OBSERVATIONS = 12;
@@ -236,6 +317,22 @@ const MAX_AGENT_VALIDATION_EVENTS = 25;
 const AUTO_FULL_SCAN_ROW_THRESHOLD = 5000;
 
 const deriveAliasMap = (profiles: ColumnProfile[] = []) => buildColumnAliasMap(profiles.map(p => p.name));
+
+const computeSnapshotQualityScore = (rowCount: number, warningsCount: number, sampled: boolean): number => {
+    const densityScore = Math.min(rowCount, 60) / 60;
+    const warningPenalty = Math.max(0.4, 1 - warningsCount * 0.15);
+    const samplingPenalty = sampled ? 0.9 : 1;
+    return Number(((0.5 + densityScore * 0.5) * warningPenalty * samplingPenalty).toFixed(3));
+};
+
+const buildSnapshotTags = (plan: AnalysisPlan): string[] => {
+    const tags = ['auto-memory'];
+    if (plan.chartType) tags.push(`chart:${plan.chartType}`);
+    if (plan.groupByColumn) tags.push(`group:${plan.groupByColumn}`);
+    if (plan.valueColumn) tags.push(`value:${plan.valueColumn}`);
+    if (plan.aggregation) tags.push(`agg:${plan.aggregation}`);
+    return tags;
+};
 
 const normalizePlannerSession = (session?: PlannerSessionState | null): PlannerSessionState => ({
     observations: session?.observations ?? [],
@@ -520,7 +617,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             rememberDatasetId(datasetId);
             const profileResult = await dataTools.profile(datasetId);
             if (profileResult.ok) {
-                set({ datasetProfile: profileResult.data });
+                get().applyDatasetProfileSnapshot(profileResult.data);
             } else {
                 addProgress(`Profiling worker failed: ${profileResult.reason}`, 'error');
             }
@@ -980,6 +1077,15 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             }
             const response = await dataTools.aggregate(payload);
             if (!response.ok) {
+                if (response.code === ERROR_CODES.FULL_SCAN_BLOCKED && !payload.allowFullScan) {
+                    const approved = requestFullScanApproval(plan.title);
+                    if (approved) {
+                        addProgress(`User enabled full scan for "${plan.title}".`, 'system');
+                        return aggregateWithWorker(plan, { mode: 'full', allowFullScan: true });
+                    }
+                    addProgress(`Skipped "${plan.title}" because full scan was not approved.`, 'error');
+                    return null;
+                }
                 const failureDetail = describeToolFailure(response.code, response.reason);
                 addProgress(`Aggregation worker failed for "${plan.title}": ${failureDetail}`, 'error');
                 if (response.hint) {
@@ -1139,6 +1245,32 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 const cardMemoryText = `[Chart: ${preparedPlan.title}] Description: ${preparedPlan.description}. AI Summary: ${summary.split('---')[0]}`;
                 await vectorStore.addDocument({ id: newCard.id, text: cardMemoryText });
                 addProgress(`View #${newCard.id.slice(-6)} indexed for long-term memory.`);
+                if (datasetId && dataRefId) {
+                    const warningsCount = aggregationMeta?.warnings?.length ?? 0;
+                    const snapshotPayload: MemorySnapshotInput = {
+                        datasetId,
+                        viewId: dataRefId,
+                        cardId: newCard.id,
+                        title: preparedPlan.title,
+                        summary,
+                        plan: preparedPlan,
+                        chartType: preparedPlan.chartType,
+                        schema: aggregateResult?.schema,
+                        sampleRows: aggregatedData.slice(0, SNAPSHOT_PREVIEW_LIMIT),
+                        rowCount: aggregatedData.length,
+                        sampled: aggregationMeta?.sampled ?? isSampledResult ?? false,
+                        queryHash,
+                        qualityScore: computeSnapshotQualityScore(
+                            aggregatedData.length,
+                            warningsCount,
+                            aggregationMeta?.sampled ?? isSampledResult ?? false,
+                        ),
+                        tags: buildSnapshotTags(preparedPlan),
+                    };
+                    saveMemorySnapshot(snapshotPayload).catch(error =>
+                        console.warn('Failed to persist memory snapshot for dataset cache:', error),
+                    );
+                }
 
                 isFirstCardInPipeline = false;
                 addProgress(`Saved as View #${newCard.id.slice(-6)}`);
@@ -1243,11 +1375,15 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 try {
                     get().addProgress('AI is generating analysis plans...');
                     get().updateBusyStatus('Drafting analysis plans...');
+                    const datasetIdForPlans = get().datasetHash;
+                    const memorySnapshots = datasetIdForPlans
+                        ? await readMemorySnapshots(datasetIdForPlans, { limit: 6, minScore: 0.4 })
+                        : [];
                     const planResult = await generateAnalysisPlans(
                         get().columnProfiles,
-                        dataForAnalysis.data.slice(0, 5),
+                        dataForAnalysis.data.slice(0, 50),
                         get().settings,
-                        { signal: getRunSignal(runId) }
+                        { signal: getRunSignal(runId), memorySnapshots }
                     );
                     planResult.warnings.forEach((warning: PlanGenerationWarning) => {
                         const warningMessage = `Plan generator warning: ${warning.message}`;
@@ -1351,6 +1487,84 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             },
             { cancellable: true },
         );
+    },
+    
+    executeQuickAction: async (actionId: QuickActionId) => {
+        const toastMissingDataset = () =>
+            get().addToast('请先上传或选择一个 CSV 文件。', 'error', 4000);
+        switch (actionId) {
+            case 'profile_dataset': {
+                const datasetId = get().datasetHash;
+                if (!datasetId) {
+                    toastMissingDataset();
+                    return;
+                }
+                get().addProgress('Running quick data profile…');
+                try {
+                    const profileResult = await dataTools.profile(datasetId);
+                    if (!profileResult.ok) {
+                        get().addProgress(
+                            `Data profile failed: ${describeToolFailure(profileResult.code, profileResult.reason)}`,
+                            'error',
+                        );
+                        return;
+                    }
+                    get().applyDatasetProfileSnapshot(profileResult.data);
+                    const summaryMessage: ChatMessage = {
+                        sender: 'ai',
+                        text: `✅ 数据画像完成：共 ${profileResult.data.columns.length} 列、${profileResult.data.rowCount.toLocaleString()} 行。展开 “Data Profile” 面板即可查看细节。`,
+                        timestamp: new Date(),
+                        type: 'ai_message',
+                    };
+                    set(prev => ({ chatHistory: [...prev.chatHistory, summaryMessage] }));
+                } catch (error) {
+                    const errorMessage = error instanceof Error ? error.message : String(error);
+                    get().addProgress(`Data profile quick action failed: ${errorMessage}`, 'error');
+                }
+                break;
+            }
+            case 'open_raw_preview': {
+                get().focusDataPreview();
+                const aiMessage: ChatMessage = {
+                    sender: 'ai',
+                    text: '🧾 Raw Data Explorer 已打开，你可以在右侧表格查看原始行。',
+                    timestamp: new Date(),
+                    type: 'ai_message',
+                };
+                set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
+                break;
+            }
+            case 'topn_quick_chart': {
+                const data = get().csvData;
+                if (!data || data.data.length === 0) {
+                    toastMissingDataset();
+                    return;
+                }
+                const plan = buildQuickTopNPlan(get().columnProfiles, data.data.slice(0, 200));
+                if (!plan) {
+                    get().addProgress('找不到合适的分类 / 数值列来构建 Top-N 图。', 'error');
+                    return;
+                }
+                get().addProgress(`Running quick Top-N chart: ${plan.title}`);
+                const cards = await get().runAnalysisPipeline([plan], data, { isChatRequest: true });
+                const firstCard = cards[0];
+                if (firstCard) {
+                    const aiMessage: ChatMessage = {
+                        sender: 'ai',
+                        text: `🏆 已生成 Top-N 图：「${firstCard.plan.title}」。可以点击卡片查看结果。`,
+                        timestamp: new Date(),
+                        type: 'ai_message',
+                        cardId: firstCard.id,
+                    };
+                    set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
+                } else {
+                    get().addProgress('Quick Top-N 图未返回任何结果。', 'error');
+                }
+                break;
+            }
+            default:
+                get().addProgress('Unknown quick action.', 'error');
+        }
     },
     
     executeDomAction: (action) => {
@@ -1541,6 +1755,46 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             get().addToast('Failed to import CSV from report page.', 'error');
         }
     },
+    applyDatasetProfileSnapshot: (profile: ProfileResult) => {
+        const observationId = `obs-profile-${Date.now().toString(36)}`;
+        const timestamp = new Date().toISOString();
+        const observation: AgentObservation = {
+            id: observationId,
+            actionId: 'dataset_profile',
+            responseType: 'plan_state_update',
+            status: 'success',
+            timestamp,
+            outputs: {
+                rowCount: profile.rowCount,
+                sampledRows: profile.sampledRows,
+                sampleRatio:
+                    profile.rowCount > 0
+                        ? Number((profile.sampledRows / profile.rowCount).toFixed(3))
+                        : 1,
+            },
+        };
+        set(state => {
+            const planState = state.plannerSession.planState;
+            if (!planState) {
+                return { datasetProfile: profile };
+            }
+            const existingIds = planState.observationIds ?? [];
+            if (existingIds.includes(observationId)) {
+                return { datasetProfile: profile };
+            }
+            return {
+                datasetProfile: profile,
+                plannerSession: {
+                    ...state.plannerSession,
+                    planState: {
+                        ...planState,
+                        observationIds: [...existingIds, observationId],
+                    },
+                },
+            };
+        });
+        get().appendPlannerObservation(observation);
+    },
 
     handleChartTypeChange: (cardId, newType) => {
         set(state => ({
@@ -1621,7 +1875,26 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 allowFullScan: !!payload.allowFullScan,
             },
         });
-        const response = await dataTools.aggregate(payload);
+        let response = await dataTools.aggregate(payload);
+        if (!response.ok && response.code === ERROR_CODES.FULL_SCAN_BLOCKED && !payload.allowFullScan) {
+            const approved = requestFullScanApproval(card.plan.title);
+            if (approved) {
+                get().addProgress(`User enabled full scan for "${card.plan.title}".`, 'system');
+                payload.mode = 'full';
+                payload.allowFullScan = true;
+                response = await dataTools.aggregate(payload);
+            } else {
+                get().addProgress(`Skipped "${card.plan.title}" because full scan was not approved.`, 'error');
+                get().updateAgentActionTrace(traceId, 'failed', 'Full scan not approved.', {
+                    metadata: {
+                        cardId,
+                        requestedMode: payload.mode,
+                        allowFullScan: !!payload.allowFullScan,
+                    },
+                });
+                return false;
+            }
+        }
         if (!response.ok) {
             const failureDetail = describeToolFailure(response.code, response.reason);
             get().addProgress(`Aggregation refresh failed for "${card.plan.title}": ${failureDetail}`, 'error');

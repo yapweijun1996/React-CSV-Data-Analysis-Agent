@@ -1,5 +1,5 @@
 import type { GetState, SetState } from 'zustand';
-import type { AppState, ColumnProfile, DataPreparationPlan, Report } from '../../types';
+import type { AppState, ColumnProfile, DataPreparationPlan, DataTransformMeta, Report } from '../../types';
 import type { AppStore } from '../appStoreTypes';
 import { processCsv, profileData, executeJavaScriptDataTransform } from '../../utils/dataProcessor';
 import { buildColumnAliasMap } from '../../utils/columnAliases';
@@ -7,7 +7,12 @@ import { generateDataPreparationPlan } from '../../services/aiService';
 import { vectorStore } from '../../services/vectorStore';
 import { getReport, saveReport, deleteReport, CURRENT_SESSION_KEY } from '../../storageService';
 import { computeDatasetHash } from '../../utils/datasetHash';
-import { persistCleanDataset, readProvenance } from '../../services/csvAgentDb';
+import {
+    persistCleanDataset,
+    readProvenance,
+    replacePreparationLog,
+    type PreparationLogEntryInput,
+} from '../../services/csvAgentDb';
 import { dataTools } from '../../services/dataTools';
 import { rememberDatasetId, forgetDatasetId } from '../../utils/datasetCache';
 
@@ -15,6 +20,94 @@ interface FileUploadSliceDependencies {
     initialAppState: AppState;
     resetAutoSaveSession: () => void;
 }
+
+const describeRowImpact = (meta: DataTransformMeta | null): string => {
+    if (!meta) return 'AI transformation applied (row delta unknown).';
+    const parts = [`Rows ${meta.rowsBefore.toLocaleString()} → ${meta.rowsAfter.toLocaleString()}`];
+    if (meta.removedRows > 0) parts.push(`${meta.removedRows.toLocaleString()} removed`);
+    if (meta.addedRows > 0) parts.push(`${meta.addedRows.toLocaleString()} added`);
+    if (meta.modifiedRows > 0) parts.push(`${meta.modifiedRows.toLocaleString()} modified`);
+    return parts.join(', ');
+};
+
+const buildPreparationLogEntries = (
+    plan: DataPreparationPlan | null,
+    meta: DataTransformMeta | null,
+    beforeColumns: ColumnProfile[],
+    afterColumns: ColumnProfile[],
+): PreparationLogEntryInput[] => {
+    if (!plan) return [];
+    const entries: PreparationLogEntryInput[] = [];
+    const beforeMap = new Map(beforeColumns.map(col => [col.name, col]));
+    const afterMap = new Map(afterColumns.map(col => [col.name, col]));
+    entries.push({
+        stepOrder: 0,
+        scope: 'rows',
+        columnName: null,
+        rule: 'ai_transformation',
+        impactSummary: describeRowImpact(meta),
+        impactMetrics: meta
+            ? { ...meta, totalColumnsBefore: beforeColumns.length, totalColumnsAfter: afterColumns.length }
+            : { totalColumnsBefore: beforeColumns.length, totalColumnsAfter: afterColumns.length },
+        details: {
+            explanation: plan.explanation,
+            beforeColumns: beforeColumns.map(col => ({ name: col.name, type: col.type })),
+            afterColumns: afterColumns.map(col => ({ name: col.name, type: col.type })),
+        },
+        source: 'ai_plan',
+        tags: ['transformation'],
+    });
+    let stepOrder = 1;
+    beforeColumns
+        .filter(col => !afterMap.has(col.name))
+        .forEach(col => {
+            entries.push({
+                stepOrder: stepOrder++,
+                scope: 'column',
+                columnName: col.name,
+                rule: 'column_removed',
+                impactSummary: `Column "${col.name}" removed during AI cleanup.`,
+                details: { previousType: col.type },
+                source: 'ai_plan',
+                tags: ['schema', 'removed'],
+            });
+        });
+    afterColumns
+        .filter(col => !beforeMap.has(col.name))
+        .forEach(col => {
+            entries.push({
+                stepOrder: stepOrder++,
+                scope: 'column',
+                columnName: col.name,
+                rule: 'column_added',
+                impactSummary: `Column "${col.name}" added by AI transformation.`,
+                details: { newType: col.type },
+                source: 'ai_plan',
+                tags: ['schema', 'added'],
+            });
+        });
+    afterColumns
+        .filter(col => {
+            const before = beforeMap.get(col.name);
+            return before && before.type !== col.type;
+        })
+        .forEach(col => {
+            const previous = beforeMap.get(col.name);
+            entries.push({
+                stepOrder: stepOrder++,
+                scope: 'column',
+                columnName: col.name,
+                rule: 'column_type_change',
+                impactSummary: `Column "${col.name}" type normalized from ${
+                    previous?.type ?? 'unknown'
+                } to ${col.type}.`,
+                details: { previousType: previous?.type, newType: col.type },
+                source: 'ai_plan',
+                tags: ['schema', 'type_change'],
+            });
+        });
+    return entries;
+};
 
 export const createFileUploadSlice = (
     set: SetState<AppStore>,
@@ -62,7 +155,7 @@ export const createFileUploadSlice = (
                 try {
                     const profileResult = await dataTools.profile(datasetId);
                     if (profileResult.ok) {
-                        set({ datasetProfile: profileResult.data });
+                        get().applyDatasetProfileSnapshot(profileResult.data);
                     } else {
                         get().addProgress(`Profiling failed: ${profileResult.reason}`, 'error');
                     }
@@ -140,6 +233,7 @@ export const createFileUploadSlice = (
             let dataForAnalysis = parsedData;
             let profiles: ColumnProfile[];
             let prepPlan: DataPreparationPlan | null = null;
+            let preparationLogEntries: PreparationLogEntryInput[] = [];
 
             if (get().isApiKeySet) {
                 get().updateBusyStatus('Initializing AI memory...');
@@ -163,7 +257,10 @@ export const createFileUploadSlice = (
                     get().addProgress(`AI Plan: ${prepPlan.explanation}`);
                     get().addProgress('Executing AI data transformation...');
                     try {
-                        const transformResult = executeJavaScriptDataTransform(dataForAnalysis.data, prepPlan.jsFunctionBody);
+                        const transformResult = executeJavaScriptDataTransform(
+                            dataForAnalysis.data,
+                            prepPlan.jsFunctionBody,
+                        );
                         dataForAnalysis.data = transformResult.data;
                         const { rowsBefore, rowsAfter, removedRows, addedRows, modifiedRows } = transformResult.meta;
                         const summary = [`${rowsBefore} → ${rowsAfter} rows`];
@@ -171,6 +268,12 @@ export const createFileUploadSlice = (
                         if (addedRows) summary.push(`${addedRows} added`);
                         if (modifiedRows) summary.push(`${modifiedRows} modified`);
                         get().addProgress(`Transformation complete (${summary.join(', ')}).`);
+                        preparationLogEntries = buildPreparationLogEntries(
+                            prepPlan,
+                            transformResult.meta,
+                            initialProfiles,
+                            prepPlan.outputColumns,
+                        );
                     } catch (transformError) {
                         const errorMessage = transformError instanceof Error ? transformError.message : String(transformError);
                         get().addProgress(`Data transformation failed: ${errorMessage}`, 'error');
@@ -189,6 +292,11 @@ export const createFileUploadSlice = (
                     throw new Error('无法为当前数据集生成唯一 fingerprint。');
                 }
                 await persistCleanSnapshot(datasetHash, profiles);
+                try {
+                    await replacePreparationLog(datasetHash, preparationLogEntries);
+                } catch (logError) {
+                    console.warn('Failed to persist preparation log entries:', logError);
+                }
                 set({
                     csvData: dataForAnalysis,
                     columnProfiles: profiles,
@@ -208,6 +316,11 @@ export const createFileUploadSlice = (
                     throw new Error('无法识别数据集指纹，无法缓存。');
                 }
                 await persistCleanSnapshot(datasetHash, profiles);
+                try {
+                    await replacePreparationLog(datasetHash, []);
+                } catch (logError) {
+                    console.warn('Failed to clear preparation log for dataset:', logError);
+                }
                 set({
                     csvData: dataForAnalysis,
                     columnProfiles: profiles,

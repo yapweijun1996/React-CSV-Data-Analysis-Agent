@@ -13,6 +13,7 @@ import type {
     AnalysisPlan,
     CardContext,
     ChatMessage,
+    ChatQuickActionGroup,
     ClarificationOption,
     ClarificationRequest,
     ClarificationRequestPayload,
@@ -83,6 +84,7 @@ interface PlannerRuntime {
     userMessage: string;
     memorySnapshot: MemoryReference[];
     memoryTagAttached: boolean;
+    starterActionsShared?: boolean;
     policy: PlannerPolicy;
     intentNotes?: string[];
     detectedIntent?: DetectedIntent | null;
@@ -136,6 +138,15 @@ const DEFAULT_ACK_STEP: AgentPlanStep = {
     label: 'Acknowledge the greeting and ask what to analyze next.',
     intent: 'conversation',
     status: 'ready',
+};
+const QUICK_STARTER_GROUP: ChatQuickActionGroup = {
+    title: '快速开始 / Quick start',
+    helperText: '一键执行安全的本地操作，尽快看到结果。',
+    actions: [
+        { id: 'profile_dataset', label: '📊 数据画像', helperText: '生成列画像与缺失值概览。' },
+        { id: 'open_raw_preview', label: '🧾 查看原始表', helperText: '打开 Raw Data Explorer。' },
+        { id: 'topn_quick_chart', label: '🏆 Top-N 图', helperText: '挑选最佳列并绘制 Top-N。' },
+    ],
 };
 const SHOW_ALL_FILTER_QUERY = 'show entire table';
 const PLAN_RESET_KEYWORDS = ['reset plan', 'start over', '重新開始', '重新开始', '重新規劃', '重新规划'];
@@ -193,6 +204,7 @@ const ACTION_TYPE_ALIAS_MAP: Record<string, AgentActionType> = {
 };
 
 const LOW_INTENT_INTENTS = new Set<AgentIntent>(['greeting', 'smalltalk', 'ask_user_choice']);
+const AUTOFILL_BLOCKED_INTENTS = new Set<AgentIntent>(['greeting', 'clarification', 'clarification_request', 'ask_user_choice']);
 const MULTIPLE_CHOICE_LINE_REGEX = /(^|\n)\s*(?:\d+[\.\)]|[A-Z][\.\)]|[-•]\s*(?:option|choice)\s*\d+)/i;
 const QUESTION_PROMPT_HINT_REGEX =
     /\b(option|choice|選項|請選|Type a custom answer|please\s+(?:choose|select|pick)|would\s+you\s+like|should\s+i|need\s+your\s+choice|请选择|請選擇|請輸入|要不要|需不需要)\b/i;
@@ -252,18 +264,42 @@ const applyAwaitUserMetaSignal = (actions: AiAction[]): boolean => {
     return true;
 };
 
-const enforceClarificationAwaitSignal = (actions: AiAction[]): void => {
+const enforceClarificationAwaitSignal = (actions: AiAction[], runtime: PlannerRuntime): void => {
     if (!Array.isArray(actions) || actions.length === 0) return;
+    const planAction = actions.find(action => action.responseType === 'plan_state_update');
+    const markPlanAwaitingChoice = (promptId?: string) => {
+        if (!planAction) return;
+        const planMeta = ensureActionMetaDefaults(planAction);
+        planMeta.awaitUser = true;
+        planMeta.haltAfter = true;
+        planMeta.promptId = planMeta.promptId || promptId || createPromptInteractionId();
+        if (hasPlanStatePayload(planAction)) {
+            planAction.planState = {
+                ...planAction.planState,
+                blockedBy: 'awaiting_user_choice',
+            };
+        } else {
+            const seeded = buildMinimalPlanStateSnapshot(runtime, runtime.get().plannerSession.planState ?? undefined);
+            seeded.blockedBy = 'awaiting_user_choice';
+            planAction.planState = seeded;
+            runtime.get().updatePlannerPlanState(seeded);
+        }
+    };
+    let hasClarification = false;
     actions.forEach(action => {
         if (action.responseType !== 'clarification_request') return;
+        hasClarification = true;
         const meta = ensureActionMetaDefaults(action);
         meta.awaitUser = true;
         meta.haltAfter = true;
         if (!meta.promptId) {
             meta.promptId = createPromptInteractionId();
         }
+        markPlanAwaitingChoice(meta.promptId);
     });
-    setAwaitingClarificationTag(actions);
+    if (hasClarification) {
+        setAwaitingClarificationTag(actions);
+    }
 };
 
 interface IntentExecutionPolicy {
@@ -334,6 +370,29 @@ const clipActionsToPolicy = (actions: AiAction[]): AiAction[] => {
     return result;
 };
 
+const ensurePrimerPlacement = (
+    actions: AiAction[],
+    runtime: PlannerRuntime,
+    note: (message: string) => void,
+): void => {
+    if (!actions.length) return;
+    const planIndex = actions.findIndex(action => action.responseType === 'plan_state_update');
+    if (planIndex === -1) {
+        const existingPlan = runtime.get().plannerSession.planState;
+        const primerState = buildMinimalPlanStateSnapshot(runtime, existingPlan ?? undefined);
+        const primerAction = createPlanPrimerAction(primerState, 'Auto-inserted plan tracker for this turn.');
+        actions.unshift(primerAction);
+        runtime.get().updatePlannerPlanState(primerState);
+        note('Inserted missing plan_state_update as first action.');
+        return;
+    }
+    if (planIndex > 0) {
+        const [planAction] = actions.splice(planIndex, 1);
+        actions.unshift(planAction);
+        note('Moved plan_state_update to the first position.');
+    }
+};
+
 const applyResponseEnvelopeAutoHeal = (response: AiChatResponse, runtime: PlannerRuntime) => {
     if (!Array.isArray(response.actions)) {
         response.actions = [];
@@ -402,12 +461,13 @@ const applyResponseEnvelopeAutoHeal = (response: AiChatResponse, runtime: Planne
         response.actions = [];
         return;
     }
+    ensurePrimerPlacement(healed, runtime, recordHeal);
     const clipped = clipActionsToPolicy(healed);
     if (clipped.length < healed.length) {
         runtime.get().addProgress('Trimmed extra actions to keep this turn atomic.', 'system');
     }
     const awaitingMetaApplied = applyAwaitUserMetaSignal(clipped);
-    enforceClarificationAwaitSignal(clipped);
+    enforceClarificationAwaitSignal(clipped, runtime);
     const isLowIntent = runtime.detectedIntent?.intent ? LOW_INTENT_INTENTS.has(runtime.detectedIntent.intent) : false;
     if (isLowIntent && !clipped.some(action => action.responseType === 'text_response')) {
         clipped.push({
@@ -483,7 +543,14 @@ const markAwaitingUserInput = (runtime: PlannerRuntime, promptId?: string | null
         agentAwaitingPromptId: promptId ?? null,
     }));
     const store = runtime.get();
-    store.addProgress('Waiting for your choice to continue.');
+    store.addProgress('⏸ Waiting for your choice to continue.');
+    const pendingNotice: ChatMessage = {
+        sender: 'ai',
+        text: '⏸ 等待你的选择，我会在收到输入后继续执行计划。',
+        timestamp: new Date(),
+        type: 'ai_message',
+    };
+    runtime.set(prev => ({ chatHistory: [...prev.chatHistory, pendingNotice] }));
     if (typeof store.setAgentPhase === 'function') {
         store.setAgentPhase('idle', 'Waiting for your choice...');
     }
@@ -494,6 +561,14 @@ const clearAwaitingUserInput = (runtime: PlannerRuntime) => {
         agentAwaitingUserInput: false,
         agentAwaitingPromptId: null,
     }));
+};
+
+const shouldSkipAutofill = (runtime: PlannerRuntime): boolean => {
+    if (runtime.get().agentAwaitingUserInput) {
+        return true;
+    }
+    const intent = runtime.detectedIntent?.intent;
+    return intent ? AUTOFILL_BLOCKED_INTENTS.has(intent) : false;
 };
 
 const pausePlannerForUser = (runtime: PlannerRuntime, signal: PlannerMetaSignal) => {
@@ -680,6 +755,12 @@ const createPromptInteractionId = () =>
 
 const runtimeStateTagFactory = new StateTagFactory();
 const mintRuntimeStateTag = (): string => runtimeStateTagFactory.mint();
+const SELF_HEAL_ELIGIBLE_ACTIONS = new Set<AgentActionType>([
+    'dom_action',
+    'execute_js_code',
+    'filter_spreadsheet',
+    'proceed_to_analysis',
+]);
 
 interface RawDataExplorerSnapshot {
     summary: string;
@@ -1259,6 +1340,9 @@ const repairFilterActionFromIntent = (
     runtime: PlannerRuntime,
     actionIndex: number,
 ): boolean => {
+    if (shouldSkipAutofill(runtime)) {
+        return false;
+    }
     if (action.responseType !== 'filter_spreadsheet') return false;
     const intentHint =
         runtime.detectedIntent?.intent === 'data_filter' ? runtime.detectedIntent.requiredTool : undefined;
@@ -1291,6 +1375,9 @@ const repairDomActionFromIntent = (
     runtime: PlannerRuntime,
     actionIndex: number,
 ): boolean => {
+    if (shouldSkipAutofill(runtime)) {
+        return false;
+    }
     if (action.responseType !== 'dom_action' || !action.domAction) return false;
     const hint = runtime.detectedIntent?.requiredTool;
     if (!hint || hint.responseType !== 'dom_action') return false;
@@ -1625,6 +1712,24 @@ const seedGreetingPlanState = (runtime: PlannerRuntime) => {
     });
     store.updatePlannerPlanState(planState);
     store.addProgress('Auto-seeded a greeting plan tracker so the assistant can respond.');
+};
+
+const QUICK_STARTER_INTENTS = new Set<AgentIntent>(['greeting', 'smalltalk', 'ask_user_choice']);
+
+const maybeShareQuickStarterActions = (runtime: PlannerRuntime) => {
+    if (runtime.starterActionsShared) return;
+    if (!QUICK_STARTER_INTENTS.has(runtime.detectedIntent?.intent ?? '')) return;
+    const hasDataset = Boolean(runtime.get().csvData && runtime.get().csvData?.data?.length);
+    if (!hasDataset) return;
+    runtime.starterActionsShared = true;
+    const starterMessage: ChatMessage = {
+        sender: 'ai',
+        text: '我已经准备好了。想先做哪一步？',
+        timestamp: new Date(),
+        type: 'ai_message',
+        quickActions: QUICK_STARTER_GROUP,
+    };
+    runtime.set(prev => ({ chatHistory: [...prev.chatHistory, starterMessage] }));
 };
 
 const stateConsistencyMiddleware: ActionMiddleware = async (context, next) => {
@@ -2495,14 +2600,14 @@ const runPlannerWorkflow = async (
                     `The previous action failed (${dispatchResult.reason}). I'll try again automatically (${attemptLabel}).`;
                 const retryMessage: ChatMessage = {
                     sender: 'ai',
-                    text: chatMessageText,
+                    text: `⚠️ 系统自愈重试：${chatMessageText}`,
                     timestamp: new Date(),
                     type: 'ai_message',
                     isError: true,
                 };
                 runtime.set(prev => ({ chatHistory: [...prev.chatHistory, retryMessage] }));
                 const progressMessage =
-                    dispatchResult.progressMessage ?? `Auto-retrying last action (${attemptLabel})...`;
+                    dispatchResult.progressMessage ?? `⚠️ Auto-retrying last action (${attemptLabel})...`;
                 runtime.get().addProgress(progressMessage);
                 const planningStatusMessage = dispatchResult.statusMessage ?? 'Adjusting the plan after a failed attempt...';
                 enterAgentPhase(runtime, 'planning', planningStatusMessage);
@@ -2683,6 +2788,20 @@ const dispatchAgentActions = async (
             });
         }
         if (stepResult.type === 'retry') {
+            const observationStatus = stepResult.observation?.status ?? null;
+            const awaitingUser = Boolean(
+                stepResult.observation?.outputs && 'awaitUser' in stepResult.observation.outputs
+                    ? stepResult.observation.outputs.awaitUser
+                    : false,
+            );
+            const allowSelfHeal =
+                SELF_HEAL_ELIGIBLE_ACTIONS.has(action.responseType) &&
+                observationStatus === 'error' &&
+                !awaitingUser;
+            if (!allowSelfHeal) {
+                runtime.get().addProgress('Skip auto-heal retry because this action is not eligible.', 'system');
+                return { type: 'halt' };
+            }
             return {
                 type: 'retry',
                 reason: stepResult.reason,
@@ -2765,6 +2884,7 @@ const handleTextResponseAction: AgentActionExecutor = async ({ action, runtime, 
     };
 
     runtime.set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
+    maybeShareQuickStarterActions(runtime);
     if (shouldAttachMemory) {
         runtime.memoryTagAttached = true;
     }
@@ -3494,6 +3614,7 @@ export class AgentWorker {
                 userMessage: message,
                 memorySnapshot: plannerContext.memorySnapshot,
                 memoryTagAttached: false,
+                starterActionsShared: false,
                 policy: this.policy,
                 intentNotes,
                 detectedIntent,

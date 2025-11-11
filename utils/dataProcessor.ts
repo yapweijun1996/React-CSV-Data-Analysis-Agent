@@ -279,7 +279,7 @@ export const profileData = (data: CsvRow[]): ColumnProfile[] => {
  * @param input The string to split.
  * @returns An array of strings, where each string is a single number.
  */
-const splitNumericString = (input: string | null | undefined): string[] => {
+export const splitNumericString = (input: string | null | undefined): string[] => {
     if (!input) return [];
     // Replace commas that are delimiters with a pipe character.
     // A comma is a delimiter if it is followed by a digit, or a minus sign then a digit.

@@ -69,7 +69,12 @@ const extractJsonSegment = (content: string): string | null => {
     return null;
 };
 
-export const robustlyParseJsonArray = (responseText: string): any[] => {
+interface ParseArrayOptions {
+    rootKey?: string;
+    requireRootKeyOnly?: boolean;
+}
+
+export const robustlyParseJsonArray = (responseText: string, options?: ParseArrayOptions): any[] => {
     let content = responseText.trim();
 
     // 1. Try to extract JSON from markdown code blocks
@@ -95,6 +100,31 @@ export const robustlyParseJsonArray = (responseText: string): any[] => {
         }
 
         if (typeof resultObject === 'object' && resultObject !== null) {
+            if (options?.rootKey) {
+                if (!(options.rootKey in resultObject)) {
+                    throw new PlanParsingError(
+                        `Response is missing required "${options.rootKey}" property.`,
+                        content,
+                    );
+                }
+                if (
+                    options.requireRootKeyOnly &&
+                    Object.keys(resultObject).some(key => key !== options.rootKey)
+                ) {
+                    throw new PlanParsingError(
+                        `Response must only include the "${options.rootKey}" property.`,
+                        content,
+                    );
+                }
+                const target = (resultObject as Record<string, unknown>)[options.rootKey];
+                if (!Array.isArray(target)) {
+                    throw new PlanParsingError(
+                        `"${options.rootKey}" must be an array.`,
+                        content,
+                    );
+                }
+                return target;
+            }
             const nestedArray = Object.values(resultObject).find(v => Array.isArray(v));
             if (nestedArray && Array.isArray(nestedArray)) {
                 return nestedArray;

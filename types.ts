@@ -337,6 +337,20 @@ export interface MemoryReference {
     score?: number;
 }
 
+export type QuickActionId = 'profile_dataset' | 'open_raw_preview' | 'topn_quick_chart';
+
+export interface ChatQuickAction {
+    id: QuickActionId;
+    label: string;
+    helperText?: string;
+}
+
+export interface ChatQuickActionGroup {
+    title?: string;
+    helperText?: string;
+    actions: ChatQuickAction[];
+}
+
 export interface ChatMessage {
     sender: 'user' | 'ai';
     text: string;
@@ -352,6 +366,7 @@ export interface ChatMessage {
     };
     usedMemories?: MemoryReference[]; // Snapshot of memories that informed this response
     meta?: AgentActionMeta;
+    quickActions?: ChatQuickActionGroup;
 }
 
 export interface Settings {

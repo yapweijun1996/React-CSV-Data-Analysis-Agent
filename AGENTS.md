@@ -74,6 +74,8 @@
   * `opChains(id,tableId,ops[])`
   * `cards(id,viewId,kind,config,layout)`
   * `insights(id,viewId,text,severity,tags[])`
+  * `prepLog(id,datasetId,scope,column,rule,impactMeta)` —— 逐步清洗轨迹（只写入一次，给解释卡读）
+  * `memorySnapshots(id,datasetId,viewId,title,summary,qualityScore,tags[])` —— 高价值视图快照，供计划生成/质量 Gate 循环复用
 
 ---
 
