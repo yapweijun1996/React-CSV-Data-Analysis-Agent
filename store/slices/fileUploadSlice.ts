@@ -302,6 +302,7 @@ export const createFileUploadSlice = (
                     columnProfiles: profiles,
                     columnAliasMap: aliasMap,
                     datasetHash,
+                    datasetRuntimeConfig: null,
                     dataPreparationPlan: prepPlan,
                     currentView: 'analysis_dashboard',
                 });
@@ -326,6 +327,7 @@ export const createFileUploadSlice = (
                     columnProfiles: profiles,
                     columnAliasMap: aliasMap,
                     datasetHash,
+                    datasetRuntimeConfig: null,
                     currentView: 'analysis_dashboard',
                 });
             }

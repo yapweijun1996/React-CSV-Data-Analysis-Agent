@@ -46,18 +46,18 @@ export const AppHeader: React.FC = () => {
                             className={modeButtonClass('sample')}
                             onClick={() => setAggregationMode('sample')}
                         >
-                            Sample
+                            快速
                         </button>
                         <button
                             type="button"
                             className={modeButtonClass('full')}
                             onClick={() => setAggregationMode('full')}
                         >
-                            Full Scan
+                            全量（需确认）
                         </button>
                     </div>
                     <div className="mt-1 text-[11px] text-slate-400 max-w-xs">
-                        Sample uses up to 5k cached rows. Charts auto-switch to full when datasets are tiny.
+                        快速 = 采样（默认 5k 行以内）；全量 = 全表扫描，切换为数据集独立配置。
                     </div>
                 </div>
                 <div className="flex items-center space-x-2">

@@ -1,7 +1,15 @@
 import { profileData, robustParseFloat } from '../utils/dataProcessor';
-import type { CsvRow, ColumnProfile } from '../types';
+import type { CsvRow, ColumnProfile, DatasetRuntimeConfig, StringNormalizationStrategy } from '../types';
 import type { ColumnStoreRecord } from './csvAgentDb';
 import { ERROR_CODES, type ErrorCode } from './errorCodes';
+import {
+    DEFAULT_AGG_SAMPLE,
+    DEFAULT_PROFILE_SAMPLE,
+    DEFAULT_SAMPLE_SIZE,
+    DEFAULT_TIMEOUT_MS,
+    normalizeStringStrategy,
+    summarizeStringStrategy,
+} from './runtimeConfig';
 import type {
     AggregatePayload,
     AggregateResult,
@@ -14,14 +22,10 @@ export interface DataWorkerDeps {
     readColumnStoreRecord: (datasetId: string) => Promise<ColumnStoreRecord | null>;
     readSampledRows: (datasetId: string, limit: number) => Promise<CsvRow[]>;
     readAllRows: (datasetId: string) => Promise<CsvRow[]>;
+    readDatasetRuntimeConfig: (datasetId: string) => Promise<DatasetRuntimeConfig | null>;
 }
 
 export const COLUMN_METADATA_ERROR = 'COLUMN_METADATA_MISSING';
-
-export const DEFAULT_PROFILE_SAMPLE = 2000;
-export const DEFAULT_SAMPLE_SIZE = 1000;
-export const DEFAULT_AGG_SAMPLE = 3000;
-export const DEFAULT_TIMEOUT_MS = 3000;
 
 const columnMetadataError = (): never => {
     throw Object.assign(new Error(ERROR_CODES.COLUMN_METADATA_MISSING), { code: ERROR_CODES.COLUMN_METADATA_MISSING as ErrorCode });
@@ -36,11 +40,30 @@ const simpleHash = (input: string): string => {
     return Math.abs(hash).toString(36);
 };
 
-const normalizeValue = (value: any): string => {
-    if (value === null || value === undefined) return '';
-    if (typeof value === 'string') return value.trim();
-    return String(value);
+const createValueNormalizer = (strategy: StringNormalizationStrategy) => {
+    const caseTransform =
+        strategy.caseStrategy === 'lower' ? (value: string) => value.toLowerCase() : (value: string) => value;
+    return (value: unknown): string => {
+        if (value === null || value === undefined) {
+            return strategy.nullReplacement;
+        }
+        let text = typeof value === 'string' ? value : String(value);
+        if (strategy.trimWhitespace) {
+            text = text.trim();
+        }
+        if (text.length === 0) {
+            return strategy.nullReplacement;
+        }
+        return caseTransform(text);
+    };
 };
+
+const DEFAULT_NORMALIZER = createValueNormalizer(normalizeStringStrategy());
+
+const normalizeValue = (
+    value: any,
+    normalizer: (value: unknown) => string = DEFAULT_NORMALIZER,
+): string => normalizer(value);
 
 const extractExamples = (rows: CsvRow[], column: string, limit = 3): string[] => {
     const examples: string[] = [];
@@ -103,21 +126,23 @@ export const buildProfileResult = async (
     };
 };
 
-const passesFilter = (row: CsvRow, filters?: AggregatePayload['filter']): boolean => {
+const passesFilter = (
+    row: CsvRow,
+    filters: AggregatePayload['filter'] | undefined,
+    normalizer: (value: unknown) => string,
+): boolean => {
     if (!filters || filters.length === 0) return true;
     return filters.every(filter => {
         const rawValue = row[filter.column];
-        const normalized = normalizeValue(rawValue);
-        const needle = normalizeValue(filter.value ?? '');
+        const normalized = normalizer(rawValue);
+        const needle = normalizer(filter.value ?? '');
+        const normalizeForComparison = (value: string) =>
+            filter.caseInsensitive ? value.toLowerCase() : value;
         switch (filter.op) {
             case 'eq':
-                return filter.caseInsensitive
-                    ? normalized.toLowerCase() === needle.toLowerCase()
-                    : normalized === needle;
+                return normalizeForComparison(normalized) === normalizeForComparison(needle);
             case 'neq':
-                return filter.caseInsensitive
-                    ? normalized.toLowerCase() !== needle.toLowerCase()
-                    : normalized !== needle;
+                return normalizeForComparison(normalized) !== normalizeForComparison(needle);
             case 'gt':
                 return Number(normalized) > Number(needle);
             case 'gte':
@@ -126,11 +151,20 @@ const passesFilter = (row: CsvRow, filters?: AggregatePayload['filter']): boolea
                 return Number(normalized) < Number(needle);
             case 'lte':
                 return Number(normalized) <= Number(needle);
-            case 'contains':
-                return normalized.toLowerCase().includes(needle.toLowerCase());
-            case 'in':
+            case 'contains': {
+                const haystack = normalized.toLowerCase();
+                const searchNeedle = needle.toLowerCase();
+                return haystack.includes(searchNeedle);
+            }
+            case 'in': {
                 if (!Array.isArray(filter.values)) return false;
-                return filter.values.some(value => normalizeValue(value) === normalized);
+                const normalizedNeedles = filter.values.map(value => normalizer(value));
+                const set = new Set(
+                    normalizedNeedles.map(value => (filter.caseInsensitive ? value.toLowerCase() : value)),
+                );
+                const candidate = filter.caseInsensitive ? normalized.toLowerCase() : normalized;
+                return set.has(candidate);
+            }
             default:
                 return true;
         }
@@ -142,6 +176,7 @@ const aggregateRows = (
     payload: AggregatePayload,
     totalRows: number,
     columnProfiles?: ColumnProfile[],
+    stringStrategy?: StringNormalizationStrategy,
 ): AggregateResult => {
     const mode: AggregateMode = payload.mode ?? 'sample';
     if (!Array.isArray(payload.metrics) || payload.metrics.length === 0) {
@@ -161,10 +196,14 @@ const aggregateRows = (
         }
     >();
     const filterCount = payload.filter?.length ?? 0;
-    const deadline = (typeof performance !== 'undefined' ? performance.now() : Date.now()) + DEFAULT_TIMEOUT_MS;
+    const timeoutBudget = payload.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const deadline = (typeof performance !== 'undefined' ? performance.now() : Date.now()) + timeoutBudget;
+
+    const strategy = normalizeStringStrategy(stringStrategy);
+    const normalizer = createValueNormalizer(strategy);
 
     for (const row of rows) {
-        if (!passesFilter(row, payload.filter)) continue;
+        if (!passesFilter(row, payload.filter, normalizer)) continue;
         const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
         if (now > deadline) {
             if (mode === 'full') {
@@ -172,7 +211,7 @@ const aggregateRows = (
             }
             break;
         }
-        const keyParts = by.map(column => normalizeValue(row[column]));
+        const keyParts = by.map(column => normalizer(row[column]));
         const groupKey = keyParts.length > 0 ? keyParts.join('||') : '__total__';
         if (!groups.has(groupKey)) {
             const keyRecord: Record<string, string | number> = {};
@@ -315,6 +354,7 @@ const aggregateRows = (
             ),
             filterCount,
             warnings,
+            normalization: summarizeStringStrategy(strategy),
         },
     };
 };
@@ -323,7 +363,10 @@ export const runAggregate = async (
     deps: DataWorkerDeps,
     payload: AggregatePayload,
 ): Promise<AggregateResult> => {
-    const columnRecord = await deps.readColumnStoreRecord(payload.datasetId);
+    const [columnRecord, runtimeConfig] = await Promise.all([
+        deps.readColumnStoreRecord(payload.datasetId),
+        deps.readDatasetRuntimeConfig(payload.datasetId),
+    ]);
     if (!columnRecord) {
         columnMetadataError();
     }
@@ -339,7 +382,13 @@ export const runAggregate = async (
         if (rows.length === 0) {
             throw new Error('No rows available for aggregation.');
         }
-        const result = aggregateRows(rows, payload, columnRecord.rowCount, columnRecord.columns);
+        const result = aggregateRows(
+            rows,
+            payload,
+            columnRecord.rowCount,
+            columnRecord.columns,
+            runtimeConfig?.stringStrategy,
+        );
         result.provenance.requestedMode = requestedMode;
         return result;
     } catch (error) {
@@ -350,12 +399,17 @@ export const runAggregate = async (
         }
         if (error instanceof Error && error.message === 'AGG_TIMEOUT' && mode === 'full') {
             const fallbackRows = await deps.readSampledRows(payload.datasetId, sampleSize);
-            const fallback = aggregateRows(fallbackRows, { ...payload, mode: 'sample' }, columnRecord.rowCount, columnRecord.columns);
-            fallback.provenance.warnings.push('Full scan timed out. Showing sampled results.');
+            const fallback = aggregateRows(
+                fallbackRows,
+                { ...payload, mode: 'sample' },
+                columnRecord.rowCount,
+                columnRecord.columns,
+                runtimeConfig?.stringStrategy,
+            );
+            fallback.provenance.warnings.push('Full scan timed out. 采样结果，建议允许全量。');
             fallback.provenance.requestedMode = requestedMode;
             fallback.provenance.downgradedFrom = requestedMode;
             fallback.provenance.downgradeReason = 'timeout';
-            fallback.provenance.warnings.push('AGG_TIMEOUT');
             return fallback;
         }
         if (error instanceof Error && error.message === 'AGG_TIMEOUT') {

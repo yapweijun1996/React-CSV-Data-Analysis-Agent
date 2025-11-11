@@ -33,6 +33,7 @@ import {
     AgentPromptMetric,
     CsvRow,
     QuickActionId,
+    DatasetRuntimeConfig,
 } from '../types';
 import { executePlan, applyTopNWithOthers, PlanExecutionError } from '../utils/dataProcessor';
 import {
@@ -65,6 +66,8 @@ import {
     readProvenance,
     readMemorySnapshots,
     saveMemorySnapshot,
+    ensureDatasetRuntimeConfig,
+    updateDatasetRuntimeConfig,
     type CardDataRef,
     type ViewStoreRecord,
     type CardKind,
@@ -79,6 +82,7 @@ import {
 import { getErrorMessage } from '../services/errorMessages';
 import { ERROR_CODES, type ErrorCode } from '../services/errorCodes';
 import { getGroupableColumnCandidates } from '../utils/groupByInference';
+import { AUTO_FULL_SCAN_ROW_THRESHOLD } from '../services/runtimeConfig';
 
 const createClarificationId = () =>
     typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -314,8 +318,6 @@ const SNAPSHOT_PREVIEW_LIMIT = 12;
 const MAX_AGENT_TRACE_HISTORY = 40;
 const MAX_PLANNER_OBSERVATIONS = 12;
 const MAX_AGENT_VALIDATION_EVENTS = 25;
-const AUTO_FULL_SCAN_ROW_THRESHOLD = 5000;
-
 const deriveAliasMap = (profiles: ColumnProfile[] = []) => buildColumnAliasMap(profiles.map(p => p.name));
 
 const computeSnapshotQualityScore = (rowCount: number, warningsCount: number, sampled: boolean): number => {
@@ -363,7 +365,7 @@ const buildAggregatePayloadForPlan = (
     datasetId: string | null,
     csvData: CsvData | null,
     rowCountHint?: number,
-    options?: { preferredMode?: 'sample' | 'full' },
+    options?: { preferredMode?: 'sample' | 'full'; runtimeConfig?: DatasetRuntimeConfig | null },
 ): AggregatePayload | null => {
     if (!datasetId) return null;
     if (plan.chartType === 'scatter' || plan.chartType === 'combo') return null;
@@ -381,8 +383,10 @@ const buildAggregatePayloadForPlan = (
                   direction: (order.direction ?? (plan.chartType === 'line' ? 'asc' : 'desc')) as 'asc' | 'desc',
               }))
             : fallbackOrder;
+    const runtimeConfig = options?.runtimeConfig ?? null;
     const availableRows = rowCountHint ?? csvData?.data?.length ?? 0;
-    const sampleSize = availableRows > 0 ? Math.min(5000, availableRows) : 5000;
+    const fallbackSampleSize = availableRows > 0 ? Math.min(5000, availableRows) : 5000;
+    const sampleSize = runtimeConfig?.sampleSize ?? fallbackSampleSize;
     const shouldForceFullScan = availableRows > 0 && availableRows <= AUTO_FULL_SCAN_ROW_THRESHOLD;
     const limit = typeof plan.limit === 'number' ? plan.limit : plan.defaultTopN;
     const payload: AggregatePayload = {
@@ -408,9 +412,10 @@ const buildAggregatePayloadForPlan = (
         mode: shouldForceFullScan ? 'full' : 'sample',
         sampleSize,
         orderBy,
-        allowFullScan: shouldForceFullScan,
+        allowFullScan: runtimeConfig?.allowFullScan ?? shouldForceFullScan,
+        timeoutMs: runtimeConfig?.timeoutMs,
     };
-    const preferredMode = options?.preferredMode;
+    const preferredMode = options?.preferredMode ?? runtimeConfig?.mode;
     if (shouldForceFullScan) {
         payload.mode = 'full';
         payload.allowFullScan = true;
@@ -419,7 +424,7 @@ const buildAggregatePayloadForPlan = (
         payload.allowFullScan = true;
     } else {
         payload.mode = 'sample';
-        payload.allowFullScan = false;
+        payload.allowFullScan = runtimeConfig?.allowFullScan ?? false;
     }
     return payload;
 };
@@ -485,7 +490,8 @@ const initialAppState: AppState = {
     aiCoreAnalysisSummary: null,
     dataPreparationPlan: null,
     initialDataSample: null,
-    datasetHash: null,
+        datasetHash: null,
+        datasetRuntimeConfig: null,
     vectorStoreDocuments: [],
     spreadsheetFilterFunction: null,
     aiFilterExplanation: null,
@@ -574,6 +580,39 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         return createdCards;
     };
 
+    const hydrateRuntimeConfig = async (datasetId: string | null, rowCountHint?: number) => {
+        if (!datasetId) return null;
+        try {
+            const config = await ensureDatasetRuntimeConfig(datasetId, { rowCountHint });
+            set({
+                datasetRuntimeConfig: config,
+                aggregationModePreference: config.mode,
+            });
+            return config;
+        } catch (error) {
+            console.error('Failed to sync dataset runtime config:', error);
+            return null;
+        }
+    };
+
+    const updateRuntimeConfig = async (
+        datasetId: string,
+        updates: Partial<DatasetRuntimeConfig>,
+        options?: { rowCountHint?: number },
+    ) => {
+        try {
+            const config = await updateDatasetRuntimeConfig(datasetId, updates, options);
+            set({
+                datasetRuntimeConfig: config,
+                aggregationModePreference: config.mode,
+            });
+            return config;
+        } catch (error) {
+            console.error('Failed to update dataset runtime config:', error);
+            return null;
+        }
+    };
+
     const chatSlice = createChatSlice(set, get, {
         registerClarification,
         updateClarificationStatus,
@@ -614,8 +653,10 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                     : { stage: 'profiling', totalCards: 0, completedCards: 0 },
                 initialDataSample: rows.slice(0, 50),
             });
+            await hydrateRuntimeConfig(datasetId, columnRecord?.rowCount ?? rows.length);
             rememberDatasetId(datasetId);
-            const profileResult = await dataTools.profile(datasetId);
+            const profileSampleSize = get().datasetRuntimeConfig?.profileSampleSize;
+            const profileResult = await dataTools.profile(datasetId, profileSampleSize);
             if (profileResult.ok) {
                 get().applyDatasetProfileSnapshot(profileResult.data);
             } else {
@@ -790,6 +831,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 columnProfiles: pending.nextColumnProfiles,
                 columnAliasMap: pending.nextAliasMap,
                 datasetHash: nextDatasetHash,
+                datasetRuntimeConfig: null,
                 pendingDataTransform: null,
                 isLastAppliedDataTransformBannerDismissed: false,
                 lastAppliedDataTransform: {
@@ -803,7 +845,8 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                     appliedAt: new Date().toISOString(),
                 },
             });
-            get().addProgress('Applied the AI data transformation after confirmation.');
+                get().addProgress('Applied the AI data transformation after confirmation.');
+            await hydrateRuntimeConfig(nextDatasetHash, pending.nextData.data.length);
             await get().regenerateAnalyses(pending.nextData);
             const formatColumnPreview = (columns: string[]): string => {
                 if (!columns || columns.length === 0) return '(none)';
@@ -862,10 +905,12 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 columnProfiles: last.previousColumnProfiles,
                 columnAliasMap: last.previousAliasMap,
                 datasetHash: restoredHash,
+                datasetRuntimeConfig: null,
                 lastAppliedDataTransform: null,
                 isLastAppliedDataTransformBannerDismissed: false,
             });
             get().addProgress('Reverted the last AI data transformation.');
+            await hydrateRuntimeConfig(restoredHash, last.previousData.data.length);
             await get().regenerateAnalyses(last.previousData);
         },
         dismissLastAppliedDataTransformBanner: () => {
@@ -1058,10 +1103,13 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         };
 
         const datasetRowCountHint = get().datasetProfile?.rowCount ?? data.data.length;
-        const buildAggregatePayload = (plan: AnalysisPlan): AggregatePayload | null =>
-            buildAggregatePayloadForPlan(plan, datasetId, data, datasetRowCountHint, {
-                preferredMode: get().aggregationModePreference,
+        const buildAggregatePayload = (plan: AnalysisPlan): AggregatePayload | null => {
+            const state = get();
+            return buildAggregatePayloadForPlan(plan, datasetId, data, datasetRowCountHint, {
+                preferredMode: state.datasetRuntimeConfig?.mode ?? state.aggregationModePreference,
+                runtimeConfig: state.datasetRuntimeConfig,
             });
+        };
 
         const aggregateWithWorker = async (
             plan: AnalysisPlan,
@@ -1206,6 +1254,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                               aggregateResult.provenance.requestedMode ?? aggregateResult.provenance.mode,
                           downgradedFrom: aggregateResult.provenance.downgradedFrom,
                           downgradeReason: aggregateResult.provenance.downgradeReason,
+                          normalization: aggregateResult.provenance.normalization,
                       }
                     : {
                           mode: 'full',
@@ -1219,6 +1268,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                           lastRunAt: new Date().toISOString(),
                           filterCount: preparedPlan.rowFilter ? 1 : 0,
                           requestedMode: get().aggregationModePreference ?? 'sample',
+                          normalization: aggregateResult?.provenance.normalization,
                       };
 
                 const newCard: AnalysisCardData = {
@@ -1376,6 +1426,9 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                     get().addProgress('AI is generating analysis plans...');
                     get().updateBusyStatus('Drafting analysis plans...');
                     const datasetIdForPlans = get().datasetHash;
+                    if (datasetIdForPlans) {
+                        await hydrateRuntimeConfig(datasetIdForPlans, dataForAnalysis.data.length);
+                    }
                     const memorySnapshots = datasetIdForPlans
                         ? await readMemorySnapshots(datasetIdForPlans, { limit: 6, minScore: 0.4 })
                         : [];
@@ -1501,7 +1554,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 }
                 get().addProgress('Running quick data profile…');
                 try {
-                    const profileResult = await dataTools.profile(datasetId);
+                    const profileResult = await dataTools.profile(datasetId, get().datasetRuntimeConfig?.profileSampleSize);
                     if (!profileResult.ok) {
                         get().addProgress(
                             `Data profile failed: ${describeToolFailure(profileResult.code, profileResult.reason)}`,
@@ -1835,10 +1888,14 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
     setAggregationModePreference: (mode) => {
         if (get().aggregationModePreference === mode) return;
         set({ aggregationModePreference: mode });
+        const datasetId = get().datasetHash;
+        if (datasetId) {
+            void updateRuntimeConfig(datasetId, { mode, allowFullScan: mode === 'full' });
+        }
         const summary =
             mode === 'full'
-                ? 'Full scan mode enabled — charts will process every cached row.'
-                : 'Sample mode enabled — charts will use a fast preview.';
+                ? '全量模式开启：后续聚合会扫描整表（需确认）。'
+                : '快速模式开启：聚合优先使用采样。';
         get().addProgress(summary);
     },
     rerunAggregationForCard: async (cardId, options = {}) => {
@@ -1851,7 +1908,8 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         }
         const datasetRowCount = get().datasetProfile?.rowCount ?? csvData?.data?.length ?? 0;
         const payload = buildAggregatePayloadForPlan(card.plan, datasetId, csvData, datasetRowCount, {
-            preferredMode: get().aggregationModePreference,
+            preferredMode: get().datasetRuntimeConfig?.mode ?? get().aggregationModePreference,
+            runtimeConfig: get().datasetRuntimeConfig,
         });
         if (!payload) {
             get().addProgress(`"${card.plan.title}" cannot be recalculated automatically.`, 'error');
@@ -1921,6 +1979,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             requestedMode: aggregateResult.provenance.requestedMode ?? aggregateResult.provenance.mode,
             downgradedFrom: aggregateResult.provenance.downgradedFrom,
             downgradeReason: aggregateResult.provenance.downgradeReason,
+            normalization: aggregateResult.provenance.normalization,
         };
         set(state => ({
             analysisCards: state.analysisCards.map(existing =>
@@ -1990,6 +2049,10 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 plannerSession: normalizePlannerSession(report.appState.plannerSession),
                 plannerDatasetHash: report.appState.plannerDatasetHash ?? report.appState.datasetHash ?? null,
             });
+            await hydrateRuntimeConfig(
+                report.appState.datasetHash ?? null,
+                report.appState.datasetProfile?.rowCount ?? report.appState.csvData?.data.length,
+            );
             await restoreVectorMemoryFromSnapshot(
                 report.appState.vectorStoreDocuments,
                 report.appState.datasetHash,

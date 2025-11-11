@@ -1,4 +1,4 @@
-import type { CsvRow, ColumnProfile } from '../types';
+import type { CsvRow, ColumnProfile, NormalizationRuleSummary } from '../types';
 
 export type MetricFn = 'sum' | 'avg' | 'count' | 'min' | 'max';
 
@@ -35,6 +35,7 @@ export type AggregatePayload = {
     mode?: AggregateMode;
     sampleSize?: number;
     allowFullScan?: boolean;
+    timeoutMs?: number;
 };
 
 export type ProfileResult = {
@@ -71,5 +72,6 @@ export type AggregateResult = {
         requestedMode?: AggregateMode;
         downgradedFrom?: AggregateMode;
         downgradeReason?: 'timeout' | 'fallback';
+        normalization: NormalizationRuleSummary;
     };
 };

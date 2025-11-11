@@ -38,6 +38,25 @@ export interface DatasetProfileSnapshot {
     warnings: string[];
 }
 
+export type StringCaseStrategy = 'as-is' | 'lower';
+
+export interface StringNormalizationStrategy {
+    trimWhitespace: boolean;
+    caseStrategy: StringCaseStrategy;
+    nullReplacement: string;
+}
+
+export interface DatasetRuntimeConfig {
+    datasetId: string;
+    mode: 'sample' | 'full';
+    allowFullScan: boolean;
+    sampleSize: number;
+    profileSampleSize: number;
+    timeoutMs: number;
+    updatedAt: string;
+    stringStrategy: StringNormalizationStrategy;
+}
+
 export type AnalysisTimelineStage = 'idle' | 'persisting' | 'profiling' | 'insight';
 
 export interface AnalysisTimelineState {
@@ -293,6 +312,12 @@ export interface AggregationMeta {
     requestedMode?: 'sample' | 'full';
     downgradedFrom?: 'sample' | 'full';
     downgradeReason?: 'timeout' | 'fallback';
+    normalization?: NormalizationRuleSummary;
+}
+
+export interface NormalizationRuleSummary {
+    strategy: StringNormalizationStrategy;
+    pipeline: string[];
 }
 
 export interface ProgressMessage {
@@ -396,6 +421,7 @@ export interface AppState {
     dataPreparationPlan: DataPreparationPlan | null; // The plan used to clean the data
     initialDataSample: CsvRow[] | null; // Snapshot of raw data for debug view
     datasetHash: string | null; // Fingerprint of the current dataset for memory gating
+    datasetRuntimeConfig: DatasetRuntimeConfig | null;
     vectorStoreDocuments: VectorStoreDocument[]; // For persisting AI memory
     spreadsheetFilterFunction: string | null; // For AI-powered spreadsheet filtering
     aiFilterExplanation: string | null; // Explanation for the AI filter

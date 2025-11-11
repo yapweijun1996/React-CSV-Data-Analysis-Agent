@@ -367,11 +367,8 @@ await test('runPlannerWorkflow executes plan_state then reply', async () => {
     );
 
     assert.strictEqual(store.plannerSession.planState?.goal, 'Increase ARR by 10%');
-    // Continuation should trigger because nextSteps remain and no tool action executed.
-    assert.deepStrictEqual(
-        store.agentActionTraces.map(t => t.actionType),
-        ['plan_state_update', 'text_response', 'plan_state_update', 'text_response', 'plan_state_update', 'text_response', 'plan_state_update', 'text_response'],
-    );
+    // Planner should stop after sharing the reasoning update (no auto-loop noise).
+    assert.deepStrictEqual(store.agentActionTraces.map(t => t.actionType), ['plan_state_update', 'text_response']);
     const lastMessage = store.chatHistory.at(-1);
     assert.strictEqual(lastMessage?.text, 'Plan noted. Starting with cohort analysis.');
     assert.ok(store.progressLog.some(msg => msg.includes('busy:Thinking through your question...')));
@@ -404,10 +401,7 @@ await test('missing plan_state_update triggers validation retry', async () => {
     );
     assert.strictEqual(store.validationEvents.length, 1);
     assert.strictEqual(store.validationEvents[0].actionType, 'text_response');
-    assert.deepStrictEqual(
-        store.agentActionTraces.map(t => t.actionType),
-        ['text_response', 'plan_state_update', 'text_response', 'plan_state_update', 'text_response', 'plan_state_update', 'text_response', 'plan_state_update', 'text_response'],
-    );
+    assert.deepStrictEqual(store.agentActionTraces.map(t => t.actionType), ['text_response', 'plan_state_update', 'text_response']);
     const lastMessage = store.chatHistory.at(-1);
     assert.strictEqual(lastMessage?.text, 'On it.');
 });
@@ -942,6 +936,29 @@ await test('clarification resolution allows planner to continue with plan execut
     assert.deepStrictEqual(
         store.agentActionTraces.map(t => t.actionType),
         ['plan_state_update', 'plan_creation', 'text_response'],
+    );
+});
+
+await test('planner rejects plan continuation while awaiting user response', async () => {
+    const invalidResponse: AiChatResponse = {
+        actions: [planStateAction, buildTextResponseAction('Still need your choice?')],
+    };
+    const validResponse: AiChatResponse = {
+        actions: [buildTextResponseAction('Waiting for your answer before continuing.', 'Hold position')],
+    };
+    const plannerContext = buildMultiResponseContext([invalidResponse, validResponse]);
+    const { runtime, store } = createPlannerHarness({ agentAwaitingUserInput: true });
+
+    await runPlannerWorkflow('Need your pick', plannerContext, runtime as any);
+
+    assert.ok(
+        store.progressLog.some(msg => msg.includes('waiting for the user response')),
+        'await-user gate should log a validation error',
+    );
+    assert.deepStrictEqual(store.agentActionTraces.map(t => t.actionType), ['text_response']);
+    assert.ok(
+        !store.progressLog.some(msg => msg.startsWith('Continuing plan')),
+        'auto continuation must not trigger while waiting for the user',
     );
 });
 

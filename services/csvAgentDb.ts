@@ -1,6 +1,19 @@
-import { openDB, type IDBPDatabase } from 'idb';
-import type { CsvRow, ColumnProfile, AnalysisPlan, DataTransformMeta } from '../types';
+import { openDB, type IDBPDatabase, type IDBPTransaction } from 'idb';
+import type {
+    CsvRow,
+    ColumnProfile,
+    AnalysisPlan,
+    DataTransformMeta,
+    DatasetRuntimeConfig,
+    NormalizationRuleSummary,
+} from '../types';
 import { profileData } from '../utils/dataProcessor';
+import {
+    createDefaultDatasetRuntimeConfig,
+    mergeRuntimeConfig,
+    hydrateRuntimeConfig,
+    summarizeStringStrategy,
+} from './runtimeConfig';
 
 export interface DatasetProvenanceRecord {
     datasetId: string;
@@ -8,6 +21,7 @@ export interface DatasetProvenanceRecord {
     bytes: number;
     checksum: string;
     cleanedAt: string;
+    normalization?: NormalizationRuleSummary;
 }
 
 interface CleanRowChunkRecord {
@@ -99,23 +113,174 @@ export type MemorySnapshotInput = Omit<MemorySnapshotRecord, 'id' | 'createdAt'>
     createdAt?: string;
 };
 
+interface SystemMetaRecord {
+    id: string;
+    type: 'migration';
+    version: number;
+    description: string;
+    status: 'succeeded' | 'failed';
+    error?: string | null;
+    createdAt: string;
+}
+
+interface Migration {
+    version: number;
+    description: string;
+    up: (db: IDBPDatabase, transaction: IDBPTransaction<unknown, string[], 'versionchange'>) => void;
+}
+
+interface OpenDatabaseOptions {
+    mode?: 'readonly' | 'readwrite';
+}
+
 const DB_NAME = 'csv_agent_db';
-const BASE_VERSION = 3;
+const DB_VERSION = 5;
 const PROVENANCE_STORE = 'provenance';
 const CLEAN_ROWS_STORE = 'clean_rows';
 const COLUMNS_STORE = 'columns';
 const VIEWS_STORE = 'views';
 const PREPARATION_LOG_STORE = 'preparation_log';
 const MEMORY_SNAPSHOT_STORE = 'memory_snapshots';
+const DATASET_RUNTIME_CONFIG_STORE = 'dataset_runtime_config';
+const SYSTEM_META_STORE = 'system_meta';
+
+const READ_ONLY_FALLBACK_MESSAGE =
+    'csv_agent_db is in read-only fallback because the last migration failed. Close other tabs or clear site data, then reload.';
 
 const MAX_MEMORY_SNAPSHOTS_PER_DATASET = 32;
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
+let readOnlyDbPromise: Promise<IDBPDatabase> | null = null;
+let migrationReadOnlyFallback = false;
+let lastFailedMigrationVersion: number | null = null;
+const pendingMigrationLogs: SystemMetaRecord[] = [];
+const needsStringStrategyBackfill = (config?: DatasetRuntimeConfig | null): boolean => {
+    if (!config?.stringStrategy) return true;
+    const { caseStrategy, trimWhitespace, nullReplacement } = config.stringStrategy;
+    if (typeof trimWhitespace !== 'boolean') return true;
+    if (caseStrategy !== 'as-is' && caseStrategy !== 'lower') return true;
+    if (typeof nullReplacement !== 'string' || nullReplacement.length === 0) return true;
+    return false;
+};
+
+const normalizeRuntimeConfigRecord = async (
+    record: DatasetRuntimeConfig | null | undefined,
+): Promise<DatasetRuntimeConfig | null> => {
+    const normalized = hydrateRuntimeConfig(record ?? null);
+    if (record && normalized && needsStringStrategyBackfill(record)) {
+        await saveDatasetRuntimeConfig(normalized);
+    }
+    return normalized;
+};
 
 const createRandomSuffix = () =>
     typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
         ? crypto.randomUUID()
         : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+const MIGRATIONS: Migration[] = [
+    {
+        version: 1,
+        description: 'Initialize core CSV Agent object stores.',
+        up: db => {
+            const stores = [
+                PROVENANCE_STORE,
+                CLEAN_ROWS_STORE,
+                COLUMNS_STORE,
+                VIEWS_STORE,
+                PREPARATION_LOG_STORE,
+                MEMORY_SNAPSHOT_STORE,
+                DATASET_RUNTIME_CONFIG_STORE,
+            ];
+            stores.forEach(store => createStore(db, store));
+        },
+    },
+    {
+        version: 5,
+        description: 'Add system meta store for migration logging.',
+        up: db => {
+            createStore(db, SYSTEM_META_STORE);
+        },
+    },
+];
+
+const flushMigrationLogs = (transaction: IDBPTransaction<unknown, string[], 'versionchange'>) => {
+    if (!transaction?.db?.objectStoreNames.contains(SYSTEM_META_STORE)) return;
+    try {
+        const store = transaction.objectStore(SYSTEM_META_STORE);
+        while (pendingMigrationLogs.length > 0) {
+            const entry = pendingMigrationLogs[0];
+            store.put(entry);
+            pendingMigrationLogs.shift();
+        }
+    } catch (error) {
+        console.warn('Failed to persist migration log entry.', error);
+    }
+};
+
+const recordMigrationLog = (
+    transaction: IDBPTransaction<unknown, string[], 'versionchange'>,
+    payload: { version: number; description: string; status: SystemMetaRecord['status']; error?: string | null },
+) => {
+    const entry: SystemMetaRecord = {
+        id: `migration-${payload.version}-${createRandomSuffix()}`,
+        type: 'migration',
+        version: payload.version,
+        description: payload.description,
+        status: payload.status,
+        error: payload.error ?? null,
+        createdAt: new Date().toISOString(),
+    };
+    pendingMigrationLogs.push(entry);
+    flushMigrationLogs(transaction);
+};
+
+const applyMigrations = (
+    db: IDBPDatabase,
+    transaction: IDBPTransaction<unknown, string[], 'versionchange'>,
+    oldVersion: number,
+    newVersion: number,
+) => {
+    if (!newVersion) return;
+    const migrationsToRun = MIGRATIONS.filter(
+        migration => migration.version > oldVersion && migration.version <= newVersion,
+    ).sort((a, b) => a.version - b.version);
+    for (const migration of migrationsToRun) {
+        try {
+            migration.up(db, transaction);
+            recordMigrationLog(transaction, {
+                version: migration.version,
+                description: migration.description,
+                status: 'succeeded',
+            });
+        } catch (error) {
+            lastFailedMigrationVersion = migration.version;
+            recordMigrationLog(transaction, {
+                version: migration.version,
+                description: migration.description,
+                status: 'failed',
+                error: error instanceof Error ? error.message : String(error),
+            });
+            throw error;
+        }
+    }
+};
+
+const assertStoresPresent = (db: IDBPDatabase, stores: string[]) => {
+    const missingStores = stores.filter(store => !db.objectStoreNames.contains(store));
+    if (missingStores.length > 0) {
+        throw new Error(`Missing object stores: ${missingStores.join(', ')}`);
+    }
+};
+
+const openReadOnlyDatabase = async (): Promise<IDBPDatabase> => {
+    if (!readOnlyDbPromise) {
+        readOnlyDbPromise = openDB(DB_NAME, undefined, {
+            blocked: () => console.warn('csv_agent_db read-only open is blocked by another tab.'),
+        });
+    }
+    return readOnlyDbPromise;
+};
 
 const resetDatabase = async () => {
     await new Promise<void>((resolve, reject) => {
@@ -125,6 +290,10 @@ const resetDatabase = async () => {
         request.onblocked = () => console.warn('IndexedDB delete blocked. Close other tabs to proceed.');
     });
     dbPromise = null;
+    readOnlyDbPromise = null;
+    migrationReadOnlyFallback = false;
+    lastFailedMigrationVersion = null;
+    pendingMigrationLogs.length = 0;
 };
 
 const createStore = (db: IDBPDatabase, storeName: string) => {
@@ -158,6 +327,16 @@ const createStore = (db: IDBPDatabase, storeName: string) => {
         store.createIndex('by_view', 'viewId', { unique: false });
         return;
     }
+    if (storeName === DATASET_RUNTIME_CONFIG_STORE) {
+        db.createObjectStore(storeName, { keyPath: 'datasetId' });
+        return;
+    }
+    if (storeName === SYSTEM_META_STORE) {
+        const store = db.createObjectStore(storeName, { keyPath: 'id' });
+        store.createIndex('by_type', 'type', { unique: false });
+        store.createIndex('by_version', 'version', { unique: false });
+        return;
+    }
     throw new Error(`Unsupported store name: ${storeName}`);
 };
 
@@ -181,32 +360,60 @@ const DEFAULT_STORE_SET = [
     VIEWS_STORE,
     PREPARATION_LOG_STORE,
     MEMORY_SNAPSHOT_STORE,
+    DATASET_RUNTIME_CONFIG_STORE,
+    SYSTEM_META_STORE,
 ];
 
-const openDatabase = async (upgradeStores: string[] = []): Promise<IDBPDatabase> => {
+const openDatabase = async (
+    upgradeStores: string[] = [],
+    options?: OpenDatabaseOptions,
+): Promise<IDBPDatabase> => {
+    const mode = options?.mode ?? 'readonly';
     const storesToEnsure = Array.from(new Set([...DEFAULT_STORE_SET, ...upgradeStores]));
-    const openWithVersion = (version: number, stores: string[]) =>
-        openDB(DB_NAME, version, {
-            upgrade(db) {
-                stores.forEach(store => createStore(db, store));
-            },
-        });
+
+    if (migrationReadOnlyFallback) {
+        if (mode === 'readwrite') {
+            throw new Error(READ_ONLY_FALLBACK_MESSAGE);
+        }
+        return openReadOnlyDatabase();
+    }
 
     if (!dbPromise) {
-        dbPromise = handleVersionMismatch(() => openWithVersion(BASE_VERSION, storesToEnsure));
-        return dbPromise;
+        lastFailedMigrationVersion = null;
+        dbPromise = handleVersionMismatch(() =>
+            openDB(DB_NAME, DB_VERSION, {
+                upgrade(db, oldVersion, newVersion, transaction) {
+                    applyMigrations(db, transaction, oldVersion, newVersion ?? DB_VERSION);
+                },
+                blocked: () => console.warn('csv_agent_db upgrade is blocked by another tab.'),
+                blocking: () => console.warn('csv_agent_db upgrade is blocking existing tabs. Reload others to proceed.'),
+                terminated: () => {
+                    dbPromise = null;
+                },
+            }),
+        );
     }
 
-    const db = await dbPromise;
-    const missingStores = storesToEnsure.filter(store => !db.objectStoreNames.contains(store));
-    if (missingStores.length === 0) {
+    try {
+        const db = await dbPromise;
+        assertStoresPresent(db, storesToEnsure);
         return db;
+    } catch (error) {
+        if (lastFailedMigrationVersion !== null) {
+            console.error(
+                `csv_agent_db migration to version ${lastFailedMigrationVersion} failed; entering read-only fallback.`,
+                error,
+            );
+            migrationReadOnlyFallback = true;
+            dbPromise = null;
+            if (mode === 'readwrite') {
+                throw new Error(READ_ONLY_FALLBACK_MESSAGE);
+            }
+            return openReadOnlyDatabase();
+        }
+        dbPromise = null;
+        throw error;
     }
-
-    db.close();
-    const nextVersion = db.version + 1;
-    dbPromise = handleVersionMismatch(() => openWithVersion(nextVersion, storesToEnsure));
-    return dbPromise;
 };
 
 const chunkRows = (rows: CsvRow[], chunkSize: number): CsvRow[][] => {
@@ -227,8 +434,8 @@ export const persistCleanDataset = async (options: {
     const { datasetId, rows, columns, provenance: provOverrides, chunkSize = 20000 } = options;
     if (!datasetId) throw new Error('persistCleanDataset requires datasetId.');
 
-    const runPersist = async () => {
-        const db = await openDatabase([CLEAN_ROWS_STORE, COLUMNS_STORE, VIEWS_STORE]);
+    const runPersist = async (runtimeConfig: DatasetRuntimeConfig) => {
+        const db = await openDatabase([CLEAN_ROWS_STORE, COLUMNS_STORE, VIEWS_STORE], { mode: 'readwrite' });
 
         const tx = db.transaction([CLEAN_ROWS_STORE, COLUMNS_STORE, PROVENANCE_STORE], 'readwrite');
         const cleanStore = tx.objectStore(CLEAN_ROWS_STORE);
@@ -275,6 +482,7 @@ export const persistCleanDataset = async (options: {
                 bytes: provOverrides.bytes,
                 checksum: provOverrides.checksum,
                 cleanedAt: provOverrides.cleanedAt,
+                normalization: summarizeStringStrategy(runtimeConfig.stringStrategy),
             };
             await provenanceStore.put(provenancePayload);
 
@@ -291,13 +499,18 @@ export const persistCleanDataset = async (options: {
         }
     };
 
+    const persistWithConfig = async () => {
+        const runtimeConfig = await ensureDatasetRuntimeConfig(datasetId, { rowCountHint: rows.length });
+        return runPersist(runtimeConfig);
+    };
+
     try {
-        return await runPersist();
+        return await persistWithConfig();
     } catch (error) {
         if (error instanceof DOMException && error.name === 'NotFoundError') {
             console.warn('IndexedDB store missing detected. Resetting and retrying persist...', error);
             await resetDatabase();
-            return runPersist();
+            return persistWithConfig();
         }
         throw error;
     }
@@ -312,7 +525,7 @@ export const saveCardResult = async (options: {
     dataRef: CardDataRef;
 }): Promise<string> => {
     const { datasetId, title, kind, queryHash, explainer, dataRef } = options;
-    const db = await openDatabase([VIEWS_STORE]);
+    const db = await openDatabase([VIEWS_STORE], { mode: 'readwrite' });
     const tx = db.transaction(VIEWS_STORE, 'readwrite');
     const store = tx.objectStore(VIEWS_STORE);
     const id = `${datasetId}-view-${createRandomSuffix()}`;
@@ -400,6 +613,47 @@ const countDatasetRows = async (datasetId: string): Promise<number> => {
     return total;
 };
 
+export async function readDatasetRuntimeConfig(datasetId: string): Promise<DatasetRuntimeConfig | null> {
+    const db = await openDatabase([DATASET_RUNTIME_CONFIG_STORE]);
+    const tx = db.transaction(DATASET_RUNTIME_CONFIG_STORE, 'readonly');
+    const store = tx.objectStore(DATASET_RUNTIME_CONFIG_STORE);
+    const record = (await store.get(datasetId)) as DatasetRuntimeConfig | undefined;
+    await tx.done;
+    return normalizeRuntimeConfigRecord(record);
+}
+
+async function saveDatasetRuntimeConfig(config: DatasetRuntimeConfig): Promise<void> {
+    const db = await openDatabase([DATASET_RUNTIME_CONFIG_STORE], { mode: 'readwrite' });
+    const tx = db.transaction(DATASET_RUNTIME_CONFIG_STORE, 'readwrite');
+    await tx.objectStore(DATASET_RUNTIME_CONFIG_STORE).put(config);
+    await tx.done;
+}
+
+export async function ensureDatasetRuntimeConfig(
+    datasetId: string,
+    options?: { rowCountHint?: number; preferredMode?: 'sample' | 'full' },
+): Promise<DatasetRuntimeConfig> {
+    const existing = await readDatasetRuntimeConfig(datasetId);
+    if (existing) return existing;
+    const config = createDefaultDatasetRuntimeConfig(datasetId, {
+        rowCountHint: options?.rowCountHint,
+        preferredMode: options?.preferredMode,
+    });
+    await saveDatasetRuntimeConfig(config);
+    return config;
+}
+
+export async function updateDatasetRuntimeConfig(
+    datasetId: string,
+    updates: Partial<DatasetRuntimeConfig>,
+    options?: { rowCountHint?: number },
+): Promise<DatasetRuntimeConfig> {
+    const current = await ensureDatasetRuntimeConfig(datasetId, { rowCountHint: options?.rowCountHint });
+    const merged = mergeRuntimeConfig(current, updates);
+    await saveDatasetRuntimeConfig(merged);
+    return merged;
+}
+
 export const readSampledRows = async (datasetId: string, limit: number): Promise<CsvRow[]> => {
     const rows: CsvRow[] = [];
     await iterateChunks(datasetId, (chunk, stop) => {
@@ -445,7 +699,7 @@ export const replacePreparationLog = async (
     entries: PreparationLogEntryInput[] = [],
 ): Promise<void> => {
     if (!datasetId) throw new Error('replacePreparationLog requires datasetId.');
-    const db = await openDatabase([PREPARATION_LOG_STORE]);
+    const db = await openDatabase([PREPARATION_LOG_STORE], { mode: 'readwrite' });
     const tx = db.transaction(PREPARATION_LOG_STORE, 'readwrite');
     const store = tx.objectStore(PREPARATION_LOG_STORE);
     const index = store.index('by_dataset');
@@ -506,7 +760,7 @@ const enforceMemorySnapshotLimit = async (
 
 export const saveMemorySnapshot = async (input: MemorySnapshotInput): Promise<string> => {
     if (!input.datasetId) throw new Error('saveMemorySnapshot requires datasetId.');
-    const db = await openDatabase([MEMORY_SNAPSHOT_STORE]);
+    const db = await openDatabase([MEMORY_SNAPSHOT_STORE], { mode: 'readwrite' });
     const tx = db.transaction(MEMORY_SNAPSHOT_STORE, 'readwrite');
     const store = tx.objectStore(MEMORY_SNAPSHOT_STORE);
     const record: MemorySnapshotRecord = {
@@ -582,7 +836,7 @@ const rebuildColumnStoreRecord = async (datasetId: string): Promise<ColumnStoreR
             rowCount: totalRows,
             updatedAt: new Date().toISOString(),
         };
-        const db = await openDatabase([COLUMNS_STORE]);
+        const db = await openDatabase([COLUMNS_STORE], { mode: 'readwrite' });
         const tx = db.transaction(COLUMNS_STORE, 'readwrite');
         await tx.objectStore(COLUMNS_STORE).put(record);
         await tx.done;
@@ -601,7 +855,7 @@ export const ensureColumnStoreRecord = async (datasetId: string): Promise<Column
 };
 
 export const clearCardResults = async (datasetId: string): Promise<void> => {
-    const db = await openDatabase([VIEWS_STORE]);
+    const db = await openDatabase([VIEWS_STORE], { mode: 'readwrite' });
     const tx = db.transaction(VIEWS_STORE, 'readwrite');
     const store = tx.objectStore(VIEWS_STORE);
     const index = store.index('by_dataset');

@@ -398,6 +398,7 @@ const applyResponseEnvelopeAutoHeal = (response: AiChatResponse, runtime: Planne
         response.actions = [];
         return;
     }
+    const awaitingUserInput = runtime.get().agentAwaitingUserInput;
     const mintTag = () => mintRuntimeStateTag();
     const healed: AiAction[] = [];
     const healNotes = new Set<string>();
@@ -461,7 +462,11 @@ const applyResponseEnvelopeAutoHeal = (response: AiChatResponse, runtime: Planne
         response.actions = [];
         return;
     }
-    ensurePrimerPlacement(healed, runtime, recordHeal);
+    if (!awaitingUserInput) {
+        ensurePrimerPlacement(healed, runtime, recordHeal);
+    } else {
+        recordHeal('Skipped plan_state_update primer because planner is waiting for user input.');
+    }
     const clipped = clipActionsToPolicy(healed);
     if (clipped.length < healed.length) {
         runtime.get().addProgress('Trimmed extra actions to keep this turn atomic.', 'system');
@@ -2258,6 +2263,26 @@ const validateAgentResponse = (
         }
         return null;
     };
+
+    const awaitingUserInput = runtime.get().agentAwaitingUserInput;
+    if (awaitingUserInput) {
+        for (let index = 0; index < response.actions.length; index++) {
+            const action = response.actions[index];
+            const envelopeError = enforceActionEnvelope(action, index);
+            if (envelopeError) {
+                return envelopeError;
+            }
+            if (action.responseType !== 'text_response') {
+                return buildPayloadValidationFailure(
+                    action,
+                    index,
+                    'Planner is waiting for the user response, so only text_response actions are allowed.',
+                    'Hold all plan_state_update or continue actions until awaitUser is cleared (resumePlanner:true after the user replies).',
+                );
+            }
+        }
+        return { isValid: true };
+    }
 
     const primerResult = ensurePlanPrimer();
     if (primerResult) {

@@ -67,6 +67,7 @@ const getDeps = async (): Promise<DataWorkerDeps> => {
         readColumnStoreRecord: module.readColumnStoreRecord,
         readSampledRows: module.readSampledRows,
         readAllRows: module.readAllRows,
+        readDatasetRuntimeConfig: module.readDatasetRuntimeConfig,
     };
 };
 

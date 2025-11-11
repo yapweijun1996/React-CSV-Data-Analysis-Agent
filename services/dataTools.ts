@@ -1,5 +1,12 @@
 import type { CardKind, CardDataRef } from './csvAgentDb';
-import { saveCardResult, readAllRows, readColumnStoreRecord, readSampledRows, ensureColumnStoreRecord } from './csvAgentDb';
+import {
+    saveCardResult,
+    readAllRows,
+    readColumnStoreRecord,
+    readSampledRows,
+    ensureColumnStoreRecord,
+    readDatasetRuntimeConfig,
+} from './csvAgentDb';
 import type { AnalysisPlan } from '../types';
 import {
     buildProfileResult,
@@ -197,6 +204,7 @@ const mainThreadDeps: DataWorkerDeps = {
     readColumnStoreRecord,
     readSampledRows,
     readAllRows,
+    readDatasetRuntimeConfig,
 };
 
 const runLocalProfile = async (datasetId: string, sampleSize?: number): Promise<ToolResult<ProfileResult>> => {
