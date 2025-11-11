@@ -69,6 +69,7 @@ export interface StoreActions {
     abortRunControllers: (runId: string) => void;
     clearRunControllers: (runId: string) => void;
     init: () => void;
+    connectGraphRuntime: () => void;
     addProgress: (message: string, type?: 'system' | 'error') => void;
     loadReportsList: () => Promise<void>;
     handleSaveSettings: (newSettings: Settings) => void;
@@ -156,6 +157,9 @@ export interface StoreActions {
     recordPromptMetric: (metric: AgentPromptMetric) => void;
     clearPromptMetrics: () => void;
     setAggregationModePreference: (mode: 'sample' | 'full') => void;
+    runGraphPipeline: (payload?: Record<string, unknown>) => void;
+    sendGraphUserReply: (optionId?: string, freeText?: string) => void;
+    processGraphActions: (actions: AiAction[]) => Promise<void> | void;
 }
 
 export type AppStore = StoreState & StoreActions;

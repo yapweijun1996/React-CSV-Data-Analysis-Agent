@@ -53,10 +53,15 @@ const App: React.FC = () => {
     const setIsAsideVisible = useAppStore(state => state.setIsAsideVisible);
     const addToast = useAppStore(state => state.addToast);
     const handleExternalCsvPayload = useAppStore(state => state.handleExternalCsvPayload);
+    const connectGraphRuntime = useAppStore(state => state.connectGraphRuntime);
 
     useEffect(() => {
         init();
     }, [init]);
+
+    useEffect(() => {
+        connectGraphRuntime();
+    }, [connectGraphRuntime]);
 
     useEffect(() => {
         const consumePayload = (payload?: ExternalCsvPayload | null) => {

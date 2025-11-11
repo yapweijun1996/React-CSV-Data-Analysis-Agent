@@ -17,6 +17,7 @@ import { getUiVisibilityConfig } from '../services/bootstrapConfig';
 import { getGroupableColumnCandidates } from '../utils/groupByInference';
 import type { GroupByCandidate } from '../utils/groupByInference';
 import QuestionCard from './QuestionCard';
+import AwaitCard from './AwaitCard';
 
 const HideIcon: React.FC = () => (
     <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -259,10 +260,15 @@ const useChatCore = () =>
             previewChatMemories: state.previewChatMemories,
             toggleMemoryPreviewSelection: state.toggleMemoryPreviewSelection,
             isMemoryPreviewLoading: state.isMemoryPreviewLoading,
-            agentPhase: state.agentPhase,
-        agentAwaitingUserInput: state.agentAwaitingUserInput,
-        agentAwaitingPromptId: state.agentAwaitingPromptId,
+        agentPhase: state.agentPhase,
+    agentAwaitingUserInput: state.agentAwaitingUserInput,
+    agentAwaitingPromptId: state.agentAwaitingPromptId,
         executeQuickAction: state.executeQuickAction,
+        graphAwaitPrompt: state.graphAwaitPrompt,
+        graphAwaitPromptId: state.graphAwaitPromptId,
+        sendGraphUserReply: state.sendGraphUserReply,
+        runGraphPipeline: state.runGraphPipeline,
+        addProgress: state.addProgress,
     }),
         shallow,
     );
@@ -298,11 +304,18 @@ export const ChatPanel: React.FC = () => {
         agentAwaitingUserInput,
         agentAwaitingPromptId,
         executeQuickAction,
+        graphAwaitPrompt,
+        graphAwaitPromptId,
+        sendGraphUserReply,
+        runGraphPipeline,
+        addProgress,
     } = core;
 
     const [input, setInput] = useState('');
     const [pendingQuickAction, setPendingQuickAction] = useState<QuickActionId | null>(null);
     const [manualGroupSelections, setManualGroupSelections] = useState<Record<string, string>>({});
+    const [awaitHint, setAwaitHint] = useState<string | null>(null);
+    const lastAwaitPromptIdRef = useRef<string | null>(graphAwaitPromptId);
     const [isChoiceReminderVisible, setIsChoiceReminderVisible] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -351,6 +364,29 @@ export const ChatPanel: React.FC = () => {
     }, [agentAwaitingUserInput, clearChoiceReminderTimer]);
 
     useEffect(() => {
+        if (!graphAwaitPromptId) {
+            setAwaitHint(null);
+            if (lastAwaitPromptIdRef.current) {
+                addProgress('✅ 计划继续执行。');
+                runGraphPipeline({ reason: 'auto_resume' });
+            }
+            lastAwaitPromptIdRef.current = null;
+            return;
+        }
+        if (graphAwaitPromptId !== lastAwaitPromptIdRef.current) {
+            addProgress('⏸ Graph 等待你的选择…');
+            lastAwaitPromptIdRef.current = graphAwaitPromptId;
+        }
+        setAwaitHint(null);
+        const timer = window.setTimeout(() => {
+            setAwaitHint('仍在等待你的选择，点击上方选项或输入自定义指令即可继续。');
+        }, CHOICE_WAITING_HINT_MS);
+        return () => {
+            window.clearTimeout(timer);
+        };
+    }, [graphAwaitPromptId, addProgress, runGraphPipeline]);
+
+    useEffect(() => {
         scheduleChoiceReminderTimer();
         return () => clearChoiceReminderTimer();
     }, [scheduleChoiceReminderTimer, clearChoiceReminderTimer]);
@@ -389,6 +425,24 @@ export const ChatPanel: React.FC = () => {
             dispatchUserIntent('choice', action.prompt, { choiceId: action.id });
         },
         [dispatchUserIntent, isBusy, isApiKeySet, currentView],
+    );
+
+    const handleAwaitOption = useCallback(
+        (optionId: string) => {
+            addProgress(`📝 你选择了：${optionId}`);
+            sendGraphUserReply(optionId, undefined);
+        },
+        [sendGraphUserReply, addProgress],
+    );
+
+    const handleAwaitFreeText = useCallback(
+        (text: string) => {
+            const trimmed = text.trim();
+            if (!trimmed) return;
+            addProgress(`📝 你输入了自定义指令。`);
+            sendGraphUserReply(undefined, trimmed);
+        },
+        [sendGraphUserReply, addProgress],
     );
 
     const handlePromptResponse = useCallback(
@@ -971,6 +1025,16 @@ export const ChatPanel: React.FC = () => {
                                 </button>
                             ))}
                         </div>
+                        <div className="flex justify-end">
+                            <button
+                                type="button"
+                                onClick={() => runGraphPipeline({ source: 'manual' })}
+                                disabled={isBusy || !isApiKeySet}
+                                className="text-xs font-semibold text-blue-700 hover:underline disabled:text-slate-400 disabled:cursor-not-allowed"
+                            >
+                                🚀 启动 Graph Planner
+                            </button>
+                        </div>
                         {isChoiceReminderVisible && (
                             <div
                                 className="flex items-center justify-between rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
@@ -987,6 +1051,17 @@ export const ChatPanel: React.FC = () => {
                                 </button>
                             </div>
                         )}
+                    </div>
+                )}
+                {graphAwaitPrompt && (
+                    <div className="mb-4" aria-live="polite">
+                        <AwaitCard
+                            prompt={graphAwaitPrompt}
+                            onSelect={handleAwaitOption}
+                            onSubmitFreeText={handleAwaitFreeText}
+                            disabled={isBusy}
+                            waitingHint={awaitHint}
+                        />
                     </div>
                 )}
                 <form onSubmit={handleSend} className="flex items-start space-x-2">

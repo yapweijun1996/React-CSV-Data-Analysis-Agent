@@ -34,6 +34,7 @@ import {
     CsvRow,
     QuickActionId,
     DatasetRuntimeConfig,
+    AiAction,
 } from '../types';
 import { executePlan, applyTopNWithOthers, PlanExecutionError } from '../utils/dataProcessor';
 import {
@@ -57,6 +58,10 @@ import { createFileUploadSlice } from './slices/fileUploadSlice';
 import { createAiFilterSlice } from './slices/aiFilterSlice';
 import { AutoSaveManager, AutoSaveConfig, deriveAutoSaveConfig } from '../utils/autoSaveManager';
 import { computeDatasetHash } from '../utils/datasetHash';
+import { graphBus } from '../src/bus/client';
+import type { GraphWorkerEvent } from '../src/graph/contracts';
+import { buildAggregatePayloadForPlan } from '@/utils/aggregatePayload';
+import { graphDataTools } from '@/tools/data';
 import { dataTools, type AggregateResult, type AggregatePayload, type ProfileResult } from '../services/dataTools';
 import {
     persistCleanDataset,
@@ -96,6 +101,8 @@ const createPromptMetricId = () => `prompt-${Date.now()}-${Math.random().toStrin
 
 let autoSaveManager: AutoSaveManager | null = null;
 let latestAutoSaveConfig: AutoSaveConfig | null = null;
+let graphBridgeInitialized = false;
+let graphBridgeUnsubscribe: (() => void) | null = null;
 
 const updateAutoSaveConfiguration = (settings: Settings) => {
     latestAutoSaveConfig = deriveAutoSaveConfig(settings);
@@ -360,75 +367,6 @@ const inferCardKind = (plan: AnalysisPlan): CardKind => {
     }
 };
 
-const buildAggregatePayloadForPlan = (
-    plan: AnalysisPlan,
-    datasetId: string | null,
-    csvData: CsvData | null,
-    rowCountHint?: number,
-    options?: { preferredMode?: 'sample' | 'full'; runtimeConfig?: DatasetRuntimeConfig | null },
-): AggregatePayload | null => {
-    if (!datasetId) return null;
-    if (plan.chartType === 'scatter' || plan.chartType === 'combo') return null;
-    if (!plan.groupByColumn || !plan.aggregation) return null;
-    if (plan.aggregation !== 'count' && !plan.valueColumn) return null;
-    const alias = plan.valueColumn ?? 'count';
-    const fallbackOrder =
-        plan.chartType === 'line'
-            ? [{ column: plan.groupByColumn, direction: 'asc' as const }]
-            : [{ column: alias, direction: 'desc' as const }];
-    const orderBy =
-        plan.orderBy && plan.orderBy.length > 0
-            ? plan.orderBy.map(order => ({
-                  column: order.column,
-                  direction: (order.direction ?? (plan.chartType === 'line' ? 'asc' : 'desc')) as 'asc' | 'desc',
-              }))
-            : fallbackOrder;
-    const runtimeConfig = options?.runtimeConfig ?? null;
-    const availableRows = rowCountHint ?? csvData?.data?.length ?? 0;
-    const fallbackSampleSize = availableRows > 0 ? Math.min(5000, availableRows) : 5000;
-    const sampleSize = runtimeConfig?.sampleSize ?? fallbackSampleSize;
-    const shouldForceFullScan = availableRows > 0 && availableRows <= AUTO_FULL_SCAN_ROW_THRESHOLD;
-    const limit = typeof plan.limit === 'number' ? plan.limit : plan.defaultTopN;
-    const payload: AggregatePayload = {
-        datasetId,
-        by: [plan.groupByColumn],
-        metrics: [
-            {
-                fn: plan.aggregation as AggregatePayload['metrics'][number]['fn'],
-                column: plan.aggregation === 'count' ? undefined : plan.valueColumn,
-                as: alias,
-            },
-        ],
-        filter: plan.rowFilter
-            ? [
-                  {
-                      column: plan.rowFilter.column,
-                      op: 'in',
-                      values: plan.rowFilter.values,
-                  },
-              ]
-            : undefined,
-        limit: typeof limit === 'number' ? limit : undefined,
-        mode: shouldForceFullScan ? 'full' : 'sample',
-        sampleSize,
-        orderBy,
-        allowFullScan: runtimeConfig?.allowFullScan ?? shouldForceFullScan,
-        timeoutMs: runtimeConfig?.timeoutMs,
-    };
-    const preferredMode = options?.preferredMode ?? runtimeConfig?.mode;
-    if (shouldForceFullScan) {
-        payload.mode = 'full';
-        payload.allowFullScan = true;
-    } else if (preferredMode === 'full') {
-        payload.mode = 'full';
-        payload.allowFullScan = true;
-    } else {
-        payload.mode = 'sample';
-        payload.allowFullScan = runtimeConfig?.allowFullScan ?? false;
-    }
-    return payload;
-};
-
 const convertViewToCard = (view: ViewStoreRecord<CardDataRef>): AnalysisCardData => {
     const snapshot = view.dataRef.planSnapshot ?? {};
     const chartType = snapshot.chartType ?? 'bar';
@@ -514,7 +452,13 @@ const initialAppState: AppState = {
     agentAwaitingUserInput: false,
     agentAwaitingPromptId: null,
     analysisTimeline: { stage: 'idle', totalCards: 0, completedCards: 0 },
-    aggregationModePreference: 'sample',
+    aggregationModePreference: 'full',
+    graphStatus: 'idle',
+    graphStatusMessage: null,
+    graphVersion: null,
+    graphLastReadyAt: null,
+    graphAwaitPrompt: null,
+    graphAwaitPromptId: null,
 };
 
 export const useAppStore = create<StoreState & StoreActions>((set, get) => {
@@ -1029,6 +973,150 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         }
         await get().loadReportsList();
     },
+    connectGraphRuntime: () => {
+        if (graphBridgeInitialized) {
+            return;
+        }
+        graphBridgeInitialized = true;
+        if (!graphBus.isSupported) {
+            set({
+                graphStatus: 'error',
+                graphStatusMessage: '当前浏览器不支持 Web Worker，Graph runtime 无法启动。',
+            });
+            return;
+        }
+        set({
+            graphStatus: 'connecting',
+            graphStatusMessage: 'Spinning up LangGraph runtime…',
+        });
+        graphBridgeUnsubscribe?.();
+        graphBridgeUnsubscribe = graphBus.subscribe((event: GraphWorkerEvent) => {
+            switch (event.type) {
+                case 'graph/ready': {
+                    const readyAt = new Date(event.timestamp).toISOString();
+                    set({
+                        graphStatus: 'ready',
+                        graphStatusMessage: `Graph Ready (v${event.version})`,
+                        graphVersion: event.version,
+                        graphLastReadyAt: readyAt,
+                    });
+                    get().addProgress(`Graph runtime ready (v${event.version}).`);
+                    return;
+                }
+                case 'graph/log':
+                    get().addProgress(`Graph: ${event.message}`, event.level === 'error' ? 'error' : 'system');
+                    return;
+                case 'graph/error':
+                    set({
+                        graphStatus: 'error',
+                        graphStatusMessage: event.message,
+                    });
+                    get().addProgress(`Graph error: ${event.message}`, 'error');
+                    return;
+                case 'graph/pipeline': {
+                    const heartbeat = new Date(event.timestamp).toISOString();
+                    const awaitingPrompt = event.state.awaitPrompt ?? null;
+                    set({
+                        graphStatus: 'ready',
+                        graphStatusMessage: `Pipeline node ${event.node} emitted ${event.actions.length} action(s).`,
+                        graphLastReadyAt: heartbeat,
+                        graphAwaitPrompt: awaitingPrompt,
+                        graphAwaitPromptId: awaitingPrompt?.promptId ?? null,
+                        agentAwaitingUserInput: Boolean(awaitingPrompt),
+                    });
+                    if (awaitingPrompt) {
+                        get().addProgress(`Graph awaiting your choice: ${awaitingPrompt.question}`);
+                    } else {
+                        get().addProgress(`Graph node ${event.node} completed.`);
+                        set({
+                            agentAwaitingUserInput: false,
+                        });
+                    }
+                    get().processGraphActions(event.actions ?? []);
+                    return;
+                }
+                case 'graph/pong':
+                    set({
+                        graphLastReadyAt: new Date(event.timestamp).toISOString(),
+                    });
+                    return;
+                default:
+                    return;
+            }
+        });
+        graphBus.ensureWorker();
+        graphBus.post({ type: 'graph/init', origin: 'ui', timestamp: Date.now() });
+    },
+    runGraphPipeline: (payload) => {
+        if (!graphBus.isSupported) return;
+        graphBus.post({ type: 'graph/runPipeline', payload, timestamp: Date.now() });
+    },
+    sendGraphUserReply: (optionId, freeText) => {
+        if (!graphBus.isSupported) return;
+        graphBus.post({ type: 'graph/userReply', optionId, freeText, timestamp: Date.now() });
+        graphBus.post({ type: 'graph/runPipeline', payload: { reason: 'user_reply' }, timestamp: Date.now() });
+    },
+    processGraphActions: async (actions: AiAction[]) => {
+        if (!Array.isArray(actions) || actions.length === 0) return;
+        for (const action of actions) {
+            switch (action.responseType) {
+                case 'plan_state_update':
+                    if (action.planState) {
+                        get().updatePlannerPlanState(action.planState);
+                    }
+                    break;
+                case 'plan_creation':
+                    if (action.plan) {
+                        const dataset = get().csvData;
+                        if (!dataset) {
+                            get().addProgress('Graph plan creation skipped: dataset unavailable.', 'error');
+                            break;
+                        }
+                        const datasetId = get().datasetHash;
+                        const rowCountHint = get().datasetProfile?.rowCount ?? dataset.data.length;
+                        try {
+                            const preview = await runAggregateToolForPlan({
+                                plan: action.plan,
+                                datasetId,
+                                csvData: dataset,
+                                rowCountHint,
+                                options: {
+                                    preferredMode: get().aggregationModePreference,
+                                    runtimeConfig: get().datasetRuntimeConfig,
+                                },
+                            });
+                            get().addProgress(
+                                `Graph aggregate preview (${preview.meta.source}) rows=${preview.meta.rows}, warnings=${preview.meta.warnings.length}.`,
+                            );
+                        } catch (error) {
+                            const reason = error instanceof Error ? error.message : String(error);
+                            get().addProgress(`Graph aggregate tool failed: ${reason}`, 'error');
+                        }
+                        get().addProgress(`Graph executing plan "${action.plan.title ?? 'analysis'}" via data pipeline.`);
+                        const runId = createRunId();
+                        await runPlanWithChatLifecycle(action.plan, dataset, runId);
+                    }
+                    break;
+                case 'text_response':
+                case 'await_user': {
+                    const text = action.text?.trim();
+                    if (!text) break;
+                    const chatMessage: ChatMessage = {
+                        sender: 'ai',
+                        text,
+                        timestamp: action.timestamp ? new Date(action.timestamp) : new Date(),
+                        type: action.responseType === 'await_user' ? 'ai_clarification' : 'ai_message',
+                        cardId: action.cardId,
+                        meta: action.meta,
+                    };
+                    set(state => ({ chatHistory: [...state.chatHistory, chatMessage] }));
+                    break;
+                }
+                default:
+                    break;
+            }
+        }
+    },
 
     // FIX: Explicitly type the 'type' parameter to match the ProgressMessage interface.
     addProgress: (message: string, type: 'system' | 'error' = 'system') => {
@@ -1267,7 +1355,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                           durationMs: aggregateDuration || undefined,
                           lastRunAt: new Date().toISOString(),
                           filterCount: preparedPlan.rowFilter ? 1 : 0,
-                          requestedMode: get().aggregationModePreference ?? 'sample',
+                          requestedMode: get().aggregationModePreference ?? 'full',
                           normalization: aggregateResult?.provenance.normalization,
                       };
 

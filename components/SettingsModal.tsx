@@ -13,11 +13,13 @@ const autoSaveIntervals = [
 ];
 
 export const SettingsModal: React.FC = () => {
-    const { isOpen, onClose, onSave, currentSettings } = useAppStore(state => ({
+    const { isOpen, onClose, onSave, currentSettings, aggregationMode, setAggregationMode } = useAppStore(state => ({
         isOpen: state.isSettingsModalOpen,
         onClose: () => state.setIsSettingsModalOpen(false),
         onSave: state.handleSaveSettings,
         currentSettings: state.settings,
+        aggregationMode: state.aggregationModePreference,
+        setAggregationMode: state.setAggregationModePreference,
     }));
 
     const [settings, setSettings] = useState<Settings>(currentSettings);
@@ -60,6 +62,13 @@ export const SettingsModal: React.FC = () => {
         });
     };
 
+    const aggregationModeButtonClass = (mode: 'sample' | 'full') =>
+        `px-3 py-1 text-xs font-semibold rounded-md transition ${
+            aggregationMode === mode
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+        }`;
+
 
     return (
         <div 
@@ -67,7 +76,7 @@ export const SettingsModal: React.FC = () => {
             onClick={onClose}
         >
             <div 
-                className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md border border-slate-200"
+                className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md border border-slate-200 max-h-[80vh] overflow-y-auto"
                 onClick={e => e.stopPropagation()}
             >
                 <h2 className="text-2xl font-bold text-slate-900 mb-6">Settings</h2>
@@ -170,6 +179,31 @@ export const SettingsModal: React.FC = () => {
                          <p className="text-xs text-slate-500 mt-1">
                             Primary language for AI summaries and chat responses.
                         </p>
+                    </div>
+
+                    <div className="border-t border-slate-200 pt-4">
+                        <label className="block text-sm font-medium text-slate-700">
+                            Aggregation Mode · 汇总模式
+                        </label>
+                        <p className="text-xs text-slate-500 mb-3 max-w-sm">
+                            全量 = DuckDB 全表扫描（默认，精准）；快速 = 采样 5k 行内以提速。每个数据集将记住你的选择。
+                        </p>
+                        <div className="inline-flex items-center gap-1 rounded-lg bg-slate-100 p-1">
+                            <button
+                                type="button"
+                                className={aggregationModeButtonClass('full')}
+                                onClick={() => setAggregationMode('full')}
+                            >
+                                全量（默认）
+                            </button>
+                            <button
+                                type="button"
+                                className={aggregationModeButtonClass('sample')}
+                                onClick={() => setAggregationMode('sample')}
+                            >
+                                快速（采样）
+                            </button>
+                        </div>
                     </div>
 
                     <div className="border-t border-slate-200 pt-4">

@@ -28,11 +28,7 @@ export const createDefaultDatasetRuntimeConfig = (
 ): DatasetRuntimeConfig => {
     const rowCountHint = options?.rowCountHint;
     const prefersFullScan =
-        options?.preferredMode === 'full' ||
-        (options?.preferredMode === undefined &&
-            typeof rowCountHint === 'number' &&
-            rowCountHint > 0 &&
-            rowCountHint <= AUTO_FULL_SCAN_ROW_THRESHOLD);
+        options?.preferredMode === 'full' || options?.preferredMode === undefined;
     const now = new Date().toISOString();
     return {
         datasetId,

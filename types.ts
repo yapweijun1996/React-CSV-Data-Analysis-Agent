@@ -407,6 +407,21 @@ export interface Settings {
 
 export type AppView = 'file_upload' | 'analysis_dashboard';
 
+export type GraphRuntimeStatus = 'idle' | 'connecting' | 'ready' | 'error';
+
+export interface AwaitUserOption {
+    id: string;
+    label: string;
+}
+
+export interface AwaitUserPayload {
+    promptId?: string;
+    question: string;
+    options: AwaitUserOption[];
+    allowFreeText: boolean;
+    placeholder?: string;
+}
+
 export interface AppState {
     currentView: AppView;
     isBusy: boolean;
@@ -446,6 +461,12 @@ export interface AppState {
     agentAwaitingPromptId: string | null;
     analysisTimeline: AnalysisTimelineState;
     aggregationModePreference: 'sample' | 'full';
+    graphStatus: GraphRuntimeStatus;
+    graphStatusMessage: string | null;
+    graphVersion: string | null;
+    graphLastReadyAt: string | null;
+    graphAwaitPrompt: AwaitUserPayload | null;
+    graphAwaitPromptId: string | null;
 }
 
 export interface DomActionTarget {
@@ -497,6 +518,7 @@ export interface AiAction {
   clarification?: ClarificationRequestPayload;
   planState?: AgentPlanState;
   timestamp?: string;
+  awaitUserPayload?: AwaitUserPayload;
 }
 
 export interface AiChatResponse {

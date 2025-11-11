@@ -178,7 +178,7 @@ const aggregateRows = (
     columnProfiles?: ColumnProfile[],
     stringStrategy?: StringNormalizationStrategy,
 ): AggregateResult => {
-    const mode: AggregateMode = payload.mode ?? 'sample';
+    const mode: AggregateMode = payload.mode ?? 'full';
     if (!Array.isArray(payload.metrics) || payload.metrics.length === 0) {
         throw new Error('metrics[] is required for aggregation.');
     }
@@ -370,7 +370,7 @@ export const runAggregate = async (
     if (!columnRecord) {
         columnMetadataError();
     }
-    const requestedMode: AggregateMode = payload.mode ?? 'sample';
+    const requestedMode: AggregateMode = payload.mode ?? 'full';
     const mode: AggregateMode = requestedMode;
     payload.mode = mode;
     const sampleSize = payload.sampleSize ?? DEFAULT_AGG_SAMPLE;
