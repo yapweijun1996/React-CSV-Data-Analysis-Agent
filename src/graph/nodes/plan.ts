@@ -78,6 +78,7 @@ const handleLangChainPlan = (state: PipelineContext['state'], plan: LangChainPla
             currentStepId: plan.planState.currentStepId ?? plan.stepId,
             pendingPlan: pendingPlanEntry,
             pendingUserReply: null,
+            phase: 'plan',
             observations: trimObservations(state.observations, observation),
         },
         actions: [planAction],
@@ -86,9 +87,14 @@ const handleLangChainPlan = (state: PipelineContext['state'], plan: LangChainPla
 };
 
 export const planNode = ({ state, payload }: PipelineContext): NodeResult => {
+    const baseState = {
+        ...state,
+        phase: 'plan',
+        updatedAt: new Date().toISOString(),
+    };
     const pendingReply = state.pendingUserReply;
     if (!pendingReply) {
-        return { state, actions: [], label: 'plan' };
+        return { state: baseState, actions: [], label: 'plan' };
     }
 
     const langChainPlan = extractLangChainPlan(payload);
@@ -98,7 +104,7 @@ export const planNode = ({ state, payload }: PipelineContext): NodeResult => {
         if (!langChainPlan) {
             throw new Error('LangChain plan payload missing; cannot construct plan node actions.');
         }
-        return handleLangChainPlan(state, langChainPlan);
+        return handleLangChainPlan(baseState, langChainPlan);
     }
 
     const readableSummary =
@@ -150,7 +156,7 @@ export const planNode = ({ state, payload }: PipelineContext): NodeResult => {
 
     return {
         state: {
-            ...state,
+            ...baseState,
             planId,
             steps: [step],
             currentStepId,

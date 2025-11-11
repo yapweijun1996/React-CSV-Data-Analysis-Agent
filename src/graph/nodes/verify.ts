@@ -4,7 +4,14 @@ import type { AiAction } from '@/types';
 export const verifyNode = ({ state }: PipelineContext): NodeResult => {
     const pendingVerification = state.pendingVerification;
     if (!pendingVerification) {
-        return { state, actions: [], label: 'verify' };
+        return {
+            state: {
+                ...state,
+                phase: 'verify',
+            },
+            actions: [],
+            label: 'verify',
+        };
     }
     const meta = pendingVerification.meta;
     const summaryParts: string[] = [];
@@ -66,6 +73,8 @@ export const verifyNode = ({ state }: PipelineContext): NodeResult => {
         summaryParts.push(payloadSummary);
     }
 
+    const loopLimitReached = state.loopBudget.exceeded || state.loopBudget.actsUsed >= state.loopBudget.maxActs;
+
     const verificationAction: AiAction = {
         type: 'text_response',
         responseType: 'text_response',
@@ -74,13 +83,23 @@ export const verifyNode = ({ state }: PipelineContext): NodeResult => {
         timestamp: new Date().toISOString(),
         reason: '确认最新的聚合结果，并说明数据来源。',
         text: meta
-            ? `已完成「${pendingVerification.description}」。\n${summaryParts.join(' · ')}`
-            : `已完成「${pendingVerification.description}」的初步执行，准备生成可视化或进一步说明。`,
+            ? `已完成「${pendingVerification.description}」。\n${summaryParts.join(' · ')}${
+                  loopLimitReached ? '\n⚠️ 已达到自动执行次数上限，如需继续请确认。' : ''
+              }`
+            : `已完成「${pendingVerification.description}」的初步执行，准备生成可视化或进一步说明。${
+                  loopLimitReached ? '\n⚠️ 已达到自动执行次数上限，如需继续请确认。' : ''
+              }`,
     };
     return {
         state: {
             ...state,
+            phase: 'verify',
             pendingVerification: null,
+            loopBudget: {
+                ...state.loopBudget,
+                exceeded: loopLimitReached,
+            },
+            blockedBy: loopLimitReached ? 'loop_budget_exceeded' : state.blockedBy,
         },
         actions: [verificationAction],
         label: 'verify',

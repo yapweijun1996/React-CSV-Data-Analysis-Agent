@@ -2,12 +2,10 @@
 import { LangGraphBuilder } from './builder';
 import { GRAPH_RUNTIME_VERSION, type GraphClientEvent, type GraphWorkerEvent } from '../graph/contracts';
 import { createGuardState, enforceTurnGuards } from '../graph/guards';
-import { diagnoseNode } from '../graph/nodes/diagnose';
-import { askUserNode } from '../graph/nodes/askUser';
+import { observeNode } from '../graph/nodes/observe';
 import { planNode } from '../graph/nodes/plan';
 import { actNode } from '../graph/nodes/act';
 import { verifyNode } from '../graph/nodes/verify';
-import { adjustNode } from '../graph/nodes/adjust';
 import type { AiAction } from '@/types';
 import type { GraphObservation } from '../graph/schema';
 
@@ -15,18 +13,14 @@ declare const self: DedicatedWorkerGlobalScope;
 const ctx: DedicatedWorkerGlobalScope = self;
 
 const langGraphMachine = new LangGraphBuilder()
-    .addNode('diagnose', diagnoseNode)
-    .addNode('ask_user', askUserNode)
+    .addNode('observe', observeNode)
     .addNode('plan', planNode)
     .addNode('act', actNode)
     .addNode('verify', verifyNode)
-    .addNode('adjust', adjustNode)
-    .addEdge('diagnose', 'ask_user')
-    .addEdge('ask_user', 'plan')
+    .addEdge('observe', 'plan')
     .addEdge('plan', 'act')
     .addEdge('act', 'verify')
-    .addEdge('verify', 'adjust')
-    .setEntryPoint('diagnose')
+    .setEntryPoint('observe')
     .build();
 
 let graphState = createGuardState();
@@ -62,14 +56,25 @@ const handleApplyActions = (actions: AiAction[]) => {
     });
 };
 
+const extractTelemetry = (actions: AiAction[]): Record<string, unknown> | null => {
+    const withTelemetry = actions.find(action => action.meta && 'telemetry' in (action.meta as Record<string, unknown>));
+    if (!withTelemetry || !withTelemetry.meta) return null;
+    const meta = withTelemetry.meta as Record<string, unknown>;
+    return (meta.telemetry as Record<string, unknown>) ?? null;
+};
+
 const handleRunPipeline = async (payload: Record<string, unknown>) => {
     const result = await langGraphMachine.invoke({ state: graphState, payload });
     graphState = result.state;
+    const telemetry = extractTelemetry(result.actions);
     send({
         type: 'graph/pipeline',
         node: result.label,
         actions: result.actions,
         state: graphState,
+        phase: graphState.phase,
+        loopBudget: graphState.loopBudget,
+        telemetry,
         timestamp: now(),
     });
 };

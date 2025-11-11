@@ -10,7 +10,7 @@ import {
     AgentObservation,
     AgentPlanState,
 } from '../types';
-import { composePromptWithBudget, type PromptSection } from '../utils/promptBudget';
+import { composePromptWithBudget, type PromptSection, type PromptStage } from '../utils/promptBudget';
 
 // Centralized rules to avoid repetition
 const commonRules = {
@@ -277,6 +277,15 @@ ${timeline}
 
 import type { AgentActionTrace } from '../types';
 
+const formatConversationChunk = (chatHistory: ChatMessage[], limit = 5): string => {
+    const recentTurns =
+        chatHistory.length > 0
+            ? chatHistory.slice(-limit)
+            : [];
+    if (recentTurns.length === 0) return 'No prior conversation.';
+    return recentTurns.map(msg => `${msg.sender === 'ai' ? 'Agent' : 'User'}: ${msg.text}`).join('\n');
+};
+
 export const createPlanPrimerPrompt = (
     columns: ColumnProfile[],
     chatHistory: ChatMessage[],
@@ -287,11 +296,7 @@ export const createPlanPrimerPrompt = (
     recentObservations: AgentObservation[],
     cardContext: CardContext[],
 ): string => {
-    const recentTurns = chatHistory.slice(-5);
-    const recentHistory =
-        recentTurns.length > 0
-            ? recentTurns.map(msg => `${msg.sender === 'ai' ? 'Agent' : 'User'}: ${msg.text}`).join('\n')
-            : 'No prior conversation.';
+    const recentHistory = formatConversationChunk(chatHistory, 5);
 
     const instructions = `
 You are beginning STEP 1 of a multi-stage workflow. Your sole objective in this turn is to emit a high-quality \`plan_state_update\` action that sets the shared goal tracker for the UI. Do **not** run tools, transformations, or DOM actions yet.
@@ -306,7 +311,7 @@ Requirements for this response:
 `.trim();
 
     const conversation = `
-Recent conversation (last ${recentTurns.length > 0 ? recentTurns.length : 0} turn${recentTurns.length === 1 ? '' : 's'}):
+Recent conversation (last ${Math.min(chatHistory.length, 5)} turn${Math.min(chatHistory.length, 5) === 1 ? '' : 's'}):
 ${recentHistory}
 `.trim();
 
@@ -317,9 +322,9 @@ Output your answer as a JSON object with an "actions" array. Remember: stay in p
 `.trim();
 
     const sections: PromptSection[] = [
-        { label: 'Instructions', content: instructions, required: true, priority: 0 },
-        { label: 'Recent conversation', content: conversation, priority: 1 },
-        { label: 'Latest request', content: latestRequest, required: true, priority: 2 },
+        { label: 'Instructions', content: instructions, required: true, priority: 0, stage: 'seed' },
+        { label: 'Recent conversation', content: conversation, priority: 1, stage: 'conversation' },
+        { label: 'Latest request', content: latestRequest, required: true, priority: 2, stage: 'action' },
     ];
 
     const { prompt, trimmedSections } = composePromptWithBudget(sections);
@@ -329,7 +334,7 @@ Output your answer as a JSON object with an "actions" array. Remember: stay in p
     return prompt;
 };
 
-export const createChatPrompt = (
+const buildChatPromptSections = (
     columns: ColumnProfile[],
     chatHistory: ChatMessage[],
     userPrompt: string,
@@ -343,17 +348,8 @@ export const createChatPrompt = (
     dataPreparationPlan: DataPreparationPlan | null,
     recentActionTraces: AgentActionTrace[],
     rawDataFilterSummary: string,
-): string => {
-    const categoricalCols = columns
-        .filter(c => c.type === 'categorical' || c.type === 'date' || c.type === 'time')
-        .map(c => c.name);
-    const numericalCols = columns
-        .filter(c => c.type === 'numerical' || c.type === 'currency' || c.type === 'percentage')
-        .map(c => c.name);
-    const recentHistory = chatHistory
-        .slice(-10)
-        .map(m => `${m.sender === 'ai' ? 'You' : 'User'}: ${m.text}`)
-        .join('\n');
+): PromptSection[] => {
+    const recentHistory = formatConversationChunk(chatHistory, 5);
     const actionTraceHistory =
         recentActionTraces.length > 0
             ? recentActionTraces
@@ -383,6 +379,33 @@ export const createChatPrompt = (
                   : 'None specified.'
           }`
         : 'No structured goal has been recorded yet. Your first action must be a plan_state_update that defines a clear goal, ties it to current data, and lists concrete next steps.';
+
+    const columnSection =
+        columns.length > 0
+            ? `Column inventory (${columns.length} total, showing up to 10): ${columns
+                  .slice(0, 10)
+                  .map(col => `${col.name} (${col.type})`)
+                  .join(', ')}`
+            : 'No columns detected.';
+    const cardSection =
+        cardContext.length > 0
+            ? `Existing cards (${cardContext.length} total, showing up to 4):\n${cardContext
+                  .slice(0, 4)
+                  .map(card => `- ${card.title}${card.chartType ? ` (${card.chartType})` : ''}`)
+                  .join('\n')}`
+            : 'No analysis cards visible yet.';
+    const briefingSection = `Core analysis briefing:\n${aiCoreAnalysisSummary || 'Not generated yet.'}`;
+    const dataPrepSection = dataPreparationPlan
+        ? `Data preparation log:\nExplanation: ${dataPreparationPlan.explanation}\nCode:\n${dataPreparationPlan.jsFunctionBody}`
+        : 'No AI-driven data preparation was performed.';
+    const memorySection =
+        longTermMemory.length > 0
+            ? `Long-term memory (top ${Math.min(longTermMemory.length, 3)}):\n${longTermMemory.slice(0, 3).join('\n---\n')}`
+            : 'No relevant long-term memories.';
+    const rawDataSection =
+        rawDataSample.length > 0
+            ? `Raw data sample (first 3 rows):\n${JSON.stringify(rawDataSample.slice(0, 3), null, 2)}`
+            : 'Raw data preview unavailable.';
 
     const instructions = `
 You are an expert data analyst and strategist operating with a Reason-Act (ReAct) framework. Every action needs a short reason first, then the action payload. Keep final conversational replies in ${language}.
@@ -428,25 +451,10 @@ ${planStateSummary}
     const rawDataPreview =
         rawDataSample.length > 0 ? JSON.stringify(rawDataSample.slice(0, 5), null, 2) : 'No raw data preview available.';
 
-    const knowledgeBase = `
-KNOWLEDGE BASE:
-- Dataset columns → Categorical: ${categoricalCols.join(', ') || 'n/a'}
-- Dataset columns → Numerical: ${numericalCols.join(', ') || 'n/a'}
-- Analysis cards:
-${cardSummaries}
-- Raw data sample (first 5 rows):
-${rawDataPreview}
-`.trim();
-
     const runtimeNotes = `
 Agent runtime notes:
 - Pipeline: Context Builder → Planner → Action Dispatcher. Keep plans concise for downstream executors.
 - Ensure \`stateTag\` tokens stay strictly increasing (use "<epochMs>-<seq>" as a fallback).
-`.trim();
-
-    const conversationBlock = `
-Recent conversation:
-${recentHistory || 'No prior conversation.'}
 `.trim();
 
     const actionBlock = `
@@ -457,6 +465,11 @@ ${actionTraceSummary}
     const observationBlock = `
 Runtime observations (latest up to 5):
 ${observationSummary}
+`.trim();
+
+    const conversationBlock = `
+Recent conversation:
+${recentHistory || 'No prior conversation.'}
 `.trim();
 
     const userRequestBlock = `
@@ -473,24 +486,95 @@ Respond with a JSON object containing an "actions" array. Example (pseudocode):
 Primary actions available: text_response, plan_creation, dom_action, execute_js_code, clarification_request, await_user, filter_spreadsheet, proceed_to_analysis. Always acknowledge the user via text_response when you finish a complex step.
 `.trim();
 
-    const sections: PromptSection[] = [
-        { label: 'Instructions', content: instructions, required: true, priority: 0 },
-        { label: 'Plan protocol', content: planProtocol, required: true, priority: 1 },
-        { label: 'Core analysis', content: analysisBriefing, priority: 3 },
-        { label: 'Data prep', content: prepLog, priority: 4 },
-        { label: 'Long-term memory', content: memoryBlock, priority: 5 },
-        { label: 'Plan state', content: planStateBlock, priority: 2 },
-        { label: 'Knowledge base', content: knowledgeBase, priority: 4 },
-        { label: 'Runtime notes', content: runtimeNotes, priority: 6 },
-        { label: 'Conversation', content: conversationBlock, priority: 6 },
-        { label: 'Action traces', content: actionBlock, priority: 6 },
-        { label: 'Observations', content: observationBlock, priority: 6 },
-        { label: 'User request', content: userRequestBlock, required: true, priority: 2 },
+    return [
+        { label: 'Seed instructions', content: instructions, required: true, priority: 0, stage: 'seed' },
+        { label: 'Plan protocol', content: planProtocol, required: true, priority: 1, stage: 'seed' },
+        { label: 'Conversation', content: conversationBlock, priority: 2, stage: 'conversation' },
+        { label: 'Context: columns', content: columnSection, priority: 3, stage: 'context' },
+        { label: 'Context: cards', content: cardSection, priority: 3, stage: 'context' },
+        { label: 'Context: analysis briefing', content: briefingSection, priority: 4, stage: 'context' },
+        { label: 'Context: data prep', content: dataPrepSection, priority: 4, stage: 'context' },
+        { label: 'Context: long-term memory', content: memorySection, priority: 5, stage: 'context' },
+        { label: 'Context: plan state', content: planStateBlock, priority: 5, stage: 'context' },
+        { label: 'Context: raw data sample', content: rawDataSection, priority: 6, stage: 'context' },
+        { label: 'Context: runtime notes', content: runtimeNotes, priority: 7, stage: 'context' },
+        { label: 'Context: action traces', content: actionBlock, priority: 7, stage: 'context' },
+        { label: 'Context: observations', content: observationBlock, priority: 7, stage: 'context' },
+        { label: 'Action / user request', content: userRequestBlock, required: true, priority: 8, stage: 'action' },
     ];
+};
+
+export const createChatPrompt = (
+    columns: ColumnProfile[],
+    chatHistory: ChatMessage[],
+    userPrompt: string,
+    cardContext: CardContext[],
+    language: Settings['language'],
+    aiCoreAnalysisSummary: string | null,
+    rawDataSample: CsvRow[],
+    longTermMemory: string[],
+    recentObservations: AgentObservation[],
+    planState: AgentPlanState | null,
+    dataPreparationPlan: DataPreparationPlan | null,
+    recentActionTraces: AgentActionTrace[],
+    rawDataFilterSummary: string,
+): string => {
+    const sections = buildChatPromptSections(
+        columns,
+        chatHistory,
+        userPrompt,
+        cardContext,
+        language,
+        aiCoreAnalysisSummary,
+        rawDataSample,
+        longTermMemory,
+        recentObservations,
+        planState,
+        dataPreparationPlan,
+        recentActionTraces,
+        rawDataFilterSummary,
+    );
 
     const { prompt, trimmedSections } = composePromptWithBudget(sections);
     if (trimmedSections.length > 0 && typeof console !== 'undefined') {
         console.info('[promptBudget] Chat prompt trimmed sections:', trimmedSections);
     }
     return prompt;
+};
+
+export const createChatPromptForStage = (
+    stage: PromptStage,
+    columns: ColumnProfile[],
+    chatHistory: ChatMessage[],
+    userPrompt: string,
+    cardContext: CardContext[],
+    language: Settings['language'],
+    aiCoreAnalysisSummary: string | null,
+    rawDataSample: CsvRow[],
+    longTermMemory: string[],
+    recentObservations: AgentObservation[],
+    planState: AgentPlanState | null,
+    dataPreparationPlan: DataPreparationPlan | null,
+    recentActionTraces: AgentActionTrace[],
+    rawDataFilterSummary: string,
+): string => {
+    const sections = buildChatPromptSections(
+        columns,
+        chatHistory,
+        userPrompt,
+        cardContext,
+        language,
+        aiCoreAnalysisSummary,
+        rawDataSample,
+        longTermMemory,
+        recentObservations,
+        planState,
+        dataPreparationPlan,
+        recentActionTraces,
+        rawDataFilterSummary,
+    );
+    return composePromptWithBudget(sections, undefined, {
+        includeTrimNote: false,
+        stageFilter: stage,
+    }).prompt;
 };

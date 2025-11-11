@@ -1,4 +1,4 @@
-import type { GraphObservation } from '@/src/graph/schema';
+import type { GraphObservation, GraphPhase, LoopBudget } from '@/src/graph/schema';
 
 export type CsvRow = { [key: string]: string | number };
 
@@ -540,6 +540,8 @@ export interface AppState {
     useLangGraphRuntime: boolean;
     llmUsageLog: LlmUsageEntry[];
     graphObservations: GraphObservation[];
+    graphPhase: GraphPhase;
+    graphLoopBudget: LoopBudget;
 }
 
 export interface DomActionTarget {

@@ -1,6 +1,14 @@
 import { useMemo } from 'react';
 import { useAppStore } from '../store/useAppStore';
 
+const PHASE_LABEL_MAP: Record<string, string> = {
+    observe: 'Observe',
+    plan: 'Plan',
+    act: 'Act',
+    verify: 'Verify',
+    idle: 'Idle',
+};
+
 export interface LangGraphActivityInfo {
     shouldRender: boolean;
     headline: string;
@@ -9,6 +17,8 @@ export interface LangGraphActivityInfo {
     agentAwaitingUserInput: boolean;
     activeToolLabel: string | null;
     graphStatus: string;
+    phaseLabel: string | null;
+    loopSummary: string | null;
 }
 
 const buildActivityMessage = ({
@@ -78,6 +88,8 @@ export const useLangGraphActivity = (): LangGraphActivityInfo => {
         graphLastToolSummary,
         agentAwaitingUserInput,
         graphAwaitPrompt,
+        graphPhase,
+        graphLoopBudget,
     } = useAppStore(state => ({
         runtimeLabel: state.useLangGraphRuntime ? 'LangGraph' : 'Graph',
         graphStatus: state.graphStatus,
@@ -86,6 +98,8 @@ export const useLangGraphActivity = (): LangGraphActivityInfo => {
         graphLastToolSummary: state.graphLastToolSummary,
         agentAwaitingUserInput: state.agentAwaitingUserInput,
         graphAwaitPrompt: state.graphAwaitPrompt,
+        graphPhase: state.graphPhase,
+        graphLoopBudget: state.graphLoopBudget,
     }));
 
     return useMemo(() => {
@@ -111,6 +125,13 @@ export const useLangGraphActivity = (): LangGraphActivityInfo => {
             graphAwaitPrompt,
         });
 
+        const phaseLabel = graphPhase ? PHASE_LABEL_MAP[graphPhase] ?? graphPhase : null;
+        const loopSummary = graphLoopBudget
+            ? `${graphLoopBudget.actsUsed}/${graphLoopBudget.maxActs}${
+                  graphLoopBudget.exceeded ? ' (max reached)' : ''
+              }`
+            : null;
+
         return {
             shouldRender,
             headline,
@@ -119,6 +140,8 @@ export const useLangGraphActivity = (): LangGraphActivityInfo => {
             agentAwaitingUserInput,
             activeToolLabel: graphToolInFlight?.label ?? null,
             graphStatus,
+            phaseLabel,
+            loopSummary,
         };
     }, [
         runtimeLabel,
@@ -128,5 +151,7 @@ export const useLangGraphActivity = (): LangGraphActivityInfo => {
         graphLastToolSummary,
         agentAwaitingUserInput,
         graphAwaitPrompt,
+        graphPhase,
+        graphLoopBudget,
     ]);
 };

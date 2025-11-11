@@ -596,6 +596,8 @@ const buildSerializableAppState = (state: AppStore): AppState => ({
     useLangGraphRuntime: state.useLangGraphRuntime,
     llmUsageLog: state.llmUsageLog,
     graphObservations: state.graphObservations,
+    graphPhase: state.graphPhase,
+    graphLoopBudget: state.graphLoopBudget,
 });
 
 const buildFileNameFromHeader = (header?: string | null) => {
@@ -801,6 +803,8 @@ const initialAppState: AppState = {
     useLangGraphRuntime: true,
     llmUsageLog: [],
     graphObservations: [],
+    graphPhase: 'idle',
+    graphLoopBudget: { maxActs: 3, actsUsed: 0, exceeded: false },
 };
 
 export const useAppStore = create<StoreState & StoreActions>((set, get) => {
@@ -1538,10 +1542,14 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                     const newObservations = incomingObservations.filter(obs => !prevIds.has(obs.id));
                     const heartbeat = new Date(event.timestamp).toISOString();
                     const awaitingPrompt = event.state.awaitPrompt ?? null;
+                    const nextPhase = event.phase ?? current.graphPhase ?? 'idle';
+                    const nextLoopBudget = event.loopBudget ?? current.graphLoopBudget;
                     set(current => ({
                         graphStatus: 'ready',
                         graphStatusMessage: `Pipeline node ${event.node} emitted ${event.actions.length} action(s).`,
                         graphLastReadyAt: heartbeat,
+                        graphPhase: nextPhase,
+                        graphLoopBudget: nextLoopBudget,
                         graphAwaitPrompt: awaitingPrompt,
                         graphAwaitPromptId: awaitingPrompt?.promptId ?? null,
                         agentAwaitingUserInput: Boolean(awaitingPrompt),
@@ -1557,7 +1565,20 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                     if (awaitingPrompt) {
                         get().addProgress(`Graph awaiting your choice: ${awaitingPrompt.question}`);
                     } else {
-                        get().addProgress(`Graph node ${event.node} completed.`);
+                        const loopText = nextLoopBudget
+                            ? `Loop ${nextLoopBudget.actsUsed}/${nextLoopBudget.maxActs}${
+                                  nextLoopBudget.exceeded ? ' (max reached)' : ''
+                              }`
+                            : null;
+                        const phaseText = `Phase ${nextPhase}`;
+                        const combined = loopText ? `${phaseText} · ${loopText}` : phaseText;
+                        get().addProgress(`Graph ${combined} — node ${event.node} completed.`);
+                        if (nextLoopBudget?.exceeded) {
+                            get().addProgress(
+                                'Loop budget reached — awaiting confirmation before further automation.',
+                                'error',
+                            );
+                        }
                         set({
                             agentAwaitingUserInput: false,
                         });

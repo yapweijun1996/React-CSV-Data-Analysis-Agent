@@ -43,6 +43,7 @@ import { detectUserIntent } from './intentRouter';
 import { createAgentEngine } from './engine';
 import type { EngineContext } from './engine';
 import { StateTagFactory } from './stateTagFactory';
+import type { PromptStage } from '../../utils/promptBudget';
 
 /**
  * Core runtime that keeps the agent flow sandboxed outside the chat slice.
@@ -74,6 +75,29 @@ export interface PlannerPolicy {
 
 const DEFAULT_PLANNER_POLICY: PlannerPolicy = {
     allowLooseSteps: false,
+};
+
+type GraphPhaseLabel = 'observe' | 'plan' | 'act' | 'verify' | 'idle';
+const DEFAULT_PROMPT_STAGE_SEQUENCE: PromptStage[] = ['seed', 'conversation', 'context', 'action'];
+const PHASE_STAGE_SEQUENCE: Record<GraphPhaseLabel, PromptStage[]> = {
+    observe: ['seed', 'conversation'],
+    plan: ['conversation', 'context'],
+    act: ['context', 'action'],
+    verify: ['action'],
+    idle: ['seed', 'conversation'],
+};
+const PROMPT_STAGE_LABEL: Record<PromptStage, string> = {
+    seed: 'Seed',
+    conversation: 'Conversation',
+    context: 'Context',
+    action: 'Action',
+};
+
+const deriveStageSequenceForPhase = (phase?: GraphPhaseLabel | string | null): PromptStage[] => {
+    const normalizedPhase = (phase ?? 'observe') as GraphPhaseLabel;
+    const base = PHASE_STAGE_SEQUENCE[normalizedPhase] ?? [];
+    const merged = [...base, ...DEFAULT_PROMPT_STAGE_SEQUENCE];
+    return merged.filter((stage, index, arr) => arr.indexOf(stage) === index);
 };
 
 interface PlannerRuntime {
@@ -2589,13 +2613,30 @@ const runPlannerWorkflow = async (
         return { response: aiResponse, meta: metaSignal };
     };
 
+    const basePrompt = withIntentNotes(originalPrompt);
+    const currentPhaseLabel = (runtime.get().graphPhase ?? 'observe') as GraphPhaseLabel;
+    const promptStageSequence = deriveStageSequenceForPhase(currentPhaseLabel);
+    let promptStageIndex = 0;
+    const resolvePromptStage = (): PromptStage | undefined => {
+        const mode = resolvePromptModeForRuntime(runtime);
+        if (mode !== 'full' || promptStageSequence.length === 0) return undefined;
+        return promptStageSequence[Math.min(promptStageIndex, promptStageSequence.length - 1)];
+    };
+    const advancePromptStage = (): PromptStage | undefined => {
+        if (promptStageIndex < promptStageSequence.length - 1) {
+            promptStageIndex += 1;
+            return promptStageSequence[promptStageIndex];
+        }
+        return undefined;
+    };
+
     enterAgentPhase(runtime, 'observing', 'Reviewing the current dataset and prior context...');
     try {
         enterAgentPhase(runtime, 'planning', 'Thinking through your question...');
         let { response, meta: responseMeta } = await requestAgentResponse(
-            withIntentNotes(originalPrompt),
+            basePrompt,
             'Thinking through your question...',
-            { mode: resolvePromptModeForRuntime(runtime) },
+            { mode: resolvePromptModeForRuntime(runtime), promptStage: resolvePromptStage() },
         );
 
         while (response) {
@@ -2609,6 +2650,20 @@ const runPlannerWorkflow = async (
                 validationRetries++;
                 recordValidationTelemetry(runtime, validation.details, validation.retryInstruction);
                 runtime.get().addProgress(validation.userMessage, 'error');
+                const promptMode = resolvePromptModeForRuntime(runtime);
+                const nextStage = promptMode === 'full' ? advancePromptStage() : undefined;
+                if (nextStage) {
+                    validationRetries = Math.max(0, validationRetries - 1);
+                    runtime
+                        .get()
+                        .addProgress(`Adding ${PROMPT_STAGE_LABEL[nextStage]} context to assist the planner.`);
+                    ({ response, meta: responseMeta } = await requestAgentResponse(
+                        basePrompt,
+                        `Adding ${PROMPT_STAGE_LABEL[nextStage]} context...`,
+                        { mode: promptMode, promptStage: nextStage },
+                    ));
+                    continue;
+                }
                 if (validationRetries >= validationLimit) {
                     if (!usedRestatementPrompt) {
                         usedRestatementPrompt = true;

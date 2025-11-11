@@ -8,6 +8,13 @@ import type {
 } from '@/types';
 
 export type StepStatus = 'ready' | 'in_progress' | 'done';
+export type GraphPhase = 'observe' | 'plan' | 'act' | 'verify' | 'idle';
+
+export interface LoopBudget {
+    maxActs: number;
+    actsUsed: number;
+    exceeded: boolean;
+}
 
 export interface PendingUserReplySnapshot {
     optionId: string | null;
@@ -45,6 +52,7 @@ export interface GraphState {
     sessionId: string;
     planId: string | null;
     stateTag: string;
+    phase: GraphPhase;
     awaitingUser: boolean;
     awaitPrompt: AwaitUserPayload | null;
     awaitPromptId: string | null;
@@ -57,6 +65,7 @@ export interface GraphState {
     observations: GraphObservation[];
     viewIds: string[];
     warnings: string[];
+    loopBudget: LoopBudget;
     updatedAt: string;
 }
 
@@ -73,6 +82,7 @@ export const createGraphState = (sessionId?: string, overrides?: Partial<GraphSt
         sessionId: sessionId ?? createSessionId(),
         planId: null,
         stateTag: DEFAULT_STATE_TAG,
+        phase: 'observe',
         awaitingUser: false,
         awaitPrompt: null,
         awaitPromptId: null,
@@ -85,6 +95,11 @@ export const createGraphState = (sessionId?: string, overrides?: Partial<GraphSt
         observations: [],
         viewIds: [],
         warnings: [],
+        loopBudget: {
+            maxActs: 3,
+            actsUsed: 0,
+            exceeded: false,
+        },
         updatedAt: now,
     };
     return {
@@ -94,6 +109,8 @@ export const createGraphState = (sessionId?: string, overrides?: Partial<GraphSt
         observations: overrides?.observations ?? base.observations,
         viewIds: overrides?.viewIds ?? base.viewIds,
         warnings: overrides?.warnings ?? base.warnings,
+        loopBudget: overrides?.loopBudget ?? base.loopBudget,
+        phase: overrides?.phase ?? base.phase,
     };
 };
 
@@ -152,6 +169,8 @@ export const projectPlanStateIntoGraphState = (
         awaitPrompt: state.awaitPrompt,
         awaitPromptId: state.awaitPromptId,
         pendingUserReply: state.pendingUserReply,
+        phase: state.phase,
+        loopBudget: state.loopBudget,
     };
 };
 

@@ -30,6 +30,13 @@ export const BusyStatusBar: React.FC = () => {
     const headline = showBusy
         ? busyMessage || 'Thinking through your question...'
         : activity.headline;
+
+    const phaseSummary =
+        activity.phaseLabel || activity.loopSummary
+            ? `Phase: ${activity.phaseLabel ?? 'Idle'}${
+                  activity.loopSummary ? ` · Loop ${activity.loopSummary}` : ''
+              }`
+            : null;
     const detail = showBusy ? activity.detail : activity.detail;
 
     return (
@@ -48,6 +55,9 @@ export const BusyStatusBar: React.FC = () => {
                     {detail && (
                         <p className="text-xs text-blue-700">{detail}</p>
                     )}
+                    {phaseSummary && (
+                        <p className="text-xs text-blue-700">{phaseSummary}</p>
+                    )}
                 </div>
             </div>
             {showBusy && canCancelBusy ? (
@@ -65,6 +75,14 @@ export const BusyStatusBar: React.FC = () => {
                         <span className="inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-700">
                             {activity.runtimeLabel} runtime
                         </span>
+                        {activity.phaseLabel && (
+                            <span className="inline-flex items-center rounded-full bg-slate-200 px-2 py-0.5 text-xs font-semibold text-slate-700">
+                                {activity.phaseLabel}
+                            </span>
+                        )}
+                        {activity.loopSummary && (
+                            <span className="text-xs text-slate-600">Loop {activity.loopSummary}</span>
+                        )}
                         {activity.agentAwaitingUserInput && (
                             <span className="text-xs font-semibold text-orange-600">Waiting for your input</span>
                         )}

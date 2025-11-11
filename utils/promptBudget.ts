@@ -1,8 +1,11 @@
+export type PromptStage = 'seed' | 'conversation' | 'context' | 'action';
+
 export interface PromptSection {
     label: string;
     content: string;
     required?: boolean;
     priority?: number;
+    stage?: PromptStage;
 }
 
 export interface PromptBudgetResult {
@@ -16,10 +19,21 @@ const TRIM_NOTE_PREFIX = '[Context trimmed due to budget: ';
 export const composePromptWithBudget = (
     sections: PromptSection[],
     budget: number = DEFAULT_PROMPT_BUDGET,
-    options?: { includeTrimNote?: boolean },
+    options?: { includeTrimNote?: boolean; stageFilter?: PromptStage | PromptStage[] },
 ): PromptBudgetResult => {
     const includeTrimNote = options?.includeTrimNote ?? true;
-    const sortedSections = [...sections].sort((a, b) => {
+    const stageFilterSet = options?.stageFilter
+        ? new Set(Array.isArray(options.stageFilter) ? options.stageFilter : [options.stageFilter])
+        : null;
+
+    const filteredSections = stageFilterSet
+        ? sections.filter(section => {
+              if (!section.stage) return false;
+              return stageFilterSet.has(section.stage);
+          })
+        : sections;
+
+    const sortedSections = [...filteredSections].sort((a, b) => {
         const ap = typeof a.priority === 'number' ? a.priority : 5;
         const bp = typeof b.priority === 'number' ? b.priority : 5;
         return ap - bp;

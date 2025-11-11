@@ -14,7 +14,8 @@ import {
 } from '../../types';
 import { callGemini, callOpenAI, type LlmUsageMetrics } from './apiClient';
 import { multiActionChatResponseSchema, multiActionChatResponseJsonSchema } from './schemas';
-import { createChatPrompt, createPlanPrimerPrompt } from '../promptTemplates';
+import { createChatPrompt, createChatPromptForStage, createPlanPrimerPrompt } from '../promptTemplates';
+import type { PromptStage } from '../utils/promptBudget';
 import { StateTagFactory } from '../agent/stateTagFactory';
 
 export interface PromptProfile {
@@ -29,6 +30,7 @@ export interface ChatResponseOptions {
     mode?: 'full' | 'plan_only';
     onPromptProfile?: (profile: PromptProfile) => void;
     onUsage?: (usage: LlmUsageMetrics) => void;
+    promptStage?: PromptStage | PromptStage[];
 }
 
 const hasMissingExecutableCode = (response: AiChatResponse): boolean => {
@@ -115,6 +117,7 @@ export const generateChatResponse = async (
     
     try {
         const promptMode = options?.mode ?? 'full';
+        const stageOverride = promptMode === 'full' ? options?.promptStage : undefined;
         const usageOperation = promptMode === 'plan_only' ? 'chat.plan_only' : 'chat.full';
         const promptContent =
             promptMode === 'plan_only'
@@ -128,6 +131,27 @@ export const generateChatResponse = async (
                       recentObservations,
                       cardContext,
                   )
+                : stageOverride
+                ? (Array.isArray(stageOverride) ? stageOverride : [stageOverride])
+                      .map(stage =>
+                          createChatPromptForStage(
+                              stage,
+                              columns,
+                              chatHistory,
+                              userPrompt,
+                              cardContext,
+                              settings.language,
+                              aiCoreAnalysisSummary,
+                              rawDataSample,
+                              longTermMemory,
+                              recentObservations,
+                              activePlanState,
+                              dataPreparationPlan,
+                              recentActionTraces,
+                              rawDataFilterSummary,
+                          ),
+                      )
+                      .join('\n\n')
                 : createChatPrompt(
                       columns,
                       chatHistory,
@@ -145,7 +169,14 @@ export const generateChatResponse = async (
                   );
 
         if (options?.onPromptProfile) {
-            const promptLabel = promptMode === 'plan_only' ? 'chat_plan_primer' : 'chat_full';
+            const stageLabel =
+                promptMode === 'full' && stageOverride
+                    ? (Array.isArray(stageOverride) ? stageOverride.join('+') : stageOverride)
+                    : null;
+            const promptLabel =
+                promptMode === 'plan_only'
+                    ? 'chat_plan_primer'
+                    : `chat_full${stageLabel ? `_stage_${stageLabel}` : ''}`;
             const charCount = promptContent.length;
             const estimatedTokens = Math.ceil(charCount / 4);
             options.onPromptProfile({

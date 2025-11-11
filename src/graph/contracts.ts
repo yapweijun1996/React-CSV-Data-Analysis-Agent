@@ -1,5 +1,5 @@
 import type { AiAction, GraphToolMeta } from '@/types';
-import type { GraphState } from './schema';
+import type { GraphPhase, GraphState, LoopBudget } from './schema';
 
 export type GraphClientEvent =
     | {
@@ -83,6 +83,9 @@ export type GraphWorkerEvent =
           node: string;
           actions: AiAction[];
           state: GraphState;
+          phase: GraphPhase;
+          loopBudget: LoopBudget;
+          telemetry?: Record<string, unknown> | null;
           timestamp: number;
       };
 
