@@ -166,6 +166,8 @@ export interface StoreActions {
     processGraphActions: (actions: AiAction[]) => Promise<void> | void;
     setLangChainLastPlan: (plan: AnalysisPlan | null) => void;
     setLangChainPlannerEnabled: (enabled: boolean) => void;
+    resetConversationMemory: () => void;
+    maybeCompactConversationMemory: () => Promise<void>;
 }
 
 export type AppStore = StoreState & StoreActions;

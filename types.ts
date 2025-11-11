@@ -502,6 +502,7 @@ export interface AppState {
     datasetHash: string | null; // Fingerprint of the current dataset for memory gating
     datasetRuntimeConfig: DatasetRuntimeConfig | null;
     vectorStoreDocuments: VectorStoreDocument[]; // For persisting AI memory
+    conversationMemoryState: ConversationMemoryState;
     spreadsheetFilterFunction: string | null; // For AI-powered spreadsheet filtering
     aiFilterExplanation: string | null; // Explanation for the AI filter
     datasetProfile: DatasetProfileSnapshot | null;
@@ -635,6 +636,22 @@ export interface VectorStoreDocument {
     text: string;
     embedding: number[];
     metadata?: Record<string, any>;
+}
+
+export type ConversationMemorySummaryLevel = 'raw' | 'summary';
+
+export interface ConversationMemoryChunk {
+    id: string;
+    startIndex: number;
+    endIndex: number;
+    summaryLevel: ConversationMemorySummaryLevel;
+    createdAt: string;
+}
+
+export interface ConversationMemoryState {
+    lastIndexedMessage: number;
+    rawChunks: ConversationMemoryChunk[];
+    summaryChunks: ConversationMemoryChunk[];
 }
 
 // For interactive spreadsheet sorting

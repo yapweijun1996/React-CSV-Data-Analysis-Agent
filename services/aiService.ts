@@ -15,3 +15,4 @@ export {
     generateProactiveInsights, 
     generateFinalSummary 
 } from './ai/summaryGenerator';
+export { generateConversationMemorySummary } from './ai/memorySummarizer';

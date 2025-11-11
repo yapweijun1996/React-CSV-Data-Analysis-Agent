@@ -1,12 +1,7 @@
 import React from 'react';
 import { useAppStore } from '../store/useAppStore';
-
-const Spinner: React.FC = () => (
-    <svg className="h-4 w-4 text-blue-600 animate-spin" viewBox="0 0 24 24" fill="none" role="status" aria-label="Loading">
-        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-    </svg>
-);
+import { StatusSpinner } from './StatusSpinner';
+import { useLangGraphActivity } from './LangGraphActivity';
 
 export const BusyStatusBar: React.FC = () => {
     const {
@@ -23,7 +18,19 @@ export const BusyStatusBar: React.FC = () => {
         isCancellationRequested: state.isCancellationRequested,
     }));
 
-    if (!isBusy) return null;
+    const activity = useLangGraphActivity();
+
+    const showBusy = isBusy;
+    const showActivity = !isBusy && activity.shouldRender;
+
+    if (!showBusy && !showActivity) {
+        return null;
+    }
+
+    const headline = showBusy
+        ? busyMessage || 'Thinking through your question...'
+        : activity.headline;
+    const detail = showBusy ? activity.detail : activity.detail;
 
     return (
         <div
@@ -32,15 +39,18 @@ export const BusyStatusBar: React.FC = () => {
             aria-live="polite"
         >
             <div className="flex items-center gap-3 text-blue-900">
-                <Spinner />
+                <StatusSpinner />
                 <div>
-                    <p className="text-sm font-semibold">{busyMessage || 'Running your request…'}</p>
-                    {isCancellationRequested && (
+                    <p className="text-sm font-semibold">{headline}</p>
+                    {showBusy && isCancellationRequested && (
                         <p className="text-xs text-blue-700">Cancelling… wrapping up safely.</p>
+                    )}
+                    {detail && (
+                        <p className="text-xs text-blue-700">{detail}</p>
                     )}
                 </div>
             </div>
-            {canCancelBusy && (
+            {showBusy && canCancelBusy ? (
                 <button
                     type="button"
                     onClick={requestBusyCancel}
@@ -49,6 +59,20 @@ export const BusyStatusBar: React.FC = () => {
                 >
                     {isCancellationRequested ? 'Cancelling…' : 'Cancel'}
                 </button>
+            ) : (
+                showActivity && (
+                    <div className="flex items-center gap-2">
+                        <span className="inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-700">
+                            {activity.runtimeLabel} runtime
+                        </span>
+                        {activity.agentAwaitingUserInput && (
+                            <span className="text-xs font-semibold text-orange-600">Waiting for your input</span>
+                        )}
+                        {activity.activeToolLabel && (
+                            <span className="text-xs text-blue-700">执行中：{activity.activeToolLabel}</span>
+                        )}
+                    </div>
+                )
             )}
         </div>
     );

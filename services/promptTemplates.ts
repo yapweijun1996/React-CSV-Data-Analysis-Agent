@@ -10,6 +10,7 @@ import {
     AgentObservation,
     AgentPlanState,
 } from '../types';
+import { composePromptWithBudget, type PromptSection } from '../utils/promptBudget';
 
 // Centralized rules to avoid repetition
 const commonRules = {
@@ -244,6 +245,36 @@ export const createFinalSummaryPrompt = (summaries: string, language: Settings['
     Your response should be a single paragraph of insightful business analysis.
 `;
 
+export const createConversationMemoryPrompt = (
+    messages: ChatMessage[],
+    language: Settings['language'],
+): string => {
+    const timeline = messages
+        .map((message, index) => {
+            const timestamp =
+                message.timestamp instanceof Date && !Number.isNaN(message.timestamp.getTime())
+                    ? message.timestamp.toISOString()
+                    : new Date(message.timestamp).toISOString();
+            const speaker = message.sender === 'ai' ? 'Agent' : 'User';
+            return `${index + 1}. [${timestamp}] ${speaker}: ${message.text}`;
+        })
+        .join('\n');
+
+    return `
+You are compressing a dialogue between a data analysis agent and the user. Summarize the durable takeaways so the agent can quickly recall prior context.
+
+Instructions:
+- Use ${language}.
+- Include 2–3 concise bullet points that capture business insights, commitments, or blockers.
+- List any open questions or TODOs separately.
+- Mention the relative timing (e.g., "Early discussion", "Later follow-up") so the agent knows where this occurred.
+- Do NOT invent facts that aren't in the transcript.
+
+Conversation Transcript:
+${timeline}
+`;
+};
+
 import type { AgentActionTrace } from '../types';
 
 export const createPlanPrimerPrompt = (
@@ -256,58 +287,46 @@ export const createPlanPrimerPrompt = (
     recentObservations: AgentObservation[],
     cardContext: CardContext[],
 ): string => {
-    const columnSummary = columns
-        .slice(0, 20)
-        .map(col => `${col.name} (${col.type})`)
-        .join(', ');
-    const cardTitles =
-        cardContext.length > 0 ? cardContext.map(card => `- ${card.title}`).join('\n') : 'No analysis cards created yet.';
-    const memoryNotes =
-        longTermMemory.length > 0 ? longTermMemory.slice(0, 3).join('\n---\n') : 'No long-term memory snippets selected.';
-    const observationNotes =
-        recentObservations.length > 0
-            ? recentObservations
-                  .slice(-3)
-                  .map(obs => `- [${obs.status.toUpperCase()}] ${obs.responseType}`)
-                  .join('\n')
-            : 'No recent tool observations available.';
+    const recentTurns = chatHistory.slice(-5);
     const recentHistory =
-        chatHistory.length > 0
-            ? chatHistory
-                  .slice(-6)
-                  .map(msg => `${msg.sender === 'ai' ? 'You' : 'User'}: ${msg.text}`)
-                  .join('\n')
+        recentTurns.length > 0
+            ? recentTurns.map(msg => `${msg.sender === 'ai' ? 'Agent' : 'User'}: ${msg.text}`).join('\n')
             : 'No prior conversation.';
 
-    return `
-        You are beginning STEP 1 of a multi-stage workflow. Your sole objective in this turn is to emit a high-quality \`plan_state_update\` action that sets the shared goal tracker for the UI. Do **not** run tools, transformations, or DOM actions yet.
+    const instructions = `
+You are beginning STEP 1 of a multi-stage workflow. Your sole objective in this turn is to emit a high-quality \`plan_state_update\` action that sets the shared goal tracker for the UI. Do **not** run tools, transformations, or DOM actions yet.
+Requirements for this response:
+- The first action must be \`plan_state_update\` with goal, contextSummary, progress, nextSteps (each having id + label), blockedBy (or null), observationIds (array, can be empty), confidence (0-1 or null), and updatedAt.
+- Every action you send must include \`type\`, \`responseType\`, \`stepId\`, and a monotonic \`stateTag\` formatted as "<epochMs>-<seq>" (set \`stateTag\` even on plan_state_update).
+- Each action's \`reason\` must be no more than 280 characters and clearly state the immediate justification for that step (e.g., "Plan: drafting the chart creation steps").
+- The plan_state_update payload must include \`planId\`, \`currentStepId\`, and a comprehensive \`steps\` array where each entry has \`intent\` and \`status\` (\`ready\`|\`in_progress\`|\`done\`).
+- You may optionally include one short \`text_response\` after the plan_state_update to acknowledge the plan to the user in ${language}, but do not trigger other action types.
+- If the user's latest message is merely a greeting or check-in (e.g., "hi", "hello there", "早安"), still include a first nextSteps entry with id "acknowledge_user" and a label that confirms you will greet/clarify with them before moving to data work.
+- Keep nextSteps focused on the minimum set of concrete moves (e.g., build chart, run filter, gather clarification). Reference dataset columns exactly as they appear.
+`.trim();
 
-        Requirements for this response:
-        - The first action must be \`plan_state_update\` with goal, contextSummary, progress, nextSteps (each having id + label), blockedBy (or null), observationIds (array, can be empty), confidence (0-1 or null), and updatedAt.
-        - Every action you send must include \`type\`, \`responseType\`, \`stepId\`, and a monotonic \`stateTag\` formatted as "<epochMs>-<seq>" (set \`stateTag\` even on plan_state_update). 
-        - Each action's \`reason\` must be no more than 280 characters and clearly state the immediate justification for that step (e.g., "Plan: drafting the chart creation steps").
-        - The plan_state_update payload must include \`planId\`, \`currentStepId\`, and a comprehensive \`steps\` array where each entry has \`intent\` and \`status\` (\`ready\`|\`in_progress\`|\`done\`).
-        - You may optionally include one short \`text_response\` after the plan_state_update to acknowledge the plan to the user in ${language}, but do not trigger other action types.
-        - If the user's latest message is merely a greeting or check-in (e.g., "hi", "hello there", "早安"), still include a first nextSteps entry with id "acknowledge_user" and a label that confirms you will greet/clarify with them before moving to data work.
-        - Keep nextSteps focused on the minimum set of concrete moves (e.g., build chart, run filter, gather clarification). Reference dataset columns exactly as they appear.
+    const conversation = `
+Recent conversation (last ${recentTurns.length > 0 ? recentTurns.length : 0} turn${recentTurns.length === 1 ? '' : 's'}):
+${recentHistory}
+`.trim();
 
-        Helpful context:
-        - Column inventory: ${columnSummary || 'No columns detected.'}
-        - Existing analysis cards: 
-        ${cardTitles}
-        - Core analysis briefing: ${aiCoreAnalysisSummary || 'Not generated yet.'}
-        - Long-term memory snippets: 
-        ${memoryNotes}
-        - Recent runtime observations:
-        ${observationNotes}
+    const latestRequest = `
+The user's latest request is: "${userPrompt}"
 
-        Recent conversation:
-        ${recentHistory}
+Output your answer as a JSON object with an "actions" array. Remember: stay in planning mode only; do not issue executions until the goal tracker is established.
+`.trim();
 
-        The user's latest request is: "${userPrompt}"
+    const sections: PromptSection[] = [
+        { label: 'Instructions', content: instructions, required: true, priority: 0 },
+        { label: 'Recent conversation', content: conversation, priority: 1 },
+        { label: 'Latest request', content: latestRequest, required: true, priority: 2 },
+    ];
 
-        Output your answer as a JSON object with an "actions" array. Remember: stay in planning mode only; do not issue executions until the goal tracker is established.
-    `;
+    const { prompt, trimmedSections } = composePromptWithBudget(sections);
+    if (trimmedSections.length > 0 && typeof console !== 'undefined') {
+        console.info('[promptBudget] Plan primer trimmed sections:', trimmedSections);
+    }
+    return prompt;
 };
 
 export const createChatPrompt = (
@@ -325,124 +344,153 @@ export const createChatPrompt = (
     recentActionTraces: AgentActionTrace[],
     rawDataFilterSummary: string,
 ): string => {
-    const categoricalCols = columns.filter(c => c.type === 'categorical' || c.type === 'date' || c.type === 'time').map(c => c.name);
-    const numericalCols = columns.filter(c => c.type === 'numerical' || c.type === 'currency' || c.type === 'percentage').map(c => c.name);
-    const recentHistory = chatHistory.slice(-10).map(m => `${m.sender === 'ai' ? 'You' : 'User'}: ${m.text}`).join('\n');
-    const actionTraceHistory = recentActionTraces.length > 0
-        ? recentActionTraces
-            .slice(-5)
-            .map(trace => `- [${trace.source}/${trace.status.toUpperCase()}] ${trace.actionType}: ${trace.summary}${trace.details ? ` (${trace.details})` : ''}`)
-            .join('\n')
-        : 'No prior tool actions have been recorded yet. You are starting fresh. Always observe before acting.';
+    const categoricalCols = columns
+        .filter(c => c.type === 'categorical' || c.type === 'date' || c.type === 'time')
+        .map(c => c.name);
+    const numericalCols = columns
+        .filter(c => c.type === 'numerical' || c.type === 'currency' || c.type === 'percentage')
+        .map(c => c.name);
+    const recentHistory = chatHistory
+        .slice(-10)
+        .map(m => `${m.sender === 'ai' ? 'You' : 'User'}: ${m.text}`)
+        .join('\n');
+    const actionTraceHistory =
+        recentActionTraces.length > 0
+            ? recentActionTraces
+                  .slice(-5)
+                  .map(trace => `- [${trace.source}/${trace.status.toUpperCase()}] ${trace.actionType}: ${trace.summary}${trace.details ? ` (${trace.details})` : ''}`)
+                  .join('\n')
+            : 'No prior tool actions have been recorded yet. You are starting fresh. Always observe before acting.';
     const actionTraceSummary = `${actionTraceHistory}\n- [DATA_VIEW] Raw Data Explorer filter: ${rawDataFilterSummary}`;
-    const observationSummary = recentObservations.length > 0
-        ? recentObservations
-            .slice(-5)
-            .map(obs => {
-                const detail = obs.outputs ? JSON.stringify(obs.outputs).slice(0, 160) : 'No structured output reported.';
-                return `- [${obs.status.toUpperCase()}] ${obs.responseType} (action ${obs.actionId.slice(-6)}): ${detail}`;
-            })
-            .join('\n')
-        : 'No runtime observations captured yet for this session.';
+    const observationSummary =
+        recentObservations.length > 0
+            ? recentObservations
+                  .slice(-5)
+                  .map(obs => {
+                      const detail = obs.outputs ? JSON.stringify(obs.outputs).slice(0, 160) : 'No structured output reported.';
+                      return `- [${obs.status.toUpperCase()}] ${obs.responseType} (action ${obs.actionId.slice(-6)}): ${detail}`;
+                  })
+                  .join('\n')
+            : 'No runtime observations captured yet for this session.';
     const planStateSummary = planState
-        ? `Goal: ${planState.goal}\nContext: ${planState.contextSummary || '—'}\nProgress: ${planState.progress}\nNext Steps:\n${planState.nextSteps.map((step, idx) => `  ${idx + 1}. [${step.id}] ${step.label}`).join('\n')}\nBlocked By: ${planState.blockedBy || 'Nothing reported.'}\nConfidence: ${typeof planState.confidence === 'number' ? planState.confidence.toFixed(2) : 'Not provided'}\nReferenced Observations: ${(planState.observationIds && planState.observationIds.length > 0) ? planState.observationIds.join(', ') : 'None specified.'}`
+        ? `Goal: ${planState.goal}\nContext: ${planState.contextSummary || '—'}\nProgress: ${planState.progress}\nNext Steps:\n${planState.nextSteps
+              .map((step, idx) => `  ${idx + 1}. [${step.id}] ${step.label}`)
+              .join('\n')}\nBlocked By: ${planState.blockedBy || 'Nothing reported.'}\nConfidence: ${
+              typeof planState.confidence === 'number' ? planState.confidence.toFixed(2) : 'Not provided'
+          }\nReferenced Observations: ${
+              planState.observationIds && planState.observationIds.length > 0
+                  ? planState.observationIds.join(', ')
+                  : 'None specified.'
+          }`
         : 'No structured goal has been recorded yet. Your first action must be a plan_state_update that defines a clear goal, ties it to current data, and lists concrete next steps.';
 
-    return `
-        You are an expert data analyst and business strategist, required to operate using a Reason-Act (ReAct) framework. For every action you take, you must first explain your reasoning in the 'reason' field, and then define the action itself. Your goal is to respond to the user by providing insightful analysis and breaking down your response into a sequence of these reason-action pairs. Your final conversational responses should be in ${language}.
-        
-        **PLAN TRACKER PROTOCOL (Follow exactly):**
-        - Every action JSON object MUST include \`type\`, \`responseType\`, \`stepId\`, and a monotonic \`stateTag\` formatted as "<epochMs>-<seq>" (or a supported label such as \`awaiting_clarification\`).
-        - Every \`plan_state_update\` action MUST list \`nextSteps\` as objects with \`id\` (kebab-case, >=3 characters) and \`label\` (clear description).
-        - For EVERY other action (text_response, dom_action, execute_js_code, etc.) you MUST set \`stepId\` to the \`id\` of the plan step you are executing. If you need a brand-new step, emit a new plan_state_update first.
-        - The plan_state_update payload must include \`planId\`, \`currentStepId\`, and a \`steps\` array where each entry has \`intent\` and \`status\` (\`ready\`|\`in_progress\`|\`done\`).
-        - Emit at most **two actions per turn**: the \`plan_state_update\` plus a single atomic action (text response, clarification, dom_action, etc.).
-        - When you need the user to choose or clarify something, the atomic action must be \`await_user\` (not \`text_response\`). Include the full question + at least two numbered options inside the \`text\` field, set \`meta.awaitUser=true\`, and then wait for the user reply—no other tools may run until then.
-        - Keep each action's \`reason\` under 280 characters (ideally ≤2 sentences) and tie it explicitly to the plan step being executed.
-        - For any \`dom_action\`, include \`domAction.target\` with either \`byId\`, \`byTitle\`, or \`selector\`. If you cannot resolve a target, downgrade to a \`text_response\` explaining that the user must choose a card.
-        - When you complete a step, your reason must explicitly mention it, and you should remove or reorder steps in the following plan_state_update so the UI stays in sync. If you are waiting on user input or clarification, set \`plan_state_update.blockedBy\` to describe the outstanding question AND set \`plan_state_update.stateTag\` to \`awaiting_clarification\`; this tells the runtime to pause automatic continuing.
+    const instructions = `
+You are an expert data analyst and strategist operating with a Reason-Act (ReAct) framework. Every action needs a short reason first, then the action payload. Keep final conversational replies in ${language}.
+`.trim();
 
-        **CORE ANALYSIS BRIEFING (Your Internal Summary):**
-        ---
-        ${aiCoreAnalysisSummary || "No core analysis has been performed yet."}
-        ---
-        **DATA PREPARATION LOG (How the raw data was initially cleaned):**
-        ---
-        ${dataPreparationPlan ? `Explanation: ${dataPreparationPlan.explanation}\nCode Executed: \`\`\`javascript\n${dataPreparationPlan.jsFunctionBody}\n\`\`\`` : "No AI-driven data preparation was performed."}
-        ---
-        **LONG-TERM MEMORY (Relevant past context, ordered by relevance):**
-        ---
-        ${longTermMemory.length > 0 ? longTermMemory.join('\n---\n') : "No specific long-term memories seem relevant to this query."}
-        ---
-        **AGENT PLAN STATE (Goal tracker shared with the UI):**
-        ---
-        ${planStateSummary}
-        ---
-        **Your Knowledge Base (Real-time Info):**
-        - **Dataset Columns**:
-            - Categorical: ${categoricalCols.join(', ')}
-            - Numerical: ${numericalCols.join(', ')}
-        - **Analysis Cards on Screen (Sample of up to 100 rows each)**:
-            ${cardContext.length > 0 ? JSON.stringify(cardContext, null, 2) : "No cards yet."}
-        - **Raw Data Sample (first 20 rows):**
-            ${rawDataSample.length > 0 ? JSON.stringify(rawDataSample, null, 2) : "No raw data available."}
+    const planProtocol = `
+PLAN TRACKER PROTOCOL (Follow exactly):
+- Every action JSON must include \`type\`, \`responseType\`, \`stepId\`, and a monotonic \`stateTag\`.
+- \`plan_state_update\` entries must list \`nextSteps\` objects (id + label) and a \`steps\` array including \`intent\` + \`status\`.
+- Emit at most two actions per turn (plan_state_update + one atomic action). Reasons ≤280 chars referencing the plan step.
+- Use \`await_user\` when the user must choose; include numbered options and set \`meta.awaitUser=true\`.
+- For \`dom_action\`, always specify \`domAction.target\`. If the target is unknown, fall back to a text_response asking the user.
+- When blocked, set \`plan_state_update.blockedBy\` and change its stateTag to \`awaiting_clarification\`.
+`.trim();
 
-        **Agent Runtime (Pipeline Awareness):**
-        - The frontend runs you through **Context Builder → Planner → Action Dispatcher**. Stay concise so downstream executors can follow the plan.
-        - Each action **must** include a \`stateTag\` (use either a known label such as \`context_ready\` or mint "<epochMs>-<seq>" tokens to keep them strictly increasing).
+    const analysisBriefing = `
+CORE ANALYSIS BRIEFING:
+${aiCoreAnalysisSummary || 'No core analysis has been performed yet.'}
+`.trim();
 
-        **Recent Conversation (for flow):**
-        ${recentHistory}
+    const prepLog = `
+DATA PREPARATION LOG:
+${dataPreparationPlan ? `Explanation: ${dataPreparationPlan.explanation}\nCode:\n${dataPreparationPlan.jsFunctionBody}` : 'No AI-driven data preparation was performed.'}
+`.trim();
 
-        **Your Recent Tool Actions (Observe → Check → Act log):**
-        ${actionTraceSummary}
-        
-        **Runtime Observations (Newest up to 5):**
-        ${observationSummary}
+    const memoryBlock = `
+LONG-TERM MEMORY:
+${longTermMemory.length > 0 ? longTermMemory.join('\n---\n') : 'No specific long-term memories are relevant.'}
+`.trim();
 
-        **The user's latest message is:** "${userPrompt}"
+    const planStateBlock = `
+AGENT PLAN STATE:
+${planStateSummary}
+`.trim();
 
-        **Your Available Actions & Tools:**
-        You MUST respond by creating a sequence of one or more actions in a JSON object.
-        1.  **text_response**: For conversation. If your text explains a specific card, you MUST include its 'cardId'.
-        2.  **plan_creation**: To create a NEW chart. Use a 'defaultTopN' of 8 for readability on high-cardinality columns. When the user limits the analysis to a specific entity/segment (e.g., “only Allylink Pte Ltd”), populate \`plan.rowFilter\` with \`{ column, values[] }\` so the dataset is sliced *before* aggregation. Matching values must use the exact text that appears in the spreadsheet; include every relevant alias if there are multiple spellings. Always inspect the raw rows/cards to confirm the spelling; when multiple candidates exist, list them explicitly and, if you still cannot decide, issue a \`clarification_request\` with those concrete values instead of guessing. **Important**: if the user does NOT re-affirm the previous filter when they switch topics (for example, they now want a global Project Code view after looking at a single Account), you must reset \`plan.rowFilter\` to \`null\` so the new card covers the full dataset by default. **If the next pending plan step is to build or adjust a chart, your very next action MUST be a \`plan_creation\` (or relevant chart \`dom_action\`) and your \`reason\` must explicitly say you are carrying out that chart step (e.g., "Building the invoice_month_standard bar chart now"). Do NOT run other tools (e.g., \`execute_js_code\`) until that chart step is satisfied.**
-        3.  **dom_action**: To INTERACT with an EXISTING card. Available tools: 
-            - \`highlightCard\`: Scroll and spotlight a chart.
-            - \`changeCardChartType\`: Switch among bar/line/pie/doughnut/scatter/combo.
-            - \`showCardData\`: Toggle the full data table visibility (set \`visible\` true/false).
-            - \`filterCard\`: Apply the card-level categorical filter (specify \`column\` + \`values\` array).
-            - \`setTopN\`: Change the Top N dropdown. Provide a positive \`topN\` integer; omit it to revert to “All”.
-            - \`toggleHideOthers\`: Check/uncheck the “Hide Others” box (pass \`hide: true\`/false, or omit to flip).
-            - \`toggleLegendLabel\`: Simulate clicking a legend label (\`label\` must match the on-screen text exactly).
-            - \`exportCard\`: Trigger the export menu (\`format\` = 'png' | 'csv' | 'html').
-            - \`removeCard\`: Remove an incorrect/irrelevant chart. Pass the exact \`cardId\` (preferred). If you only know the title, set \`cardTitle\` and the runtime will resolve the matching card when possible.
-        4.  **execute_js_code**: For PERMANENT data transformations (creating new columns, deleting rows). This action WILL modify the main dataset and cause ALL charts to regenerate. Whenever you emit this action you MUST supply a fully-formed JavaScript function body (no placeholders, no empty strings). Use the provided helpers—\`_util.parseNumber\`, \`_util.splitNumericString\`, \`_util.groupBy\`, \`_util.pivot\`, \`_util.join\`, and \`_util.rollingWindow\`—instead of writing ad-hoc code for these operations. If you cannot write the code confidently, do NOT emit this action—explain the limitation instead. Use it for requests like "Remove all data from the USA".
-        5.  **filter_spreadsheet**: For TEMPORARY, exploratory filtering of the Raw Data Explorer view. This action does NOT modify the main dataset and does NOT affect the analysis cards. Use it for requests like "show me record ORD1001" or "find all entries for Hannah". If the user expects the final chart to stay filtered, you must encode that scope inside \`plan.rowFilter\` (or permanently transform the data) instead of relying on this temporary tool. If the user simply says "show the raw data" without a specific condition, set \`args.query\` to \`"show entire table"\` (or leave it blank) so the UI will reveal every row.
-        6.  **clarification_request**: To ask the user for more information when their request is ambiguous.
-            - **Use Case**: The user says "show sales" but there are multiple sales-related columns ('Sales_USD', 'Sales_Units'). DO NOT GUESS. Ask for clarification.
-            - **Auto-Resolve Rule**: If there is only ONE reasonable column/dimension that fits the request (e.g., the dataset only contains a single revenue column), you must confidently pick it yourself and continue without asking the user.
-            - **Payload**: You must provide a 'clarification' object with:
-                - \`question\`: The question for the user (e.g., "Which sales metric do you mean?").
-                - \`options\`: Provide user-friendly \`label\` text, but the \`value\` MUST match a real column name exactly (including case/underscores) so the UI can plug it directly into the plan. Never invent or paraphrase column ids. **You must supply at least two options whenever you emit a clarification.** If you have only one viable candidate, do not issue a clarification—make the decision yourself.
-                - \`pendingPlan\`: The partial plan you have constructed so far. **You MUST fill out the other fields of the plan with your best guess.** For example, when asking about the \`valueColumn\`, you must still provide a sensible \`groupByColumn\`, \`aggregation\` (e.g., 'sum'), and \`chartType\` (e.g., 'bar'). The user is only clarifying one missing piece.
-                - \`targetProperty\`: The name of the property in the plan that the user's choice will fill (e.g., "valueColumn").
+    const cardSummaries =
+        cardContext.length > 0
+            ? cardContext
+                  .slice(0, 6)
+                  .map(card => `  - ${card.title}${card.chartType ? ` (${card.chartType})` : ''}`)
+                  .join('\n')
+            : '  - No analysis cards yet.';
+    const rawDataPreview =
+        rawDataSample.length > 0 ? JSON.stringify(rawDataSample.slice(0, 5), null, 2) : 'No raw data preview available.';
 
-        **Decision-Making Process (Observe → Think → Act):**
-        - **StateTag Etiquette**: Whenever you finish an action, populate \`stateTag\` with either a minted "<epochMs>-<seq>" token or one of the allowed labels (\`context_ready\`, \`needs_clarification\`, \`awaiting_clarification\`, \`transform_drafted\`, \`transform_ready\`, \`analysis_shared\`, \`awaiting_data\`, \`error_retrying\`). Never invent new labels; downstream middleware enforces this whitelist.
-        - **OBSERVE**: Begin every response by explicitly noting what you see in the dataset, the existing cards, and the user's prompt. Observe before you plan. When creating a new plan, OBSERVE the relevant raw data sample (up to 20 rows) and any existing cards to understand context.
-        - **THINK (Reason)**: After observing, reason about the user's request. What is their goal? Can it be answered from memory, or does it require new analysis? What is the first logical step? Formulate this reasoning and place it in the 'reason' field of your action. This field is MANDATORY for every action and must reference what you just observed.
-        - **ACT**: Based on your reason, choose the most appropriate action from your toolset and define its parameters in the same action object.
-        - **CRITICAL RULE ON AMBIGUITY**: If the user's request is ambiguous, you must either resolve it yourself (when there is only one reasonable interpretation) or use the \`clarification_request\` action. For example, if they ask to group by "category" and there is a "Product_Category" and a "Customer_Category" column, you must ask them to clarify which one they intend to use. But if there is only one "category" column, proceed without asking. When you do ask, ensure every option's \`value\` is an actual column name from the dataset (case-sensitive, including underscores).
-        **Multi-Step Task Planning:** For complex requests that require multiple steps (e.g., "compare X and Y, then summarize"), you MUST adopt a planner persona.
-        1.  **Plan-State Loop**: Every turn must begin with a \`plan_state_update\` action. Use it to restate the latest user goal (or refine the previous one), summarize what you learned from prior observations, list concrete next steps, and cite observation IDs you are relying on. Update this again whenever your understanding materially changes.
-        2.  **Formulate a Plan**: In the \`reason\` of your VERY FIRST non-plan_state action, outline your tactical steps ("Plan: 1. ...").
-        3.  **Execute the Plan**: Decompose your plan into a sequence of \`actions\`. Each action must have its own \`reason\` explaining that specific step. This allows you to chain tools together to solve the problem.
-        - **CRITICAL**: If the user asks where a specific data value comes from (like 'Software Product 10') or how the data was cleaned, you MUST consult the **DATA PREPARATION LOG**. Use a 'text_response' to explain the transformation in simple, non-technical language. You can include snippets of the code using markdown formatting to illustrate your point.
-        - **Suggest Next Steps**: After successfully answering the user's request, you should add one final \`text_response\` action to proactively suggest a logical next step or a relevant follow-up question. This guides the user and makes the analysis more conversational. Example: "Now that we've seen the regional breakdown, would you like to explore the top-performing product categories within the East region?"
-        - **EXAMPLE of Chaining**:
-          1.  Action 1: { type: 'execute_js_code', responseType: 'execute_js_code', stepId: 'derive-profit-margin', stateTag: '1731234567890-1', reason: "The user is asking for profit margin, but that column doesn't exist. I need to calculate it from 'Revenue' and 'Cost'.", code: { ... } }
-          2.  Action 2: { type: 'plan_creation', responseType: 'plan_creation', stepId: 'plan-profit-margin-chart', stateTag: '1731234567890-2', reason: "Now that I have the 'Profit Margin' column, I need to create a chart to find the product with the highest average margin.", plan: { ... } }
-          3.  Action 3: { type: 'text_response', responseType: 'text_response', stepId: 'summarize-profit-margin', stateTag: '1731234567890-3', reason: "The chart is created. I can now see the result and answer the user's question, explaining what I did.", text: "I've calculated the profit margin and created a new chart. It looks like 'Product A' has the highest margin." }
-        - Always be conversational. Use 'text_response' actions to acknowledge the user and explain what you are doing, especially after a complex series of actions.
-    `;
+    const knowledgeBase = `
+KNOWLEDGE BASE:
+- Dataset columns → Categorical: ${categoricalCols.join(', ') || 'n/a'}
+- Dataset columns → Numerical: ${numericalCols.join(', ') || 'n/a'}
+- Analysis cards:
+${cardSummaries}
+- Raw data sample (first 5 rows):
+${rawDataPreview}
+`.trim();
+
+    const runtimeNotes = `
+Agent runtime notes:
+- Pipeline: Context Builder → Planner → Action Dispatcher. Keep plans concise for downstream executors.
+- Ensure \`stateTag\` tokens stay strictly increasing (use "<epochMs>-<seq>" as a fallback).
+`.trim();
+
+    const conversationBlock = `
+Recent conversation:
+${recentHistory || 'No prior conversation.'}
+`.trim();
+
+    const actionBlock = `
+Recent tool actions:
+${actionTraceSummary}
+`.trim();
+
+    const observationBlock = `
+Runtime observations (latest up to 5):
+${observationSummary}
+`.trim();
+
+    const userRequestBlock = `
+Latest user message: "${userPrompt}"
+
+Respond with a JSON object containing an "actions" array. Example (pseudocode):
+{
+  "actions": [
+    { "type": "plan_state_update", ... },
+    { "type": "text_response", ... }
+  ]
+}
+
+Primary actions available: text_response, plan_creation, dom_action, execute_js_code, clarification_request, await_user, filter_spreadsheet, proceed_to_analysis. Always acknowledge the user via text_response when you finish a complex step.
+`.trim();
+
+    const sections: PromptSection[] = [
+        { label: 'Instructions', content: instructions, required: true, priority: 0 },
+        { label: 'Plan protocol', content: planProtocol, required: true, priority: 1 },
+        { label: 'Core analysis', content: analysisBriefing, priority: 3 },
+        { label: 'Data prep', content: prepLog, priority: 4 },
+        { label: 'Long-term memory', content: memoryBlock, priority: 5 },
+        { label: 'Plan state', content: planStateBlock, priority: 2 },
+        { label: 'Knowledge base', content: knowledgeBase, priority: 4 },
+        { label: 'Runtime notes', content: runtimeNotes, priority: 6 },
+        { label: 'Conversation', content: conversationBlock, priority: 6 },
+        { label: 'Action traces', content: actionBlock, priority: 6 },
+        { label: 'Observations', content: observationBlock, priority: 6 },
+        { label: 'User request', content: userRequestBlock, required: true, priority: 2 },
+    ];
+
+    const { prompt, trimmedSections } = composePromptWithBudget(sections);
+    if (trimmedSections.length > 0 && typeof console !== 'undefined') {
+        console.info('[promptBudget] Chat prompt trimmed sections:', trimmedSections);
+    }
+    return prompt;
 };

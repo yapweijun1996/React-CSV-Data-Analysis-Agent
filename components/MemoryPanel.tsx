@@ -23,6 +23,7 @@ const MEMORY_CAPACITY_KB = 5 * 1024; // 5 MB
 export const MemoryPanel: React.FC = () => {
     const isOpen = useAppStore(state => state.isMemoryPanelOpen);
     const addToast = useAppStore(state => state.addToast);
+    const resetConversationMemory = useAppStore(state => state.resetConversationMemory);
     const onClose = () => useAppStore.getState().setIsMemoryPanelOpen(false);
 
     const [documents, setDocuments] = useState<VectorStoreDocument[]>([]);
@@ -105,11 +106,16 @@ export const MemoryPanel: React.FC = () => {
         }
     };
     
-    const handleClearAll = () => {
-        if (window.confirm('Are you sure you want to clear all items from the AI\'s memory? This cannot be undone.')) {
-            vectorStore.clear();
+    const handleResetConversationMemory = () => {
+        if (
+            window.confirm(
+                'Reset conversation memory? This clears the AI’s long-term memory (including cards and summaries).',
+            )
+        ) {
+            resetConversationMemory();
             refreshDocuments();
             setSearchResults([]);
+            addToast('Conversation memory reset.', 'info');
         }
     };
     
@@ -214,8 +220,11 @@ export const MemoryPanel: React.FC = () => {
                         <div className="flex justify-between items-center mb-2 flex-shrink-0">
                             <h3 className="font-semibold text-slate-800">All Stored Memories ({documents.length})</h3>
                             {documents.length > 0 && (
-                                <button onClick={handleClearAll} className="text-xs text-red-600 hover:underline">
-                                    Clear All
+                                <button
+                                    onClick={handleResetConversationMemory}
+                                    className="text-xs text-red-600 hover:underline"
+                                >
+                                    Reset Conversation Memory
                                 </button>
                             )}
                         </div>
@@ -226,21 +235,41 @@ export const MemoryPanel: React.FC = () => {
                                 </div>
                             ) : (
                                 <ul className="space-y-2">
-                                    {documents.map(doc => (
-                                        <li 
-                                            key={doc.id}
-                                            id={`memory-doc-${doc.text.substring(0, 30)}`}
-                                            className={`p-3 bg-slate-50 rounded-lg text-sm text-slate-800 border border-slate-200 flex justify-between items-start group transition-all duration-300 ${highlightedDocText === doc.text ? 'border-blue-500 ring-2 ring-blue-500' : ''}`}>
-                                            <p className="flex-grow pr-4 break-words">{doc.text}</p>
-                                            <button 
-                                                onClick={() => handleDelete(doc.id)}
-                                                className="p-1 text-slate-400 rounded-full hover:bg-red-100 hover:text-red-600 transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0"
-                                                title="Delete Memory"
-                                            >
-                                                <DeleteIcon />
-                                            </button>
-                                        </li>
-                                    ))}
+                                    {documents.map(doc => {
+                                        const metadata = doc.metadata ?? {};
+                                        const summaryLevel = metadata.summaryLevel ?? 'raw';
+                                        const kind = metadata.kind ?? 'general';
+                                        const rangeLabel =
+                                            metadata.startIndex != null && metadata.endIndex != null
+                                                ? `Messages ${metadata.startIndex + 1}-${metadata.endIndex + 1}`
+                                                : null;
+                                        return (
+                                            <li 
+                                                key={doc.id}
+                                                id={`memory-doc-${doc.text.substring(0, 30)}`}
+                                                className={`p-3 bg-slate-50 rounded-lg text-sm text-slate-800 border border-slate-200 flex justify-between items-start group transition-all duration-300 ${highlightedDocText === doc.text ? 'border-blue-500 ring-2 ring-blue-500' : ''}`}>
+                                                <div className="flex-grow pr-4 break-words space-y-1">
+                                                    <div className="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-wide text-slate-500">
+                                                        <span className="px-2 py-0.5 border border-slate-300 rounded-full bg-white">
+                                                            {kind === 'conversation' ? 'Conversation' : 'Card'}
+                                                        </span>
+                                                        <span className={`px-2 py-0.5 rounded-full ${summaryLevel === 'summary' ? 'bg-indigo-100 text-indigo-700 border border-indigo-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'}`}>
+                                                            {summaryLevel === 'summary' ? 'Compressed' : 'Raw'}
+                                                        </span>
+                                                        {rangeLabel && <span className="text-slate-400">{rangeLabel}</span>}
+                                                    </div>
+                                                    <p>{doc.text}</p>
+                                                </div>
+                                                <button 
+                                                    onClick={() => handleDelete(doc.id)}
+                                                    className="p-1 text-slate-400 rounded-full hover:bg-red-100 hover:text-red-600 transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0"
+                                                    title="Delete Memory"
+                                                >
+                                                    <DeleteIcon />
+                                                </button>
+                                            </li>
+                                        );
+                                    })}
                                 </ul>
                             )}
                         </div>

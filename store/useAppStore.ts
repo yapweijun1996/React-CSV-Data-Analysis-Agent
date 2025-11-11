@@ -42,6 +42,8 @@ import {
     GraphToolInFlightSnapshot,
     LlmUsageEntry,
     GraphToolMeta,
+    ConversationMemoryState,
+    ConversationMemoryChunk,
 } from '../types';
 import type { GraphObservation } from '@/src/graph/schema';
 import { executePlan, applyTopNWithOthers, PlanExecutionError } from '../utils/dataProcessor';
@@ -51,6 +53,7 @@ import {
     generateFinalSummary,
     generateCoreAnalysisSummary,
     generateProactiveInsights,
+    generateConversationMemorySummary,
     PlanGenerationFatalError,
     type PlanGenerationWarning,
 } from '../services/aiService';
@@ -118,6 +121,7 @@ let autoSaveManager: AutoSaveManager | null = null;
 let latestAutoSaveConfig: AutoSaveConfig | null = null;
 let graphBridgeInitialized = false;
 let graphBridgeRuntime: 'legacy' | 'langgraph' | null = null;
+let conversationMemoryCompactionInFlight = false;
 let graphBridgeUnsubscribe: (() => void) | null = null;
 
 const updateAutoSaveConfiguration = (settings: Settings) => {
@@ -184,6 +188,16 @@ const requestFullScanApproval = (title: string): boolean => {
 };
 
 const MAX_LLM_USAGE_LOG = 40;
+const CONVERSATION_RAW_CHUNK_SIZE = 6;
+const CONVERSATION_RECENT_WINDOW = 12;
+const CONVERSATION_RAW_CHUNKS_TO_KEEP = 2;
+const CONVERSATION_MIN_SUMMARY_MESSAGES = 10;
+
+const createInitialConversationMemoryState = (): ConversationMemoryState => ({
+    lastIndexedMessage: 0,
+    rawChunks: [],
+    summaryChunks: [],
+});
 
 const createLlmUsageEntry = (usage: Omit<LlmUsageEntry, 'id' | 'timestamp'>): LlmUsageEntry => ({
     ...usage,
@@ -222,6 +236,23 @@ const mapUsageMetricsToEntry = (
     totalTokens: usage.totalTokens,
     context: usage.operation ?? fallbackContext,
 });
+
+const formatChatMessageForMemory = (message: ChatMessage): string => {
+    const timestamp =
+        message.timestamp instanceof Date && !Number.isNaN(message.timestamp.getTime())
+            ? message.timestamp
+            : new Date(message.timestamp);
+    const speaker = message.sender === 'ai' ? 'AI' : 'User';
+    const timeLabel = Number.isNaN(timestamp.getTime())
+        ? 'Unknown time'
+        : timestamp.toLocaleString(undefined, { hour12: false });
+    return `[${timeLabel}] ${speaker}: ${message.text}`;
+};
+
+const buildConversationTranscript = (messages: ChatMessage[], startIndex = 0): string =>
+    messages
+        .map((message, offset) => `${startIndex + offset + 1}. ${formatChatMessageForMemory(message)}`)
+        .join('\n');
 
 const graphObservationKindLabel: Record<string, string> = {
     langchain_plan: 'LangChain Plan',
@@ -537,6 +568,7 @@ const buildSerializableAppState = (state: AppStore): AppState => ({
     initialDataSample: state.initialDataSample,
     datasetHash: state.datasetHash,
     vectorStoreDocuments: vectorStore.getDocuments(),
+    conversationMemoryState: state.conversationMemoryState,
     spreadsheetFilterFunction: state.spreadsheetFilterFunction,
     aiFilterExplanation: state.aiFilterExplanation,
     datasetProfile: state.datasetProfile,
@@ -731,6 +763,7 @@ const initialAppState: AppState = {
         datasetHash: null,
         datasetRuntimeConfig: null,
     vectorStoreDocuments: [],
+    conversationMemoryState: createInitialConversationMemoryState(),
     spreadsheetFilterFunction: null,
     aiFilterExplanation: null,
     datasetProfile: null,
@@ -1961,7 +1994,16 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 markTimelineStep();
 
                 const cardMemoryText = `[Chart: ${preparedPlan.title}] Description: ${preparedPlan.description}. AI Summary: ${summary.split('---')[0]}`;
-                await vectorStore.addDocument({ id: newCard.id, text: cardMemoryText });
+                await vectorStore.addDocument({
+                    id: newCard.id,
+                    text: cardMemoryText,
+                    metadata: {
+                        kind: 'card',
+                        summaryLevel: 'summary',
+                        cardId: newCard.id,
+                        createdAt: new Date().toISOString(),
+                    },
+                });
                 addProgress(`View #${newCard.id.slice(-6)} indexed for long-term memory.`);
                 if (datasetId && dataRefId) {
                     const warningsCount = aggregationMeta?.warnings?.length ?? 0;
@@ -2037,7 +2079,16 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             }));
 
             addProgress("Indexing core analysis for long-term memory...");
-            await vectorStore.addDocument({ id: 'core-summary', text: `Core Analysis Summary: ${coreSummary}` });
+            await vectorStore.addDocument({
+                id: 'core-summary',
+                text: `Core Analysis Summary: ${coreSummary}`,
+                metadata: {
+                    kind: 'card',
+                    summaryLevel: 'summary',
+                    createdAt: new Date().toISOString(),
+                    cardId: 'core-summary',
+                },
+            });
             addProgress("Core analysis indexed.");
 
             if (shouldAbort()) return createdCards;
@@ -2593,6 +2644,130 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 : '快速模式开启：聚合优先使用采样。';
         get().addProgress(summary);
     },
+    resetConversationMemory: () => {
+        vectorStore.clear();
+        set({
+            conversationMemoryState: createInitialConversationMemoryState(),
+            vectorStoreDocuments: [],
+            chatMemoryPreview: [],
+            chatMemoryExclusions: [],
+            chatMemoryPreviewQuery: '',
+            isMemoryPreviewLoading: false,
+        });
+        get().addProgress('Conversation memory has been reset.');
+    },
+    maybeCompactConversationMemory: async () => {
+        if (conversationMemoryCompactionInFlight) return;
+        const state = get();
+        if (state.chatHistory.length === 0) return;
+
+        conversationMemoryCompactionInFlight = true;
+        try {
+            if (!vectorStore.getIsInitialized()) {
+                await vectorStore.init(state.addProgress);
+            }
+            if (!vectorStore.getIsInitialized()) return;
+
+            let updated = { ...state.conversationMemoryState };
+            const { chatHistory } = state;
+            const now = new Date().toISOString();
+            const availableToIndex = Math.max(0, chatHistory.length - CONVERSATION_RECENT_WINDOW);
+
+            while (
+                updated.lastIndexedMessage + CONVERSATION_RAW_CHUNK_SIZE <= availableToIndex &&
+                CONVERSATION_RAW_CHUNK_SIZE > 0
+            ) {
+                const startIndex = updated.lastIndexedMessage;
+                const endIndex = startIndex + CONVERSATION_RAW_CHUNK_SIZE - 1;
+                const chunkMessages = chatHistory.slice(startIndex, endIndex + 1);
+                if (chunkMessages.length === 0) break;
+
+                const chunkId = `conv-raw-${startIndex}-${endIndex}-${Date.now().toString(36)}`;
+                const transcript = buildConversationTranscript(chunkMessages, startIndex);
+                await vectorStore.addDocument({
+                    id: chunkId,
+                    text: `Conversation Memory (raw snippet)\n${transcript}`,
+                    metadata: {
+                        kind: 'conversation',
+                        summaryLevel: 'raw',
+                        startIndex,
+                        endIndex,
+                        createdAt: now,
+                        messageCount: chunkMessages.length,
+                    },
+                });
+                updated = {
+                    ...updated,
+                    lastIndexedMessage: endIndex + 1,
+                    rawChunks: [
+                        ...updated.rawChunks,
+                        {
+                            id: chunkId,
+                            startIndex,
+                            endIndex,
+                            summaryLevel: 'raw',
+                            createdAt: now,
+                        },
+                    ],
+                };
+            }
+
+            if (updated.rawChunks.length > CONVERSATION_RAW_CHUNKS_TO_KEEP) {
+                const removableCount = updated.rawChunks.length - CONVERSATION_RAW_CHUNKS_TO_KEEP;
+                const chunksToSummarize = updated.rawChunks.slice(0, removableCount);
+                const totalMessages = chunksToSummarize.reduce(
+                    (sum, chunk) => sum + (chunk.endIndex - chunk.startIndex + 1),
+                    0,
+                );
+                if (totalMessages >= CONVERSATION_MIN_SUMMARY_MESSAGES) {
+                    const summaryStart = chunksToSummarize[0].startIndex;
+                    const summaryEnd = chunksToSummarize[chunksToSummarize.length - 1].endIndex;
+                    const messagesForSummary = chatHistory.slice(summaryStart, summaryEnd + 1);
+                    const summaryText = await generateConversationMemorySummary(messagesForSummary, state.settings, {
+                        onUsage: usage => state.recordLlmUsage(mapUsageMetricsToEntry(usage, 'memory.conversation')),
+                    });
+                    const summaryId = `conv-summary-${summaryStart}-${summaryEnd}-${Date.now().toString(36)}`;
+                    await vectorStore.addDocument({
+                        id: summaryId,
+                        text: `Compressed Memory (messages ${summaryStart + 1}-${summaryEnd + 1})\n${summaryText}`,
+                        metadata: {
+                            kind: 'conversation',
+                            summaryLevel: 'summary',
+                            startIndex: summaryStart,
+                            endIndex: summaryEnd,
+                            createdAt: new Date().toISOString(),
+                            sourceDocIds: chunksToSummarize.map(chunk => chunk.id),
+                            messageCount: messagesForSummary.length,
+                        },
+                    });
+                    chunksToSummarize.forEach(chunk => vectorStore.deleteDocument(chunk.id));
+                    updated = {
+                        ...updated,
+                        rawChunks: updated.rawChunks.slice(removableCount),
+                        summaryChunks: [
+                            ...updated.summaryChunks,
+                            {
+                                id: summaryId,
+                                startIndex: summaryStart,
+                                endIndex: summaryEnd,
+                                summaryLevel: 'summary',
+                                createdAt: new Date().toISOString(),
+                            },
+                        ],
+                    };
+                }
+            }
+
+            set({
+                conversationMemoryState: updated,
+                vectorStoreDocuments: vectorStore.getDocuments(),
+            });
+        } catch (error) {
+            console.error('Conversation memory compaction failed:', error);
+        } finally {
+            conversationMemoryCompactionInFlight = false;
+        }
+    },
     recordLlmUsage: usage => {
         const estimatedCostUsd =
             usage.estimatedCostUsd != null
@@ -2964,6 +3139,15 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
     },
 };
 });
+
+useAppStore.subscribe(
+    state => state.chatHistory.length,
+    (length, previousLength) => {
+        if (length > previousLength) {
+            void useAppStore.getState().maybeCompactConversationMemory();
+        }
+    },
+);
 
 updateAutoSaveConfiguration(useAppStore.getState().settings);
 autoSaveManager = new AutoSaveManager({
