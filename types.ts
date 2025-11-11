@@ -19,6 +19,10 @@ export interface ColumnProfile {
     uniqueValues?: number;
     valueRange?: [number, number];
     missingPercentage?: number;
+    sampleSize?: number;
+    nonNullCount?: number;
+    numericSampleCount?: number;
+    numericSampleRatio?: number;
 }
 
 export interface DatasetProfileSnapshot {
@@ -285,6 +289,9 @@ export interface AggregationMeta {
     durationMs?: number;
     lastRunAt: string;
     filterCount?: number;
+    requestedMode?: 'sample' | 'full';
+    downgradedFrom?: 'sample' | 'full';
+    downgradeReason?: 'timeout' | 'fallback';
 }
 
 export interface ProgressMessage {
@@ -395,6 +402,7 @@ export interface AppState {
     agentAwaitingUserInput: boolean;
     agentAwaitingPromptId: string | null;
     analysisTimeline: AnalysisTimelineState;
+    aggregationModePreference: 'sample' | 'full';
 }
 
 export interface DomActionTarget {

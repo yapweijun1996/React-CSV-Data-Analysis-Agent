@@ -53,6 +53,7 @@ export interface StoreState extends AppState {
     isLastAppliedDataTransformBannerDismissed: boolean;
     interactiveSelectionFilter: SelectionDrilldownFilter | null;
     agentPromptMetrics: AgentPromptMetric[];
+    aggregationModePreference: 'sample' | 'full';
 }
 
 export interface StoreActions {
@@ -150,6 +151,7 @@ export interface StoreActions {
     clearInteractiveSelectionFilter: () => void;
     recordPromptMetric: (metric: AgentPromptMetric) => void;
     clearPromptMetrics: () => void;
+    setAggregationModePreference: (mode: 'sample' | 'full') => void;
 }
 
 export type AppStore = StoreState & StoreActions;

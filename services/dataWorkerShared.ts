@@ -1,4 +1,4 @@
-import { profileData } from '../utils/dataProcessor';
+import { profileData, robustParseFloat } from '../utils/dataProcessor';
 import type { CsvRow, ColumnProfile } from '../types';
 import type { ColumnStoreRecord } from './csvAgentDb';
 import type {
@@ -15,10 +15,16 @@ export interface DataWorkerDeps {
     readAllRows: (datasetId: string) => Promise<CsvRow[]>;
 }
 
+export const COLUMN_METADATA_ERROR = 'COLUMN_METADATA_MISSING';
+
 export const DEFAULT_PROFILE_SAMPLE = 2000;
 export const DEFAULT_SAMPLE_SIZE = 1000;
 export const DEFAULT_AGG_SAMPLE = 3000;
 export const DEFAULT_TIMEOUT_MS = 3000;
+
+const columnMetadataError = (): never => {
+    throw Object.assign(new Error(COLUMN_METADATA_ERROR), { code: COLUMN_METADATA_ERROR });
+};
 
 const simpleHash = (input: string): string => {
     let hash = 0;
@@ -65,7 +71,7 @@ export const buildProfileResult = async (
     ]);
 
     if (!columnRecord) {
-        throw new Error('No cached metadata for this dataset. Try re-uploading the CSV.');
+        columnMetadataError();
     }
 
     if (sampleRows.length === 0) {
@@ -128,15 +134,6 @@ const passesFilter = (row: CsvRow, filters?: AggregatePayload['filter']): boolea
                 return true;
         }
     });
-};
-
-const parseNumeric = (value: any): number | null => {
-    if (value === null || value === undefined) return null;
-    if (typeof value === 'number' && Number.isFinite(value)) return value;
-    const cleaned = normalizeValue(value).replace(/[$,%\s]/g, '').replace(/,/g, '');
-    if (!cleaned) return null;
-    const parsed = Number(cleaned);
-    return Number.isFinite(parsed) ? parsed : null;
 };
 
 const aggregateRows = (
@@ -207,7 +204,7 @@ const aggregateRows = (
                 throw new Error(`Metric ${metric.fn} requires a column.`);
             }
 
-            const numeric = parseNumeric(row[metric.column]);
+            const numeric = robustParseFloat(row[metric.column]);
             if (numeric === null) {
                 return;
             }
@@ -315,9 +312,11 @@ export const runAggregate = async (
 ): Promise<AggregateResult> => {
     const columnRecord = await deps.readColumnStoreRecord(payload.datasetId);
     if (!columnRecord) {
-        throw new Error('No cached metadata for aggregation.');
+        columnMetadataError();
     }
-    const mode: AggregateMode = payload.mode ?? 'sample';
+    const requestedMode: AggregateMode = payload.mode ?? 'sample';
+    const mode: AggregateMode = requestedMode;
+    payload.mode = mode;
     const sampleSize = payload.sampleSize ?? DEFAULT_AGG_SAMPLE;
     try {
         const rows =
@@ -327,7 +326,9 @@ export const runAggregate = async (
         if (rows.length === 0) {
             throw new Error('No rows available for aggregation.');
         }
-        return aggregateRows(rows, payload, columnRecord.rowCount);
+        const result = aggregateRows(rows, payload, columnRecord.rowCount);
+        result.provenance.requestedMode = requestedMode;
+        return result;
     } catch (error) {
         if (error instanceof Error && (error as any).message === 'FULL_SCAN_BLOCKED') {
             throw Object.assign(new Error('Full scan requires confirmation.'), {
@@ -338,6 +339,9 @@ export const runAggregate = async (
             const fallbackRows = await deps.readSampledRows(payload.datasetId, sampleSize);
             const fallback = aggregateRows(fallbackRows, { ...payload, mode: 'sample' }, columnRecord.rowCount);
             fallback.provenance.warnings.push('Full scan timed out. Showing sampled results.');
+            fallback.provenance.requestedMode = requestedMode;
+            fallback.provenance.downgradedFrom = requestedMode;
+            fallback.provenance.downgradeReason = 'timeout';
             return fallback;
         }
         throw error;
@@ -356,6 +360,9 @@ export const buildSampleResult = async (
         deps.readSampledRows(datasetId, n),
         withColumns ? deps.readColumnStoreRecord(datasetId) : Promise.resolve(null),
     ]);
+    if (withColumns && !columnRecord) {
+        columnMetadataError();
+    }
     if (rows.length === 0) {
         throw new Error('No rows available to sample.');
     }

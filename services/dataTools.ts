@@ -1,11 +1,12 @@
 import type { CardKind, CardDataRef } from './csvAgentDb';
-import { saveCardResult, readAllRows, readColumnStoreRecord, readSampledRows } from './csvAgentDb';
+import { saveCardResult, readAllRows, readColumnStoreRecord, readSampledRows, ensureColumnStoreRecord } from './csvAgentDb';
 import type { AnalysisPlan } from '../types';
 import {
     buildProfileResult,
     buildSampleResult,
     runAggregate,
     type DataWorkerDeps,
+    COLUMN_METADATA_ERROR,
 } from './dataWorkerShared';
 import type { AggregatePayload, AggregateResult, ProfileResult, SampleResult } from './dataToolTypes';
 
@@ -140,6 +141,55 @@ const shouldDisableWorker = (reason?: string, hint?: string): boolean => {
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 const formatError = (error: unknown) => (error instanceof Error ? error.message : String(error ?? 'Unknown error'));
 
+const isColumnMetadataError = (reason?: string): boolean => {
+    if (typeof reason !== 'string') return false;
+    return reason.toUpperCase().includes(COLUMN_METADATA_ERROR);
+};
+
+const attemptColumnMetadataRecovery = async (datasetId: string): Promise<boolean> => {
+    try {
+        const record = await ensureColumnStoreRecord(datasetId);
+        if (!record) {
+            console.warn(`[dataTools] Unable to rebuild column metadata for dataset ${datasetId}.`);
+            return false;
+        }
+        console.info(`[dataTools] Rebuilt column metadata for dataset ${datasetId}.`);
+        return true;
+    } catch (error) {
+        console.error(`[dataTools] Failed to recover column metadata for dataset ${datasetId}.`, error);
+        return false;
+    }
+};
+
+const runWithMetadataRecovery = async <T>(
+    datasetId: string | undefined,
+    runner: () => Promise<ToolResult<T>>,
+): Promise<ToolResult<T>> => {
+    let result = await runner();
+    if (!datasetId || result.ok || !isColumnMetadataError(result.reason)) {
+        return result;
+    }
+    const recovered = await attemptColumnMetadataRecovery(datasetId);
+    if (!recovered) {
+        return {
+            ok: false,
+            reason: 'Cached column metadata is unavailable and auto-recovery failed. Please re-upload your CSV.',
+            hint: result.hint,
+            durationMs: result.durationMs,
+        };
+    }
+    const retryResult = await runner();
+    if (!retryResult.ok && isColumnMetadataError(retryResult.reason)) {
+        return {
+            ok: false,
+            reason: 'Cached column metadata is still missing. Please re-upload your CSV.',
+            hint: retryResult.hint,
+            durationMs: retryResult.durationMs,
+        };
+    }
+    return retryResult;
+};
+
 const mainThreadDeps: DataWorkerDeps = {
     readColumnStoreRecord,
     readSampledRows,
@@ -197,15 +247,21 @@ const runWithFallback = async <K extends WorkerAction, R>(
 
 export const dataTools = {
     profile: (datasetId: string, sampleSize?: number) =>
-        runWithFallback<'profile', ProfileResult>('profile', { datasetId, sampleSize }, () =>
-            runLocalProfile(datasetId, sampleSize),
+        runWithMetadataRecovery(datasetId, () =>
+            runWithFallback<'profile', ProfileResult>('profile', { datasetId, sampleSize }, () =>
+                runLocalProfile(datasetId, sampleSize),
+            ),
         ),
     sample: (datasetId: string, options?: { n?: number; withColumns?: boolean }) =>
-        runWithFallback<'sample', SampleResult>('sample', { datasetId, ...(options ?? {}) }, () =>
-            runLocalSample(datasetId, options ?? {}),
+        runWithMetadataRecovery(datasetId, () =>
+            runWithFallback<'sample', SampleResult>('sample', { datasetId, ...(options ?? {}) }, () =>
+                runLocalSample(datasetId, options ?? {}),
+            ),
         ),
     aggregate: (payload: AggregatePayload) =>
-        runWithFallback<'aggregate', AggregateResult>('aggregate', payload, () => runLocalAggregate(payload)),
+        runWithMetadataRecovery(payload.datasetId, () =>
+            runWithFallback<'aggregate', AggregateResult>('aggregate', payload, () => runLocalAggregate(payload)),
+        ),
     createCardFromResult: async ({
         datasetId,
         title,

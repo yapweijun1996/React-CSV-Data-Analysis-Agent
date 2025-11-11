@@ -69,6 +69,17 @@ const AggregationStatusBanner: React.FC<{
     const durationLabel = formatDuration(meta.durationMs);
     const lastRunLabel = formatTimestamp(meta.lastRunAt);
     const warnings = meta.warnings?.filter(Boolean) ?? [];
+    const requestedMode = meta.requestedMode ?? (sampled ? 'sample' : 'full');
+    const downgraded = requestedMode === 'full' && meta.mode !== 'full';
+    const downgradeReason =
+        meta.downgradeReason === 'timeout'
+            ? 'Full scan timed out'
+            : meta.downgradeReason === 'fallback'
+            ? 'Full scan was not available'
+            : null;
+    const downgradeMessage = downgraded
+        ? `${downgradeReason ?? 'Full scan fell back to a sample'} after processing ${meta.processedRows.toLocaleString()} of ${meta.totalRows.toLocaleString()} rows.`
+        : null;
 
     return (
         <div className="mb-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
@@ -93,7 +104,7 @@ const AggregationStatusBanner: React.FC<{
                         </span>
                     </>
                 )}
-                {sampled && onRunFullScan && (
+                {sampled && onRunFullScan && !downgraded && (
                     <button
                         type="button"
                         onClick={() => onRunFullScan()}
@@ -104,6 +115,24 @@ const AggregationStatusBanner: React.FC<{
                     </button>
                 )}
             </div>
+            {downgradeMessage && (
+                <div className="mt-2 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    <WarningIcon />
+                    <span className="flex-1">
+                        {downgradeMessage}{' '}
+                        {onRunFullScan && (
+                            <button
+                                type="button"
+                                onClick={() => onRunFullScan()}
+                                disabled={isRefreshing}
+                                className="ml-1 underline decoration-dotted hover:text-amber-900 disabled:opacity-50"
+                            >
+                                {isRefreshing ? 'Retrying…' : 'Retry full scan'}
+                            </button>
+                        )}
+                    </span>
+                </div>
+            )}
             {warnings.length > 0 && (
                 <div className="mt-2 flex items-start gap-2 text-xs text-amber-700">
                     <WarningIcon />

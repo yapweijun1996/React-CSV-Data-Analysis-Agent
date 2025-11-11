@@ -261,6 +261,7 @@ const buildAggregatePayloadForPlan = (
     datasetId: string | null,
     csvData: CsvData | null,
     rowCountHint?: number,
+    options?: { preferredMode?: 'sample' | 'full' },
 ): AggregatePayload | null => {
     if (!datasetId) return null;
     if (plan.chartType === 'scatter' || plan.chartType === 'combo') return null;
@@ -307,10 +308,15 @@ const buildAggregatePayloadForPlan = (
         orderBy,
         allowFullScan: shouldForceFullScan,
     };
+    const preferredMode = options?.preferredMode;
     if (shouldForceFullScan) {
+        payload.mode = 'full';
         payload.allowFullScan = true;
-    }
-    if (!shouldForceFullScan) {
+    } else if (preferredMode === 'full') {
+        payload.mode = 'full';
+        payload.allowFullScan = true;
+    } else {
+        payload.mode = 'sample';
         payload.allowFullScan = false;
     }
     return payload;
@@ -357,6 +363,7 @@ const convertViewToCard = (view: ViewStoreRecord<CardDataRef>): AnalysisCardData
             totalRows: view.dataRef.rows.length,
             warnings: [],
             lastRunAt: view.createdAt ?? new Date().toISOString(),
+            requestedMode: view.dataRef.sampled ? 'sample' : 'full',
         },
     };
 };
@@ -398,6 +405,7 @@ const initialAppState: AppState = {
     agentAwaitingUserInput: false,
     agentAwaitingPromptId: null,
     analysisTimeline: { stage: 'idle', totalCards: 0, completedCards: 0 },
+    aggregationModePreference: 'sample',
 };
 
 export const useAppStore = create<StoreState & StoreActions>((set, get) => {
@@ -948,7 +956,9 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
 
         const datasetRowCountHint = get().datasetProfile?.rowCount ?? data.data.length;
         const buildAggregatePayload = (plan: AnalysisPlan): AggregatePayload | null =>
-            buildAggregatePayloadForPlan(plan, datasetId, data, datasetRowCountHint);
+            buildAggregatePayloadForPlan(plan, datasetId, data, datasetRowCountHint, {
+                preferredMode: get().aggregationModePreference,
+            });
 
         const aggregateWithWorker = async (
             plan: AnalysisPlan,
@@ -1079,6 +1089,10 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                           durationMs: aggregateDuration,
                           lastRunAt: new Date().toISOString(),
                           filterCount: aggregateResult.provenance.filterCount,
+                          requestedMode:
+                              aggregateResult.provenance.requestedMode ?? aggregateResult.provenance.mode,
+                          downgradedFrom: aggregateResult.provenance.downgradedFrom,
+                          downgradeReason: aggregateResult.provenance.downgradeReason,
                       }
                     : {
                           mode: 'full',
@@ -1091,6 +1105,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                           durationMs: aggregateDuration || undefined,
                           lastRunAt: new Date().toISOString(),
                           filterCount: preparedPlan.rowFilter ? 1 : 0,
+                          requestedMode: get().aggregationModePreference ?? 'sample',
                       };
 
                 const newCard: AnalysisCardData = {
@@ -1555,6 +1570,15 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             })
         }));
     },
+    setAggregationModePreference: (mode) => {
+        if (get().aggregationModePreference === mode) return;
+        set({ aggregationModePreference: mode });
+        const summary =
+            mode === 'full'
+                ? 'Full scan mode enabled — charts will process every cached row.'
+                : 'Sample mode enabled — charts will use a fast preview.';
+        get().addProgress(summary);
+    },
     rerunAggregationForCard: async (cardId, options = {}) => {
         const card = get().analysisCards.find(c => c.id === cardId);
         const datasetId = get().datasetHash;
@@ -1564,7 +1588,9 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             return false;
         }
         const datasetRowCount = get().datasetProfile?.rowCount ?? csvData?.data?.length ?? 0;
-        const payload = buildAggregatePayloadForPlan(card.plan, datasetId, csvData, datasetRowCount);
+        const payload = buildAggregatePayloadForPlan(card.plan, datasetId, csvData, datasetRowCount, {
+            preferredMode: get().aggregationModePreference,
+        });
         if (!payload) {
             get().addProgress(`"${card.plan.title}" cannot be recalculated automatically.`, 'error');
             return false;
@@ -1610,6 +1636,9 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             durationMs: response.durationMs ?? 0,
             lastRunAt: new Date().toISOString(),
             filterCount: aggregateResult.provenance.filterCount,
+            requestedMode: aggregateResult.provenance.requestedMode ?? aggregateResult.provenance.mode,
+            downgradedFrom: aggregateResult.provenance.downgradedFrom,
+            downgradeReason: aggregateResult.provenance.downgradeReason,
         };
         set(state => ({
             analysisCards: state.analysisCards.map(existing =>

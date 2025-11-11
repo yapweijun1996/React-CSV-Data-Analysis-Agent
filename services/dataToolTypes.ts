@@ -68,6 +68,8 @@ export type AggregateResult = {
         queryHash: string;
         filterCount: number;
         warnings: string[];
+        requestedMode?: AggregateMode;
+        downgradedFrom?: AggregateMode;
+        downgradeReason?: 'timeout' | 'fallback';
     };
 };
-

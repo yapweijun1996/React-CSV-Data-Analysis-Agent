@@ -31,8 +31,6 @@
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
     <!-- Papaparse for CSV parsing -->
     <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
-    <!-- IDB for IndexedDB -->
-    <script src="https://unpkg.com/idb@7.1.1/build/umd.js"></script>
     <!-- html-to-image for exporting -->
     <script src="https://unpkg.com/html-to-image@1.11.11/dist/html-to-image.js"></script>
   <script type="importmap">
@@ -108,6 +106,22 @@
         };
 
         const queue = [];
+        window.__CSV_AGENT_PENDING_NOTICES__ = Array.isArray(window.__CSV_AGENT_PENDING_NOTICES__)
+          ? window.__CSV_AGENT_PENDING_NOTICES__
+          : [];
+
+        function pushPendingNotice(message) {
+          if (typeof message !== 'string' || !message.trim()) return;
+          try {
+            if (!Array.isArray(window.__CSV_AGENT_PENDING_NOTICES__)) {
+              window.__CSV_AGENT_PENDING_NOTICES__ = [];
+            }
+            window.__CSV_AGENT_PENDING_NOTICES__.push(message);
+            window.dispatchEvent(new CustomEvent('ai-table-csv-notice', { detail: { message } }));
+          } catch (error) {
+            console.warn('CSV Agent: unable to push pending payload notice.', error);
+          }
+        }
 
         function sanitizeFileStem(rawHeader) {
           if (!rawHeader) return 'report';
@@ -191,7 +205,8 @@
           return keys;
         }
 
-        function consumePendingPayload(key) {
+        function consumePendingPayload(key, options = {}) {
+          const context = options.context === 'url' ? 'url' : 'session';
           if (!key || !('sessionStorage' in window)) return null;
           let raw;
           try {
@@ -203,7 +218,12 @@
             console.warn('CSV Agent: unable to access sessionStorage for pending payload.', error);
             return null;
           }
-          if (!raw) return null;
+          if (!raw) {
+            if (context === 'url') {
+              pushPendingNotice('CSV import payload was not found in this session. Please resend from the report page.');
+            }
+            return null;
+          }
           try {
             const parsed = JSON.parse(raw);
             if (!parsed || typeof parsed.csv !== 'string') return null;
@@ -213,6 +233,7 @@
               Date.now() - parsed.storedAt > PENDING_PAYLOAD_MAX_AGE_MS
             ) {
               console.warn('CSV Agent: pending payload expired, ignoring cached data.');
+              pushPendingNotice('CSV import payload expired (kept longer than 5 minutes). Please resend from the source page.');
               return null;
             }
             return parsed;
@@ -222,14 +243,33 @@
           }
         }
 
+        function extractTimestampFromKey(key) {
+          if (typeof key !== 'string') return 0;
+          const stripped = key.startsWith(PENDING_PAYLOAD_PREFIX)
+            ? key.slice(PENDING_PAYLOAD_PREFIX.length)
+            : key;
+          const timestampPart = stripped.split('_')[0];
+          const value = Number(timestampPart);
+          return Number.isFinite(value) ? value : 0;
+        }
+
         function hydratePendingPayloadFromSession() {
-          const pendingKeys = [];
+          const entries = [];
           const urlKey = consumePendingKeyFromUrl();
-          if (urlKey) pendingKeys.push(urlKey);
-          collectPendingKeysFromSession().forEach((key) => pendingKeys.push(key));
-          const uniqueKeys = Array.from(new Set(pendingKeys));
-          uniqueKeys.forEach((key) => {
-            const payload = consumePendingPayload(key);
+          if (urlKey) entries.push({ key: urlKey, context: 'url' });
+          collectPendingKeysFromSession().forEach((key) => entries.push({ key, context: 'session' }));
+          const deduped = new Map();
+          entries.forEach((entry) => {
+            if (!entry.key) return;
+            if (!deduped.has(entry.key) || entry.context === 'url') {
+              deduped.set(entry.key, entry.context);
+            }
+          });
+          const orderedKeys = Array.from(deduped.entries())
+            .map(([key, context]) => ({ key, context }))
+            .sort((a, b) => extractTimestampFromKey(a.key) - extractTimestampFromKey(b.key));
+          orderedKeys.forEach(({ key, context }) => {
+            const payload = consumePendingPayload(key, { context });
             if (payload) {
               enqueueFromExternalSource(payload.csv, payload.header);
             }

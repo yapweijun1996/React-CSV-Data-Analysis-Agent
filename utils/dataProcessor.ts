@@ -21,7 +21,7 @@ const sanitizeValue = (value: string): string => {
     return value;
 };
 
-const robustParseFloat = (value: any): number | null => {
+export const robustParseFloat = (value: any): number | null => {
     if (value === null || value === undefined) return null;
 
     let s = String(value).trim();
@@ -228,6 +228,8 @@ export const profileData = (data: CsvRow[]): ColumnProfile[] => {
         let isNumerical = true;
         const values = data.map(row => row[header]);
         let numericCount = 0;
+        const sampleSize = data.length;
+        const nonNullCount = values.filter(value => value !== null && String(value).trim() !== '').length;
         
         for (const value of values) {
             const parsedNum = robustParseFloat(value);
@@ -242,11 +244,16 @@ export const profileData = (data: CsvRow[]): ColumnProfile[] => {
 
         if (isNumerical && numericCount > 0) {
             const numericValues = values.map(robustParseFloat).filter((v): v is number => v !== null);
+            const numericSampleRatio = sampleSize > 0 ? numericValues.length / sampleSize : 0;
             profiles.push({
                 name: header,
                 type: 'numerical',
                 valueRange: [Math.min(...numericValues), Math.max(...numericValues)],
-                missingPercentage: (1 - (numericValues.length / data.length)) * 100,
+                missingPercentage: (1 - numericSampleRatio) * 100,
+                sampleSize,
+                nonNullCount,
+                numericSampleCount: numericValues.length,
+                numericSampleRatio,
             });
         } else {
              const uniqueValues = new Set(values.map(String));
@@ -254,7 +261,12 @@ export const profileData = (data: CsvRow[]): ColumnProfile[] => {
                 name: header,
                 type: 'categorical',
                 uniqueValues: uniqueValues.size,
-                missingPercentage: (values.filter(v => v === null || String(v).trim() === '').length / data.length) * 100
+                missingPercentage:
+                    sampleSize === 0
+                        ? 0
+                        : (values.filter(v => v === null || String(v).trim() === '').length / sampleSize) * 100,
+                sampleSize,
+                nonNullCount,
              });
         }
     }

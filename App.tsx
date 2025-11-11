@@ -18,6 +18,7 @@ import { ExternalCsvPayload } from './types';
 declare global {
     interface Window {
         __getNextCsvPayload?: () => ExternalCsvPayload | null;
+        __CSV_AGENT_PENDING_NOTICES__?: string[];
     }
 }
 
@@ -50,6 +51,7 @@ const App: React.FC = () => {
     }));
     
     const setIsAsideVisible = useAppStore(state => state.setIsAsideVisible);
+    const addToast = useAppStore(state => state.addToast);
     const handleExternalCsvPayload = useAppStore(state => state.handleExternalCsvPayload);
 
     useEffect(() => {
@@ -84,6 +86,31 @@ const App: React.FC = () => {
             window.removeEventListener('ai-table-csv', handleEvent as EventListener);
         };
     }, [handleExternalCsvPayload]);
+
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+
+        const flushQueuedNotices = () => {
+            if (!Array.isArray(window.__CSV_AGENT_PENDING_NOTICES__)) return;
+            const pending = window.__CSV_AGENT_PENDING_NOTICES__.splice(0);
+            pending.forEach(message => {
+                addToast(message, 'warning', 6000);
+            });
+        };
+
+        const handleNotice = (event: Event) => {
+            const customEvent = event as CustomEvent<{ message?: string }>;
+            if (customEvent.detail?.message) {
+                addToast(customEvent.detail.message, 'warning', 6000);
+            }
+        };
+
+        flushQueuedNotices();
+        window.addEventListener('ai-table-csv-notice', handleNotice as EventListener);
+        return () => {
+            window.removeEventListener('ai-table-csv-notice', handleNotice as EventListener);
+        };
+    }, [addToast]);
 
     const renderMainContent = () => {
         if (currentView === 'file_upload' || !csvData) {

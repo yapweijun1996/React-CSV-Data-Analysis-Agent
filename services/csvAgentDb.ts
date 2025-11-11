@@ -1,5 +1,6 @@
 import { openDB, type IDBPDatabase } from 'idb';
 import type { CsvRow, ColumnProfile, AnalysisPlan } from '../types';
+import { profileData } from '../utils/dataProcessor';
 
 export interface DatasetProvenanceRecord {
     datasetId: string;
@@ -305,6 +306,15 @@ const iterateChunks = async (
     await tx.done;
 };
 
+const countDatasetRows = async (datasetId: string): Promise<number> => {
+    let total = 0;
+    await iterateChunks(datasetId, chunk => {
+        const chunkSize = typeof chunk.rowCount === 'number' ? chunk.rowCount : chunk.rows.length;
+        total += chunkSize;
+    });
+    return total;
+};
+
 export const readSampledRows = async (datasetId: string, limit: number): Promise<CsvRow[]> => {
     const rows: CsvRow[] = [];
     await iterateChunks(datasetId, (chunk, stop) => {
@@ -325,6 +335,46 @@ export const readAllRows = async (datasetId: string): Promise<CsvRow[]> => {
         rows.push(...chunk.rows);
     });
     return rows;
+};
+
+const BACKFILL_SAMPLE_LIMIT = 2000;
+
+const rebuildColumnStoreRecord = async (datasetId: string): Promise<ColumnStoreRecord | null> => {
+    try {
+        const [sampleRows, totalRows] = await Promise.all([
+            readSampledRows(datasetId, BACKFILL_SAMPLE_LIMIT),
+            countDatasetRows(datasetId),
+        ]);
+        if (totalRows === 0 || sampleRows.length === 0) {
+            console.warn(
+                `CSV Agent: unable to rebuild column metadata for ${datasetId} because the dataset has no cached rows.`,
+            );
+            return null;
+        }
+        const columns = profileData(sampleRows);
+        const record: ColumnStoreRecord = {
+            datasetId,
+            columnCount: columns.length,
+            columns,
+            rowCount: totalRows,
+            updatedAt: new Date().toISOString(),
+        };
+        const db = await openDatabase([COLUMNS_STORE]);
+        const tx = db.transaction(COLUMNS_STORE, 'readwrite');
+        await tx.objectStore(COLUMNS_STORE).put(record);
+        await tx.done;
+        console.info(`CSV Agent: rebuilt missing column metadata for dataset ${datasetId}.`);
+        return record;
+    } catch (error) {
+        console.error(`CSV Agent: failed to rebuild column metadata for dataset ${datasetId}.`, error);
+        return null;
+    }
+};
+
+export const ensureColumnStoreRecord = async (datasetId: string): Promise<ColumnStoreRecord | null> => {
+    const existing = await readColumnStoreRecord(datasetId);
+    if (existing) return existing;
+    return rebuildColumnStoreRecord(datasetId);
 };
 
 export const clearCardResults = async (datasetId: string): Promise<void> => {
