@@ -13,9 +13,11 @@ import type {
     AnalysisPlan,
     CardContext,
     ChatMessage,
+    ClarificationOption,
     ClarificationRequest,
     ClarificationRequestPayload,
     ClarificationStatus,
+    ColumnProfile,
     CsvData,
     CsvRow,
     DomAction,
@@ -39,6 +41,7 @@ import type { AppStore } from '../../store/appStoreTypes';
 import { detectUserIntent } from './intentRouter';
 import { createAgentEngine } from './engine';
 import type { EngineContext } from './engine';
+import { StateTagFactory } from './stateTagFactory';
 
 /**
  * Core runtime that keeps the agent flow sandboxed outside the chat slice.
@@ -120,7 +123,7 @@ type DispatchResult =
 const STATE_TAG_SET = new Set<AgentStateTag>(AGENT_STATE_TAGS);
 const MINTED_STATE_TAG_REGEX = /^(\d{5,})-(\d+)(?:-[\w-]+)?$/;
 const STATE_TAG_WARNING_THROTTLE_MS = 5000;
-const THOUGHTLESS_TOAST_THROTTLE_MS = 8000;
+const REASONLESS_TOAST_THROTTLE_MS = 8000;
 const PLAN_PRIMER_INSTRUCTION =
     'Begin every response with a plan_state_update that lists your goal, context, progress, next steps, blockers (or null), referenced observations, confidence, and updatedAt before any other action. Immediately after the plan_state_update, include a short text_response (in Mandarin) that restates the user’s latest question or intent in your own words so they know you understood it.';
 const MAX_PLAN_CONTINUATIONS = 3;
@@ -131,6 +134,8 @@ const FALLBACK_TEXT_RESPONSE_STEP_ID = 'ad_hoc_response';
 const DEFAULT_ACK_STEP: AgentPlanStep = {
     id: 'acknowledge_user_greeting',
     label: 'Acknowledge the greeting and ask what to analyze next.',
+    intent: 'conversation',
+    status: 'ready',
 };
 const SHOW_ALL_FILTER_QUERY = 'show entire table';
 const PLAN_RESET_KEYWORDS = ['reset plan', 'start over', '重新開始', '重新开始', '重新規劃', '重新规划'];
@@ -189,7 +194,8 @@ const ACTION_TYPE_ALIAS_MAP: Record<string, AgentActionType> = {
 
 const LOW_INTENT_INTENTS = new Set<AgentIntent>(['greeting', 'smalltalk', 'ask_user_choice']);
 const MULTIPLE_CHOICE_LINE_REGEX = /(^|\n)\s*(?:\d+[\.\)]|[A-Z][\.\)]|[-•]\s*(?:option|choice)\s*\d+)/i;
-const QUESTION_PROMPT_HINT_REGEX = /\b(option|choice|選項|請選|Type a custom answer)\b/i;
+const QUESTION_PROMPT_HINT_REGEX =
+    /\b(option|choice|選項|請選|Type a custom answer|please\s+(?:choose|select|pick)|would\s+you\s+like|should\s+i|need\s+your\s+choice|请选择|請選擇|請輸入|要不要|需不需要)\b/i;
 const PROMPT_ID_REGEX = /prompt[-\s]*([A-Za-z0-9_-]+)/i;
 
 const textResponseLooksLikeQuestion = (text?: string | null): boolean => {
@@ -197,7 +203,8 @@ const textResponseLooksLikeQuestion = (text?: string | null): boolean => {
     const normalized = text.trim();
     if (!normalized) return false;
     if (MULTIPLE_CHOICE_LINE_REGEX.test(normalized)) return true;
-    if (QUESTION_PROMPT_HINT_REGEX.test(normalized) && normalized.includes('?')) return true;
+    if (/[?？]/.test(normalized)) return true;
+    if (QUESTION_PROMPT_HINT_REGEX.test(normalized)) return true;
     if (/Type a custom answer/i.test(normalized)) return true;
     return false;
 };
@@ -313,8 +320,13 @@ const applyResponseEnvelopeAutoHeal = (response: AiChatResponse, runtime: Planne
     }
     const mintTag = () => mintRuntimeStateTag();
     const healed: AiAction[] = [];
+    const healNotes = new Set<string>();
+    const recordHeal = (note: string) => healNotes.add(note);
+
     for (const rawAction of response.actions) {
         if (!rawAction) continue;
+        const originalType = rawAction.type;
+        const originalResponseType = rawAction.responseType;
         const canonicalType =
             normalizeActionTypeAlias(rawAction.type) ??
             normalizeActionTypeAlias(rawAction.responseType) ??
@@ -325,15 +337,35 @@ const applyResponseEnvelopeAutoHeal = (response: AiChatResponse, runtime: Planne
             type: canonicalType,
             responseType: canonicalType,
         };
+        if (
+            (originalType && originalType !== canonicalType) ||
+            (originalResponseType && originalResponseType !== canonicalType)
+        ) {
+            recordHeal(`Normalized action type to ${canonicalType}`);
+        }
+
         const normalizedTag = normalizeStateTag(nextAction.stateTag);
-        const isSpecialLabel =
-            normalizedTag && STATE_TAG_SET.has(normalizedTag as AgentStateTag) ? normalizedTag : null;
-        nextAction.stateTag = isSpecialLabel ?? mintTag();
+        if (normalizedTag) {
+            nextAction.stateTag = normalizedTag;
+        } else {
+            nextAction.stateTag = mintTag();
+            recordHeal(`Minted stateTag for ${canonicalType}`);
+        }
+
         if (typeof nextAction.stepId !== 'string' || nextAction.stepId.trim().length < 3) {
             nextAction.stepId = pickPlannerStepIdForAutoAction(runtime);
+            recordHeal(`Attached default stepId (${nextAction.stepId}) for ${canonicalType}`);
         } else {
             nextAction.stepId = nextAction.stepId.trim();
         }
+
+        const hasTimestamp =
+            typeof nextAction.timestamp === 'string' && !Number.isNaN(Date.parse(nextAction.timestamp));
+        if (!hasTimestamp) {
+            nextAction.timestamp = new Date().toISOString();
+            recordHeal(`Stamped timestamp for ${canonicalType}`);
+        }
+
         healed.push(nextAction);
     }
     if (healed.length === 0) {
@@ -352,9 +384,11 @@ const applyResponseEnvelopeAutoHeal = (response: AiChatResponse, runtime: Planne
             type: 'text_response',
             responseType: 'text_response',
             stepId: clipped[0]?.stepId ?? pickPlannerStepIdForAutoAction(runtime),
-            thought: 'Auto-generated greeting reply so the assistant can acknowledge the user.',
+            reason: 'Auto-generated greeting reply so the assistant can acknowledge the user.',
             text: '嗨 hi～很高興見到你！告訴我想分析什麼資料吧。',
+            timestamp: new Date().toISOString(),
         });
+        recordHeal('Inserted greeting text_response for low-intent turn');
     }
     if (isLowIntent) {
         const textAction = clipped.find(action => action.responseType === 'text_response');
@@ -367,6 +401,11 @@ const applyResponseEnvelopeAutoHeal = (response: AiChatResponse, runtime: Planne
             }
         }
     }
+    if (healNotes.size > 0) {
+        runtime
+            .get()
+            .addProgress(`Auto-heal corrections applied: ${Array.from(healNotes).join(' | ')}`, 'system');
+    }
     response.actions = clipped;
 };
 
@@ -375,6 +414,8 @@ interface PlannerMetaSignal {
     haltAfter: boolean;
     resumePlanner: boolean;
     promptId: string | null;
+    blockedReason?: string | null;
+    stateTagOverride?: AgentStateTag | null;
 }
 
 const BLANK_META_SIGNAL: PlannerMetaSignal = {
@@ -382,6 +423,8 @@ const BLANK_META_SIGNAL: PlannerMetaSignal = {
     haltAfter: false,
     resumePlanner: false,
     promptId: null,
+    blockedReason: null,
+    stateTagOverride: null,
 };
 
 const extractPlannerMetaSignal = (actions?: AiAction[] | null): PlannerMetaSignal => {
@@ -432,11 +475,14 @@ const pausePlannerForUser = (runtime: PlannerRuntime, signal: PlannerMetaSignal)
             ? { ...step, status: 'waiting_user' as AgentPlanStep['status'] }
             : step,
     );
+    const blockedReason = signal.blockedReason?.trim() || planState.blockedBy || 'Waiting for your choice';
+    const awaitingTag = signal.stateTagOverride ?? ('awaiting_clarification' as AgentStateTag);
     store.updatePlannerPlanState({
         ...planState,
         steps: updatedSteps ?? planState.steps,
         nextSteps: [],
-        blockedBy: planState.blockedBy ?? 'Waiting for your choice',
+        blockedBy: blockedReason,
+        stateTag: awaitingTag,
     });
 };
 
@@ -513,7 +559,7 @@ const buildIntentNotes = (detectedIntent: DetectedIntent | null | undefined, sto
 };
 
 let lastStateTagWarningAt = 0;
-let lastThoughtlessToastAt = 0;
+let lastReasonlessToastAt = 0;
 
 const enterAgentPhase = (runtime: PlannerRuntime, phase: AgentPhase, message?: string) => {
     const store = runtime.get();
@@ -583,7 +629,7 @@ const ACTION_ERROR_CODES = {
     FILTER_QUERY_MISSING: 'FILTER_QUERY_MISSING',
     CLARIFICATION_PAYLOAD_MISSING: 'CLARIFICATION_PAYLOAD_MISSING',
     CLARIFICATION_NO_OPTIONS: 'CLARIFICATION_NO_OPTIONS',
-    THOUGHT_MISSING: 'THOUGHT_MISSING',
+    REASON_MISSING: 'REASON_MISSING',
     UNSUPPORTED_ACTION: 'UNSUPPORTED_ACTION',
     PLAN_STATE_PAYLOAD_MISSING: 'PLAN_STATE_PAYLOAD_MISSING',
     VALIDATION_FAILED: 'VALIDATION_FAILED',
@@ -597,21 +643,8 @@ const createObservationId = () =>
 const createPromptInteractionId = () =>
     `prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-const mintRuntimeStateTag = (() => {
-    let lastEpoch = 0;
-    let seq = 0;
-    const format = (epoch: number, sequence: number) => `${epoch.toString().padStart(13, '0')}-${sequence}`;
-    return () => {
-        const now = Date.now();
-        const epoch = now > lastEpoch ? now : lastEpoch;
-        if (epoch !== lastEpoch) {
-            lastEpoch = epoch;
-            seq = 0;
-        }
-        seq += 1;
-        return format(lastEpoch, seq);
-    };
-})();
+const runtimeStateTagFactory = new StateTagFactory();
+const mintRuntimeStateTag = (): string => runtimeStateTagFactory.mint();
 
 interface RawDataExplorerSnapshot {
     summary: string;
@@ -773,49 +806,60 @@ const normalizePlanStepsPayload = (steps: AgentPlanStep[] | undefined | null): A
     return normalized;
 };
 
-const autoAssignTextResponseStepId = (
-    action: AiAction,
-    runtime: PlannerRuntime,
-    actionIndex: number,
-): boolean => {
-    if (action.responseType !== 'text_response') return false;
-    const store = runtime.get();
-    const pendingSteps = store.plannerPendingSteps ?? [];
-    if (pendingSteps.length > 0) {
-        const firstPending = pendingSteps[0];
-        if (
-            runtime.detectedIntent?.intent === 'greeting' &&
-            pendingSteps.length === 1 &&
-            firstPending?.id === DEFAULT_ACK_STEP.id
-        ) {
-            action.stepId = firstPending.id;
-            store.addProgress(
-                `Auto-tagged greeting reply to step "${firstPending.id}" so it can proceed.`,
-                'system',
-            );
-            if (typeof store.recordAgentValidationEvent === 'function') {
-                store.recordAgentValidationEvent({
-                    actionType: 'text_response',
-                    reason: 'auto_step_id_greeting_ack',
-                    actionIndex,
-                    runId: runtime.runId,
-                    retryInstruction:
-                        'stepId was auto-filled with the greeting acknowledgement step so you can keep chatting.',
-                });
-            }
-            return true;
-        }
+const autoAssignStepId = (action: AiAction, runtime: PlannerRuntime, actionIndex: number): boolean => {
+    if (action.responseType === 'plan_state_update') {
         return false;
     }
-    action.stepId = FALLBACK_TEXT_RESPONSE_STEP_ID;
-    store.addProgress('Auto-assigned fallback stepId "ad_hoc_response" so the agent can keep chatting.');
+    const store = runtime.get();
+    const pendingSteps = store.plannerPendingSteps ?? [];
+    const firstPending = pendingSteps.find(
+        step => typeof step?.id === 'string' && step.id.trim().length >= 3,
+    );
+
+    if (
+        action.responseType === 'text_response' &&
+        runtime.detectedIntent?.intent === 'greeting' &&
+        pendingSteps.length === 1 &&
+        firstPending?.id === DEFAULT_ACK_STEP.id
+    ) {
+        action.stepId = firstPending.id;
+        store.addProgress(
+            `Auto-tagged greeting reply to step "${firstPending.id}" so it can proceed.`,
+            'system',
+        );
+        if (typeof store.recordAgentValidationEvent === 'function') {
+            store.recordAgentValidationEvent({
+                actionType: 'text_response',
+                reason: 'auto_step_id_greeting_ack',
+                actionIndex,
+                runId: runtime.runId,
+                retryInstruction:
+                    'stepId was auto-filled with the greeting acknowledgement step so you can keep chatting.',
+            });
+        }
+        return true;
+    }
+
+    const currentPlanStep =
+        typeof store.plannerSession.planState?.currentStepId === 'string'
+            ? store.plannerSession.planState.currentStepId.trim()
+            : '';
+    const fallbackStepId =
+        (currentPlanStep && currentPlanStep.length >= 3 && currentPlanStep) ||
+        (firstPending?.id ?? FALLBACK_TEXT_RESPONSE_STEP_ID);
+
+    action.stepId = fallbackStepId;
+    store.addProgress(
+        `Auto-assigned stepId "${fallbackStepId}" to ${action.responseType} so it can continue.`,
+        'system',
+    );
     if (typeof store.recordAgentValidationEvent === 'function') {
         store.recordAgentValidationEvent({
-            actionType: 'text_response',
+            actionType: action.responseType,
             reason: 'auto_step_id_assigned',
             actionIndex,
             runId: runtime.runId,
-            retryInstruction: 'stepId was auto-filled because no pending steps were tracked.',
+            retryInstruction: `stepId was auto-filled with "${fallbackStepId}" because it was missing.`,
         });
     }
     return true;
@@ -832,10 +876,10 @@ const pickPlannerStepIdForAutoAction = (runtime: PlannerRuntime): string => {
     return FALLBACK_TEXT_RESPONSE_STEP_ID;
 };
 
-const thoughtMentionsStep = (thought: string | undefined, stepKey: string | null): boolean => {
+const reasonMentionsStep = (reason: string | undefined, stepKey: string | null): boolean => {
     if (!stepKey) return true;
-    if (!thought) return false;
-    return thought.toLowerCase().includes(stepKey);
+    if (!reason) return false;
+    return reason.toLowerCase().includes(stepKey);
 };
 
 const toAgentObservation = (
@@ -1037,6 +1081,64 @@ const resolveCardIdFromArgs = (runtime: PlannerRuntime, domAction: DomAction): v
     }
 };
 
+const METRIC_COLUMN_TYPES: Array<ColumnProfile['type']> = ['numerical', 'currency', 'percentage'];
+
+const maybeRequestValueColumnClarification = (runtime: PlannerRuntime, plan: AnalysisPlan): string | null => {
+    const aggregation = (plan.aggregation ?? '').toLowerCase();
+    const needsMetricColumn = aggregation && aggregation !== 'count';
+    if (!needsMetricColumn) {
+        return null;
+    }
+    const trimmedColumn = plan.valueColumn?.trim();
+    const store = runtime.get();
+    const columnProfiles = store.columnProfiles ?? [];
+    const numericColumns = columnProfiles.filter(profile => METRIC_COLUMN_TYPES.includes(profile.type));
+    const columnExists =
+        !!trimmedColumn && numericColumns.some(profile => profile.name === trimmedColumn);
+    if (columnExists) {
+        return null;
+    }
+    if (!trimmedColumn && numericColumns.length === 0) {
+        store.addProgress('Need a numeric column for this aggregation, but none are available.', 'error');
+        return null;
+    }
+    const question =
+        plan.title && plan.title.trim().length > 0
+            ? `Which metric column should I use for "${plan.title}"?`
+            : 'Which metric column should I use for this chart?';
+    const optionsSource = numericColumns.length > 0 ? numericColumns : columnProfiles;
+    const options: ClarificationOption[] = optionsSource.slice(0, 8).map(profile => ({
+        label: `${profile.name} (${profile.type})`,
+        value: profile.name,
+    }));
+    if (options.length === 0) {
+        store.addProgress('No suitable metric column options were found. Please upload data with numeric metrics.', 'error');
+        return null;
+    }
+    const clarificationPayload: ClarificationRequestPayload = {
+        question,
+        options,
+        pendingPlan: { ...plan },
+        targetProperty: 'valueColumn',
+        contextType: 'plan',
+    };
+    const clarification = runtime.deps.registerClarification(clarificationPayload);
+    const clarificationMessage: ChatMessage = {
+        sender: 'ai',
+        text: clarification.question,
+        timestamp: new Date(),
+        type: 'ai_clarification',
+        clarificationRequest: clarification,
+    };
+    runtime.set(prev => ({
+        chatHistory: [...prev.chatHistory, clarificationMessage],
+    }));
+    runtime.set({ activeClarificationId: clarification.id });
+    markAwaitingUserInput(runtime, clarification.id);
+    store.addProgress('Need your help picking the metric column before I can build that chart.');
+    return clarification.id;
+};
+
 const promptUserForCardSelection = (runtime: PlannerRuntime, domAction: DomAction): string | null => {
     const store = runtime.get();
     const cards = store.analysisCards ?? [];
@@ -1207,7 +1309,7 @@ const buildRequiredToolFallbackAction = (
             return {
                 type: 'dom_action',
                 responseType: 'dom_action',
-                thought: 'Auto-inserted DOM action to satisfy the user intent.',
+                reason: 'Auto-inserted DOM action to satisfy the user intent.',
                 stepId,
                 stateTag: createValidationStateTag(),
                 domAction,
@@ -1218,7 +1320,7 @@ const buildRequiredToolFallbackAction = (
             return {
                 type: 'filter_spreadsheet',
                 responseType: 'filter_spreadsheet',
-                thought: 'Auto-inserted filter to satisfy the user intent.',
+                reason: 'Auto-inserted filter to satisfy the user intent.',
                 stepId,
                 stateTag: createValidationStateTag(),
                 args: { query },
@@ -1247,7 +1349,7 @@ return result;
             return {
                 type: 'execute_js_code',
                 responseType: 'execute_js_code',
-                thought: `Auto-inserted data transform to remove the column "${matchedColumn}".`,
+                reason: `Auto-inserted data transform to remove the column "${matchedColumn}".`,
                 stepId,
                 stateTag: createValidationStateTag(),
                 code: {
@@ -1352,19 +1454,19 @@ const buildEngineContext = (runtime: PlannerRuntime): EngineContext => {
 };
 
 const chainOfThoughtGuardMiddleware: ActionMiddleware = async (context, next) => {
-    const thought = context.action.thought?.trim();
-    if (!thought) {
+    const reason = context.action.reason?.trim();
+    if (!reason) {
         context.runtime.get().addProgress('AI response missing reasoning; action skipped.', 'error');
-        maybeShowThoughtlessToast(context.runtime);
+        maybeShowReasonlessToast(context.runtime);
         context.markTrace('failed', 'Action blocked because no reasoning was provided.', {
-            errorCode: ACTION_ERROR_CODES.THOUGHT_MISSING,
+            errorCode: ACTION_ERROR_CODES.REASON_MISSING,
         });
         return {
             type: 'continue',
             observation: {
                 status: 'error',
-                errorCode: ACTION_ERROR_CODES.THOUGHT_MISSING,
-                outputs: { note: 'Action skipped because thought field was empty.' },
+                errorCode: ACTION_ERROR_CODES.REASON_MISSING,
+                outputs: { note: 'Action skipped because reason field was empty.' },
             },
         };
     }
@@ -1397,22 +1499,95 @@ const matchesRequiredTool = (action: AiAction, hint: RequiredToolHint): boolean 
 const planStepViolationCounts: Record<string, number> = Object.create(null);
 const MAX_PLAN_STEP_VIOLATIONS = 3;
 
+const summarizeUserMessage = (message?: string): string => {
+    if (!message) return 'latest user request';
+    const trimmed = message.trim();
+    if (!trimmed) return 'latest user request';
+    return trimmed.length > 120 ? `${trimmed.slice(0, 117)}…` : trimmed;
+};
+
+const buildMinimalPlanStateSnapshot = (
+    runtime: PlannerRuntime,
+    overrides?: Partial<AgentPlanState>,
+): AgentPlanState => {
+    const store = runtime.get();
+    const now = new Date().toISOString();
+    const normalizedStepList = normalizePlanStepsPayload(overrides?.steps ?? overrides?.nextSteps);
+    const defaultStep: AgentPlanStep =
+        normalizedStepList[0] ??
+        {
+            id: overrides?.currentStepId && overrides.currentStepId.trim().length >= 3
+                ? overrides.currentStepId.trim()
+                : FALLBACK_TEXT_RESPONSE_STEP_ID,
+            label: overrides?.goal?.trim()
+                ? `Advance: ${overrides.goal.trim().slice(0, 60)}`
+                : 'Handle the latest user request',
+            intent: overrides?.steps?.[0]?.intent ?? 'conversation',
+            status: overrides?.steps?.[0]?.status ?? 'ready',
+        };
+    const nextSteps = normalizedStepList.length > 0 ? normalizedStepList : [defaultStep];
+    const steps = (overrides?.steps ? normalizePlanStepsPayload(overrides.steps) : null) ?? nextSteps;
+    return {
+        planId:
+            overrides?.planId?.trim() ||
+            store.plannerSession.planState?.planId ||
+            `plan-${Date.now().toString(36)}`,
+        goal:
+            overrides?.goal?.trim() ||
+            store.plannerSession.planState?.goal ||
+            `Clarify and fulfill: ${summarizeUserMessage(runtime.userMessage)}`,
+        contextSummary:
+            overrides?.contextSummary ??
+            store.plannerSession.planState?.contextSummary ??
+            'Awaiting concrete instructions.',
+        progress: overrides?.progress?.trim() || 'Initialized plan tracker.',
+        nextSteps,
+        steps,
+        currentStepId:
+            overrides?.currentStepId && overrides.currentStepId.trim().length >= 3
+                ? overrides.currentStepId.trim()
+                : defaultStep.id,
+        blockedBy: typeof overrides?.blockedBy === 'string' ? overrides.blockedBy : overrides?.blockedBy ?? null,
+        observationIds: overrides?.observationIds ?? [],
+        confidence:
+            typeof overrides?.confidence === 'number'
+                ? overrides.confidence
+                : store.plannerSession.planState?.confidence ?? 0.5,
+        updatedAt: overrides?.updatedAt ?? now,
+        stateTag: overrides?.stateTag ?? 'context_ready',
+    };
+};
+
+const createPlanPrimerAction = (planState: AgentPlanState, reason?: string): AiAction => {
+    return {
+        type: 'plan_state_update',
+        responseType: 'plan_state_update',
+        reason: reason ?? 'Auto-initializing plan tracker before continuing.',
+        stateTag: createValidationStateTag(),
+        stepId: planState.currentStepId ?? FALLBACK_TEXT_RESPONSE_STEP_ID,
+        timestamp: new Date().toISOString(),
+        text: 'Plan tracker synchronized.',
+        cardId: null,
+        meta: { awaitUser: false, haltAfter: false, resumePlanner: false, promptId: '' },
+        planState,
+    };
+};
+
 const seedGreetingPlanState = (runtime: PlannerRuntime) => {
     const store = runtime.get();
     const existingPlan = store.plannerSession.planState;
     if (existingPlan) return;
-    const now = new Date().toISOString();
-    const planState: AgentPlanState = {
+    const planState = buildMinimalPlanStateSnapshot(runtime, {
         goal: 'Acknowledge the user and gather their request.',
         contextSummary: 'User greeted the assistant; no task specified yet.',
         progress: 'Greeting acknowledged.',
         nextSteps: [DEFAULT_ACK_STEP],
+        steps: [DEFAULT_ACK_STEP],
+        currentStepId: DEFAULT_ACK_STEP.id,
         blockedBy: null,
-        observationIds: [],
         confidence: 0.5,
-        updatedAt: now,
         stateTag: 'context_ready',
-    };
+    });
     store.updatePlannerPlanState(planState);
     store.addProgress('Auto-seeded a greeting plan tracker so the assistant can respond.');
 };
@@ -1444,7 +1619,7 @@ const stateConsistencyMiddleware: ActionMiddleware = async (context, next) => {
     const stepKey = deriveStepKey(expectedStep.label);
     const fallbackMatch =
         !!stepKey &&
-        (thoughtMentionsStep(context.action.thought, stepKey) || planActionMatchesStep(context.action, stepKey));
+        (reasonMentionsStep(context.action.reason, stepKey) || planActionMatchesStep(context.action, stepKey));
 
     if (!structuredMatch && !fallbackMatch) {
         const nextCount = (planStepViolationCounts[runId] ?? 0) + 1;
@@ -1520,9 +1695,9 @@ const stateConsistencyMiddleware: ActionMiddleware = async (context, next) => {
     }
 };
 
-const thoughtLoggingMiddleware: ActionMiddleware = async (context, next) => {
-    if (context.action.thought) {
-        context.runtime.get().addProgress(`AI Thought: ${context.action.thought}`);
+const reasonLoggingMiddleware: ActionMiddleware = async (context, next) => {
+    if (context.action.reason) {
+        context.runtime.get().addProgress(`AI Thought: ${context.action.reason}`);
     }
     return next();
 };
@@ -1548,7 +1723,7 @@ const registeredMiddlewares: ActionMiddleware[] = [];
 const coreMiddlewares: ActionMiddleware[] = [
     chainOfThoughtGuardMiddleware,
     stateConsistencyMiddleware,
-    thoughtLoggingMiddleware,
+    reasonLoggingMiddleware,
     telemetryMiddleware,
 ];
 
@@ -1824,7 +1999,7 @@ const validateAgentResponse = (
         );
     }
 
-    const firstAction = response.actions[0];
+    let firstAction = response.actions[0];
     let currentPlanState = runtime.get().plannerSession.planState;
     const isGreetingIntent = runtime.detectedIntent?.intent === 'greeting';
     let lastMintedStateTagInfo: MintedStateTagInfo | null = null;
@@ -1888,53 +2063,68 @@ const validateAgentResponse = (
         return null;
     };
 
-    const attachGreetingPlanPayload = (): boolean => {
-        seedGreetingPlanState(runtime);
+    const ensurePlanPrimer = (): AgentResponseValidationResult | null => {
         currentPlanState = runtime.get().plannerSession.planState;
-        if (!currentPlanState) {
-            return false;
+        firstAction = response.actions[0];
+        if (!firstAction) {
+            return {
+                isValid: false,
+                userMessage: 'AI response was empty; requesting it to restate the plan...',
+                retryInstruction:
+                    'You must return at least one action. Begin with a plan_state_update that satisfies the required schema before any other steps.',
+            };
         }
-        firstAction.planState = currentPlanState;
-        runtime
-            .get()
-            .addProgress(
-                'Relaxed plan tracker requirement for greeting; auto-filled plan_state_update payload.',
-                'system',
-            );
-        return true;
-    };
-
-    if (!currentPlanState) {
-        if (firstAction.responseType !== 'plan_state_update') {
-            if (isGreetingIntent && firstAction.responseType === 'text_response') {
-                seedGreetingPlanState(runtime);
-                return { isValid: true };
+        if (!currentPlanState) {
+            if (firstAction.responseType !== 'plan_state_update') {
+                const seededPlan = buildMinimalPlanStateSnapshot(runtime, firstAction.planState ?? undefined);
+                const primerAction = createPlanPrimerAction(
+                    seededPlan,
+                    'Auto-inserted plan tracker before executing pending actions.',
+                );
+                response.actions.unshift(primerAction);
+                runtime.get().updatePlannerPlanState(seededPlan);
+                runtime.get().addProgress('Auto-inserted plan_state_update to bootstrap the planner.', 'system');
+                firstAction = primerAction;
+                currentPlanState = seededPlan;
             }
+            if (!hasPlanStatePayload(firstAction)) {
+                const minimalState = buildMinimalPlanStateSnapshot(runtime, firstAction.planState ?? undefined);
+                firstAction.planState = minimalState;
+                runtime.get().updatePlannerPlanState(minimalState);
+                runtime.get().addProgress('Auto-filled missing plan tracker fields.', 'system');
+                currentPlanState = minimalState;
+            } else {
+                runtime.get().updatePlannerPlanState(firstAction.planState);
+                currentPlanState = firstAction.planState;
+            }
+            return null;
+        }
+        if (firstAction.responseType !== 'plan_state_update') {
             return buildPayloadValidationFailure(
-                firstAction ?? null,
+                firstAction,
                 0,
-                'First action must be plan_state_update when no plan tracker is active.',
+                'First action must be plan_state_update when a plan tracker is active.',
                 PLAN_PRIMER_INSTRUCTION,
             );
         }
         if (!hasPlanStatePayload(firstAction)) {
-            if (!(isGreetingIntent && attachGreetingPlanPayload())) {
-                return buildPayloadValidationFailure(
-                    firstAction,
-                    0,
-                    'Plan tracker snapshot missing required fields.',
-                    'Your initial plan_state_update must include planId, currentStepId, steps[], goal, contextSummary, progress, nextSteps, blockedBy (or null), referenced observationIds, confidence, and updatedAt before other actions.',
-                );
-            }
+            const refreshedState = {
+                ...currentPlanState,
+                updatedAt: new Date().toISOString(),
+            };
+            firstAction.planState = refreshedState;
+            runtime.get().updatePlannerPlanState(refreshedState);
+            runtime.get().addProgress('Reused previous plan tracker snapshot for validation.', 'system');
         }
-    } else if (firstAction.responseType === 'plan_state_update' && !hasPlanStatePayload(firstAction)) {
-        return buildPayloadValidationFailure(
-            firstAction,
-            0,
-            'Plan tracker update missing required fields.',
-            'Any plan_state_update must include planId, currentStepId, steps[], goal, contextSummary, progress, nextSteps, blockedBy, observationIds, confidence, and updatedAt.',
-        );
+        return null;
+    };
+
+    const primerResult = ensurePlanPrimer();
+    if (primerResult) {
+        return primerResult;
     }
+    firstAction = response.actions[0];
+    currentPlanState = runtime.get().plannerSession.planState;
 
     for (let index = 0; index < response.actions.length; index++) {
         const action = response.actions[index];
@@ -1944,8 +2134,7 @@ const validateAgentResponse = (
         }
         const trimmedStepId = typeof action.stepId === 'string' ? action.stepId.trim() : '';
         if (trimmedStepId.length < 3) {
-            const autoAssigned =
-                action.responseType === 'text_response' ? autoAssignTextResponseStepId(action, runtime, index) : false;
+            const autoAssigned = autoAssignStepId(action, runtime, index);
             if (!autoAssigned) {
                 return buildPayloadValidationFailure(
                     action,
@@ -2490,32 +2679,42 @@ const handleTextResponseAction: AgentActionExecutor = async ({ action, runtime, 
         };
     }
 
-    if (action.meta?.awaitUser) {
-        const quickChoices = extractQuickChoices(action.text ?? '');
-        if (quickChoices.length === 0) {
-            const retryPrompt =
-                'SYSTEM NOTE: Your previous message asked the user for a choice but did not include explicit options. Restate the question and list at least two options using a numbered format (e.g., "1) … 2) …").';
-            runtime
-                .get()
-                .addProgress('Await-user question lacked explicit options. Asking the AI to restate it with numbered choices...', 'error');
-            markTrace('failed', 'Await-user prompt missing options.', {
+    const quickChoices = extractQuickChoices(action.text ?? '');
+    const looksLikeQuestion = textResponseLooksLikeQuestion(action.text);
+
+    if (action.meta?.awaitUser && quickChoices.length === 0) {
+        const retryPrompt =
+            'SYSTEM NOTE: Your previous message asked the user for a choice but did not include explicit options. Restate the question and list at least two options using a numbered format (e.g., "1) … 2) …").';
+        runtime
+            .get()
+            .addProgress('Await-user question lacked explicit options. Asking the AI to restate it with numbered choices...', 'error');
+        markTrace('failed', 'Await-user prompt missing options.', {
+            errorCode: ACTION_ERROR_CODES.VALIDATION_FAILED,
+        });
+        return {
+            type: 'retry',
+            reason: 'Await-user prompt missing selectable options.',
+            retryPrompt,
+            userFacingMessage: 'The assistant needed to restate the question with concrete options. Retrying...',
+            progressMessage: 'Requesting a multiple-choice restatement from the assistant...',
+            phaseMessage: 'Rephrasing question to include explicit options...',
+            statusMessage: 'Rebuilding prompt with options...',
+            promptMode: 'full',
+            observation: {
+                status: 'error',
                 errorCode: ACTION_ERROR_CODES.VALIDATION_FAILED,
-            });
-            return {
-                type: 'retry',
-                reason: 'Await-user prompt missing selectable options.',
-                retryPrompt,
-                userFacingMessage: 'The assistant needed to restate the question with concrete options. Retrying...',
-                progressMessage: 'Requesting a multiple-choice restatement from the assistant...',
-                phaseMessage: 'Rephrasing question to include explicit options...',
-                statusMessage: 'Rebuilding prompt with options...',
-                promptMode: 'full',
-                observation: {
-                    status: 'error',
-                    errorCode: ACTION_ERROR_CODES.VALIDATION_FAILED,
-                    outputs: { issue: 'missing_options' },
-                },
-            };
+                outputs: { issue: 'missing_options' },
+            },
+        };
+    }
+
+    const shouldPauseForUser = Boolean(action.meta?.awaitUser || quickChoices.length > 0 || looksLikeQuestion);
+    if (shouldPauseForUser) {
+        const meta = action.meta ?? (action.meta = {});
+        meta.awaitUser = true;
+        meta.haltAfter = true;
+        if (!meta.promptId) {
+            meta.promptId = createPromptInteractionId();
         }
     }
 
@@ -2535,6 +2734,29 @@ const handleTextResponseAction: AgentActionExecutor = async ({ action, runtime, 
         runtime.memoryTagAttached = true;
     }
     markTrace('succeeded', 'Shared response with user.');
+
+    if (shouldPauseForUser) {
+        pausePlannerForUser(runtime, {
+            awaitUser: true,
+            haltAfter: true,
+            resumePlanner: false,
+            promptId: action.meta?.promptId ?? null,
+            blockedReason: action.text?.trim() || null,
+            stateTagOverride: 'awaiting_clarification',
+        });
+        return {
+            type: 'halt',
+            observation: {
+                status: 'pending',
+                outputs: {
+                    awaitUser: true,
+                    promptId: action.meta?.promptId ?? null,
+                    quickChoices,
+                },
+            },
+        };
+    }
+
     return {
         type: 'continue',
         observation: {
@@ -2621,6 +2843,23 @@ const handlePlanCreationAction: AgentActionExecutor = async ({ action, runtime, 
             observation: {
                 status: 'error',
                 errorCode: ACTION_ERROR_CODES.MISSING_PLAN_PAYLOAD,
+            },
+        };
+    }
+
+    const clarificationId = maybeRequestValueColumnClarification(runtime, action.plan);
+    if (clarificationId) {
+        markTrace('succeeded', 'Requested metric column clarification before executing plan.', {
+            metadata: { clarificationId },
+        });
+        return {
+            type: 'halt',
+            observation: {
+                status: 'pending',
+                outputs: {
+                    clarificationId,
+                    targetProperty: 'valueColumn',
+                },
             },
         };
     }
@@ -3068,6 +3307,14 @@ const handleClarificationRequestAction: AgentActionExecutor = async ({ action, r
     runtime.set({ activeClarificationId: enrichedClarification.id });
     enterAgentPhase(runtime, 'clarifying', 'Need your input to keep going...');
     runtime.get().endBusy(runtime.runId);
+    pausePlannerForUser(runtime, {
+        awaitUser: true,
+        haltAfter: true,
+        resumePlanner: false,
+        promptId: enrichedClarification.id,
+        blockedReason: enrichedClarification.question,
+        stateTagOverride: 'awaiting_clarification',
+    });
     markTrace('succeeded', 'Requested user clarification.');
     return {
         type: 'halt',
@@ -3122,12 +3369,12 @@ const normalizeStateTag = (tag?: string | null): AgentStateTag | undefined => {
     return undefined;
 };
 
-const maybeShowThoughtlessToast = (runtime: PlannerRuntime) => {
+const maybeShowReasonlessToast = (runtime: PlannerRuntime) => {
     const ts = Date.now();
-    if (ts - lastThoughtlessToastAt < THOUGHTLESS_TOAST_THROTTLE_MS) {
+    if (ts - lastReasonlessToastAt < REASONLESS_TOAST_THROTTLE_MS) {
         return;
     }
-    lastThoughtlessToastAt = ts;
+    lastReasonlessToastAt = ts;
     runtime.get().addToast('AI 正在重新思考，請稍候。', 'info');
 };
 

@@ -88,6 +88,9 @@ export const preparePlanForExecution = (
         }
     }
 
+    const valueAlias =
+        !plan.valueColumn || plan.aggregation === 'count' ? 'count' : plan.valueColumn;
+
     if (!plan.groupByColumn) {
         const inferred = inferGroupByColumn(columnProfiles, rows);
         if (inferred.column) {
@@ -101,6 +104,23 @@ export const preparePlanForExecution = (
                 errorMessage: 'Unable to infer a grouping column for this chart.',
             };
         }
+    }
+
+    if (!Array.isArray(plan.orderBy) || plan.orderBy.length === 0) {
+        if (plan.chartType === 'line' && plan.groupByColumn) {
+            plan.orderBy = [{ column: plan.groupByColumn, direction: 'asc' }];
+        } else {
+            plan.orderBy = [{ column: valueAlias, direction: 'desc' }];
+        }
+    } else {
+        plan.orderBy = plan.orderBy.map(order => ({
+            column: order.column,
+            direction: order.direction ?? (plan.chartType === 'line' ? 'asc' : 'desc'),
+        }));
+    }
+
+    if (typeof plan.limit !== 'number' && typeof plan.defaultTopN === 'number') {
+        plan.limit = plan.defaultTopN;
     }
 
     if (plan.rowFilter) {

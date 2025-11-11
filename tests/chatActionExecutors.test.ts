@@ -1,5 +1,11 @@
 import assert from 'node:assert/strict';
-import type { AiAction, AgentActionType, AgentPlanState, AgentPlanStep } from '../types';
+import type {
+    AiAction,
+    AgentActionType,
+    AgentPlanState,
+    AgentPlanStep,
+    ClarificationRequest,
+} from '../types';
 import { agentSdk } from '../store/slices/chatSlice';
 
 const { errorCodes: ACTION_ERROR_CODES, runAction: runActionThroughRegistry } = agentSdk;
@@ -70,7 +76,7 @@ type RuntimeState = {
     chatHistory: any[];
     isSpreadsheetVisible: boolean;
     columnAliasMap: Record<string, string>;
-    columnProfiles: { name: string }[];
+    columnProfiles: Array<{ name: string; type: string }>;
     csvData: any;
     pendingDataTransform: any;
     analysisCards: any[];
@@ -88,6 +94,10 @@ type RuntimeState = {
     completePlannerPendingStep: () => void;
     annotateAgentActionTrace: (traceId: string, metadata: Record<string, any>) => void;
     lastFilterQuery: string | null;
+    pendingClarifications: ClarificationRequest[];
+    activeClarificationId: string | null;
+    agentAwaitingUserInput: boolean;
+    agentAwaitingPromptId: string | null;
 };
 
 const createRuntime = (
@@ -125,6 +135,10 @@ const createRuntime = (
         },
         annotateAgentActionTrace: () => {},
         lastFilterQuery: null,
+        pendingClarifications: [],
+        activeClarificationId: null,
+        agentAwaitingUserInput: false,
+        agentAwaitingPromptId: null,
         ...overrides,
     };
 
@@ -143,12 +157,19 @@ const createRuntime = (
         set,
         get: () => baseState,
         deps: {
-            registerClarification: (clarification: any) => ({
-                ...clarification,
-                id: 'clar-1',
-                status: 'pending',
-                createdAt: new Date().toISOString(),
-            }),
+            registerClarification: (clarification: any) => {
+                const clarificationId = `clar-${baseState.pendingClarifications.length + 1}`;
+                const record: ClarificationRequest = {
+                    ...clarification,
+                    id: clarificationId,
+                    status: 'pending',
+                    createdAt: new Date().toISOString(),
+                    contextType: clarification.contextType ?? 'plan',
+                };
+                baseState.pendingClarifications = [...baseState.pendingClarifications, record];
+                baseState.activeClarificationId = clarificationId;
+                return record;
+            },
             updateClarificationStatus: () => {},
             getRunSignal: () => undefined,
             runPlanWithChatLifecycle: async () => [],
@@ -183,22 +204,22 @@ const run = async (name: string, fn: () => Promise<void>) => {
     }
 };
 
-await run('blocks actions without thought content', async () => {
+await run('blocks actions without reason content', async () => {
     const { runtime } = createRuntime();
     const { entries, markTrace } = createTraceRecorder();
-    const action = withEnvelope({ responseType: 'text_response', thought: undefined });
+    const action = withEnvelope({ responseType: 'text_response', reason: undefined });
 
     const result = await runActionThroughRegistry(action, runtime, 0, markTrace);
     assert.strictEqual(result.type, 'continue');
     const failure = entries.find(entry => entry.status === 'failed');
     assert.ok(failure);
-    assert.strictEqual(failure?.telemetry?.errorCode, ACTION_ERROR_CODES.THOUGHT_MISSING);
+    assert.strictEqual(failure?.telemetry?.errorCode, ACTION_ERROR_CODES.REASON_MISSING);
 });
 
 await run('text_response without payload emits error telemetry', async () => {
     const { runtime } = createRuntime();
     const { entries, markTrace } = createTraceRecorder();
-    const action = withEnvelope({ responseType: 'text_response', thought: 'Respond politely' });
+    const action = withEnvelope({ responseType: 'text_response', reason: 'Respond politely' });
 
     await runActionThroughRegistry(action, runtime, 0, markTrace);
     const failure = entries.find(entry => entry.status === 'failed');
@@ -210,7 +231,7 @@ await run('plan_creation without dataset reports missing payload', async () => {
     const { entries, markTrace } = createTraceRecorder();
     const action = withEnvelope({
         responseType: 'plan_creation',
-        thought: 'Need a chart',
+        reason: 'Need a chart',
         stepId: TEST_STEP_ID,
         plan: {
             chartType: 'bar',
@@ -224,10 +245,47 @@ await run('plan_creation without dataset reports missing payload', async () => {
     assert.strictEqual(failure?.telemetry?.errorCode, ACTION_ERROR_CODES.MISSING_PLAN_PAYLOAD);
 });
 
+await run('plan_creation requests metric column clarification when missing valueColumn', async () => {
+    const { runtime, state } = createRuntime({
+        csvData: {
+            fileName: 'test.csv',
+            data: [
+                { Region: 'APAC', Revenue: 120 },
+                { Region: 'EMEA', Revenue: 95 },
+            ],
+        },
+        columnProfiles: [
+            { name: 'Region', type: 'categorical' },
+            { name: 'Revenue', type: 'numerical' },
+        ],
+    });
+    const { entries, markTrace } = createTraceRecorder();
+    const action = withEnvelope({
+        responseType: 'plan_creation',
+        reason: 'Need average revenue',
+        plan: {
+            chartType: 'bar',
+            title: 'Avg revenue by region',
+            description: 'desc',
+            aggregation: 'avg',
+            groupByColumn: 'Region',
+        },
+    });
+
+    const result = await runActionThroughRegistry(action, runtime, 0, markTrace);
+    assert.strictEqual(result.type, 'halt');
+    assert.strictEqual(result.observation?.status, 'pending');
+    assert.strictEqual(state.pendingClarifications.length, 1);
+    assert.strictEqual(state.pendingClarifications[0]?.targetProperty, 'valueColumn');
+    assert.strictEqual(state.agentAwaitingUserInput, true);
+    const successTrace = entries.find(entry => entry.status === 'succeeded');
+    assert.ok(successTrace);
+});
+
 await run('dom_action without payload is rejected', async () => {
     const { runtime } = createRuntime();
     const { entries, markTrace } = createTraceRecorder();
-    const action = withEnvelope({ responseType: 'dom_action', thought: 'Need to tweak card' });
+    const action = withEnvelope({ responseType: 'dom_action', reason: 'Need to tweak card' });
 
     await runActionThroughRegistry(action, runtime, 0, markTrace);
     const failure = entries.find(entry => entry.status === 'failed');
@@ -249,7 +307,7 @@ await run('removeCard dom_action invokes executor when payload valid', async () 
     const { markTrace } = createTraceRecorder();
     const action = withEnvelope({
         responseType: 'dom_action',
-        thought: 'Clean up card',
+        reason: 'Clean up card',
         domAction: { toolName: 'removeCard', args: { cardId: 'card-123' } },
     });
 
@@ -273,7 +331,7 @@ await run('removeCard dom_action auto-resolves cardId from title', async () => {
     const { entries, markTrace } = createTraceRecorder();
     const action = withEnvelope({
         responseType: 'dom_action',
-        thought: 'Clean up card by title',
+        reason: 'Clean up card by title',
         domAction: { toolName: 'removeCard', args: { cardTitle: 'Total Amount by Payee Name' } },
     });
 
@@ -287,7 +345,7 @@ await run('execute_js_code without dataset produces dataset error', async () => 
     const { entries, markTrace } = createTraceRecorder();
     const action = withEnvelope({
         responseType: 'execute_js_code',
-        thought: 'Need transform',
+        reason: 'Need transform',
         code: { explanation: 'noop', jsFunctionBody: 'return data;' },
     });
 
@@ -310,7 +368,7 @@ await run('execute_js_code no-op triggers retry with transform error', async () 
     const { entries, markTrace } = createTraceRecorder();
     const action = withEnvelope({
         responseType: 'execute_js_code',
-        thought: 'Attempt transform with no change',
+        reason: 'Attempt transform with no change',
         code: {
             explanation: 'Return the dataset as-is (should be rejected)',
             jsFunctionBody: 'return data;',
@@ -329,7 +387,7 @@ await run('filter_spreadsheet without query reuses meaningful user message', asy
     const { entries, markTrace } = createTraceRecorder();
     const action = withEnvelope({
         responseType: 'filter_spreadsheet',
-        thought: 'Need focus',
+        reason: 'Need focus',
         args: { query: '' },
     });
 
@@ -345,7 +403,7 @@ await run('filter_spreadsheet without query and blank message shows full table',
     const { entries, markTrace } = createTraceRecorder();
     const action = withEnvelope({
         responseType: 'filter_spreadsheet',
-        thought: 'Need focus',
+        reason: 'Need focus',
         args: {},
     });
 
@@ -361,7 +419,7 @@ await run('filter_spreadsheet ignores greeting fallback', async () => {
     const { entries, markTrace } = createTraceRecorder();
     const action = withEnvelope({
         responseType: 'filter_spreadsheet',
-        thought: 'Need focus',
+        reason: 'Need focus',
         args: {},
     });
 
@@ -375,7 +433,7 @@ await run('filter_spreadsheet ignores greeting fallback', async () => {
 await run('clarification_request without payload is rejected', async () => {
     const { runtime } = createRuntime();
     const { entries, markTrace } = createTraceRecorder();
-    const action = withEnvelope({ responseType: 'clarification_request', thought: 'Need more info' });
+    const action = withEnvelope({ responseType: 'clarification_request', reason: 'Need more info' });
 
     await runActionThroughRegistry(action, runtime, 0, markTrace);
     const failure = entries.find(entry => entry.status === 'failed');
@@ -387,7 +445,7 @@ await run('proceed_to_analysis succeeds and records duration', async () => {
     const { entries, markTrace } = createTraceRecorder();
     const action = withEnvelope({
         responseType: 'proceed_to_analysis',
-        thought: 'Continue',
+        reason: 'Continue',
         stateTag: 'analysis_shared',
     });
 
@@ -401,7 +459,7 @@ await run('proceed_to_analysis succeeds and records duration', async () => {
 await run('plan_state_update without payload is rejected', async () => {
     const { runtime } = createRuntime();
     const { entries, markTrace } = createTraceRecorder();
-    const action = withEnvelope({ responseType: 'plan_state_update', thought: 'Need to log goal' });
+    const action = withEnvelope({ responseType: 'plan_state_update', reason: 'Need to log goal' });
 
     await runActionThroughRegistry(action, runtime, 0, markTrace);
     const failure = entries.find(entry => entry.status === 'failed');
@@ -416,7 +474,7 @@ await run('plan_state_update normalizes payload and stores plan state', async ()
     const { entries, markTrace } = createTraceRecorder();
     const action = withEnvelope({
         responseType: 'plan_state_update',
-        thought: 'Clarify mission',
+        reason: 'Clarify mission',
         stepId: 'collect-metrics',
         planState: buildPlanStatePayload({
             goal: '  Increase revenue insights  ',
@@ -454,7 +512,7 @@ await run('plan_state_update leaves steps untouched when user just greeted', asy
     const greetingSteps = buildSteps('acknowledge user greeting');
     const action = withEnvelope({
         responseType: 'plan_state_update',
-        thought: 'Set baseline plan',
+        reason: 'Set baseline plan',
         stepId: greetingSteps[0].id,
         planState: buildPlanStatePayload({
             goal: ' Analyze data ',
@@ -484,7 +542,7 @@ await run('plan_creation enforces pending step when policy is strict', async () 
     const { entries, markTrace } = createTraceRecorder();
     const action = withEnvelope({
         responseType: 'plan_creation',
-        thought: 'Need chart',
+        reason: 'Need chart',
         plan: {
             chartType: 'bar',
             title: 'Spend by Vendor',
@@ -511,7 +569,7 @@ await run('plan_creation allows loose steps when policy permits', async () => {
     const { entries, markTrace } = createTraceRecorder();
     const action = withEnvelope({
         responseType: 'plan_creation',
-        thought: 'Need chart',
+        reason: 'Need chart',
         plan: {
             chartType: 'bar',
             title: 'Spend by Vendor',

@@ -20,7 +20,7 @@ This advanced tool allows users to have a conversation with their data, asking f
     *   **Verify Transformations**: See the direct results of any data cleaning or transformation the AI performs on your data.
 
 *   **Planner + ReAct Framework**: For complex requests, the agent now acts as a planner. It first formulates a step-by-step plan, announces it, and then executes that plan using the Reason+Act (ReAct) model.
-    *   **Explicit Planning**: Before starting a multi-step task, the AI will state its plan in its "thought" process (e.g., "My plan is to: 1. Filter the data. 2. Create a chart. 3. Summarize the results."). This makes its strategy clear from the outset.
+    *   **Explicit Planning**: Before starting a multi-step task, the AI will state its plan inside the `reason` field (e.g., "Plan: 1. Filter the data. 2. Create a chart. 3. Summarize the results."). This makes its strategy clear from the outset.
     *   **Sequential Execution**: The agent executes the plan by chaining multiple tools together in a sequence. It can perform a data transformation, then create several analysis cards from the new data, and finally provide a text summary that synthesizes the results, all in response to a single prompt.
     *   **Full Self-Explanation**: The agent remembers every action it takes, including the initial data preparation script. You can ask it, "Where did the 'Software Product 10' value come from?", and it will consult its logs to explain exactly how it cleaned and standardized the raw data, building trust and ensuring reproducibility.
     *   **Strict Schema Validation**: Every AI action is validated against a Gemini-compatible JSON schema that requires a full plan payload. If the AI omits required fields, the planner automatically requests a corrected response before anything touches your data.
@@ -72,6 +72,36 @@ To use the AI-powered features, you need to select an AI provider and configure 
 
 Your settings are saved securely in your browser's local storage and are never transmitted anywhere else.
 
+## 🌐 Embedding & Allowed Origins
+
+Need to drop this UI inside another dashboard (iframe, new window, etc.)? Configure a cross-origin whitelist before loading the bundle:
+
+```html
+<script>
+  window.CSV_AGENT_ALLOWED_ORIGINS = [
+    'https://partner.example.com',
+    'https://analytics.company.com'
+  ];
+</script>
+<script src="/csv-agent/index.js" type="module"></script>
+```
+
+*   **Production**: Only the current origin plus entries in `window.CSV_AGENT_ALLOWED_ORIGINS` can exchange `postMessage` payloads (e.g., streaming CSV blobs). Messages from any other origin are dropped.
+*   **Development**: When running on `localhost/127.0.0.1`, the app keeps the previous “same-origin only” guard so you can iterate safely without updating the whitelist.
+*   **Ready Signal**: Once loaded, the app emits `{ type: 'ready' }` both to `window.opener` and `window.parent` for every allowed origin, so host shells know exactly when the agent is ready to receive CSV payloads.
+
+This lightweight allowlist keeps embedded deployments secure while fully enabling iframe integrations.
+
+## 📈 Sampled vs. Full Scan Aggregations
+
+By default the agent now runs **full scans** whenever the dataset has ≤5,000 rows so the numbers always reflect the entire table. Larger datasets start in sampled mode (for latency), but you can always escalate to a full scan. The banner above each card tells you which mode was actually used:
+
+* `Full scan` – every row was processed (automatically for ≤5k rows, or when you explicitly rerun a larger chart).
+* `Sampled result` – appears when the worker still fell back (e.g., timeout or a browser cap). The banner lists how many rows were processed and surfaces the warning from the worker. A **Run full scan** button lets you retry (with allowFullScan already set) after reviewing the note.
+* The banner also lists execution time and “last run” so you can see when the metric was refreshed.
+
+If you ever see `Sampled result`, click **Run full scan** to recompute. A toast + progress log entry will confirm the rerun outcome.
+
 ## 🚀 How to Use
 
 1.  **Configure your AI Provider & API Key**: Before you begin, open the settings (⚙️), select your preferred AI provider (Google Gemini or OpenAI) and add your API Key.
@@ -103,3 +133,17 @@ Your settings are saved securely in your browser's local storage and are never t
 *   **CSV Parsing**: PapaParse
 *   **Local Storage**: IndexedDB (for session reports & AI memory) & LocalStorage (for settings) via the `idb` library.
 *   **Automation Runtime**: A custom `AgentWorker` orchestrator that enforces schema validation, handles retries, and short-circuits redundant DOM operations for a smoother “hands-free” experience.
+
+## ✅ Fact-Checked Highlights
+
+1.  Chart.js and `chartjs-plugin-zoom` are injected via the CDN entries in `index.html` and consumed by `ChartRenderer`, so interactive zoom/pan stays local and only runs when the bundles load (`components/ChartRenderer.tsx`).
+2.  Both Gemini and OpenAI responses funnel through `services/ai/chatResponder.ts`, where the Gemini branch already enforces the `multiActionChatResponseSchema` and OpenAI uses a similar request/response flow, keeping `plan_state_update` and DOM actions synchronized with the planner (`services/ai/schemas.ts`).
+3.  CSV parsing, profiling, and caching are performed entirely in-browser: `utils/dataProcessor.ts` uses PapaParse + sanitizers, while `store/slices/fileUploadSlice.ts` hooks into IndexedDB-backed persistence so history and analysis cards survive reloads.
+4.  Long-term memory relies on the Transformers.js pipeline downloaded in `services/vectorStore.ts`, and vector documents are persisted with embeddings to replay conversations after reopening the workspace.
+5.  OpenAI calls now go through the `/v1/responses` API with `multiActionChatResponseJsonSchema`, so every action the model emits already satisfies the strict `stateTag` + planner contract before our own validator runs (`services/ai/apiClient.ts`, `services/ai/chatResponder.ts`).
+
+## 🔍 Code Review Notes
+
+1.  **Chart rendering depends on global CDN bundles** — `components/ChartRenderer.tsx` assumes `Chart`/`ChartZoom` are present, which fails hard when the CDN load stalls, so the UI can crash before the user even uploads a file.
+2.  **OpenAI responses lack the strict JSON schema** recorded for Gemini, which makes the planner brittle when `actions` or `plan_state_update` fields are missing (`services/ai/chatResponder.ts`).
+3.  **Settings and CSV parsing UX** can be confusing: model names are hard-coded (`components/SettingsModal.tsx`), and every upload treats the first row as raw data, producing `column_#` headers (`utils/dataProcessor.ts`), so users don’t clearly see or control their column names.

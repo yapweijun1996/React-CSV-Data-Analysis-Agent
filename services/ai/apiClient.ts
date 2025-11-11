@@ -1,6 +1,7 @@
 
 import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 import OpenAI from 'openai';
+import type { ResponseCreateParams } from 'openai/resources/responses/responses';
 import { Settings } from '../../types';
 
 // Helper for retrying API calls
@@ -118,20 +119,66 @@ type OpenAIJsonSchemaFormat = {
     strict?: boolean;
 };
 
-const resolveResponseFormat = (
-    format?: boolean | OpenAIJsonSchemaFormat
-): { type: 'json_object' } | { type: 'json_schema'; json_schema: { name: string; schema: Record<string, any>; strict?: boolean } } | undefined => {
+type ResponseFormatConfig =
+    | { type: 'json_object' }
+    | { type: 'json_schema'; name: string; schema: Record<string, any>; strict?: boolean };
+
+const RESPONSE_ROLE_MAP = new Set(['user', 'assistant', 'system', 'developer'] as const);
+
+const mapMessageRole = (role: string): 'user' | 'assistant' | 'system' | 'developer' => {
+    if (RESPONSE_ROLE_MAP.has(role as any)) {
+        return role as 'user' | 'assistant' | 'system' | 'developer';
+    }
+    // Default to user role for unsupported ones (e.g., 'function' or 'tool')
+    return 'user';
+};
+
+const stringifyMessageContent = (
+    content: OpenAI.Chat.Completions.ChatCompletionMessageParam['content'],
+): string => {
+    if (typeof content === 'string') {
+        return content;
+    }
+    if (Array.isArray(content)) {
+        return content
+            .map(part => {
+                if (typeof part === 'string') return part;
+                if ('text' in part && typeof part.text === 'string') {
+                    return part.text;
+                }
+                return JSON.stringify(part);
+            })
+            .join('\n');
+    }
+    if (content && typeof content === 'object' && 'text' in content) {
+        const textPart = (content as { text?: string }).text;
+        if (typeof textPart === 'string') {
+            return textPart;
+        }
+    }
+    return '';
+};
+
+const convertMessagesToResponseInput = (
+    messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+) => {
+    return messages.map(message => ({
+        role: mapMessageRole(message.role),
+        content: stringifyMessageContent(message.content),
+        type: 'message' as const,
+    }));
+};
+
+const resolveResponseFormat = (format?: boolean | OpenAIJsonSchemaFormat): ResponseFormatConfig | undefined => {
     if (typeof format === 'boolean') {
         return format ? { type: 'json_object' } : undefined;
     }
     if (format) {
         return {
             type: 'json_schema',
-            json_schema: {
-                name: format.name,
-                schema: format.schema,
-                strict: format.strict ?? true,
-            },
+            name: format.name,
+            schema: format.schema,
+            strict: format.strict ?? true,
         };
     }
     return undefined;
@@ -147,23 +194,28 @@ export const callOpenAI = async (
     const openai = new OpenAI({ apiKey: settings.openAIApiKey, dangerouslyAllowBrowser: true });
 
     const responseFormat = resolveResponseFormat(jsonFormatOrSchema);
-    const requestPayload = {
+    const requestPayload: ResponseCreateParams = {
         model: settings.model,
-        messages,
+        input: convertMessagesToResponseInput(messages),
     };
     if (responseFormat) {
-        requestPayload.response_format = responseFormat;
+        requestPayload.text = {
+            format: responseFormat,
+        };
     }
-    
-    const response: OpenAI.Chat.ChatCompletion = await withRetry(() => openai.chat.completions.create(
-        requestPayload,
-        signal ? { signal } : undefined
-    ), 2, signal);
-    
-    const content = response.choices[0].message.content;
-    if (!content) throw new Error("OpenAI returned an empty response.");
+
+    const response = await withRetry(
+        () => openai.responses.create(requestPayload, signal ? { signal } : undefined),
+        2,
+        signal,
+    );
+
+    const content = (response.output_text ?? '').trim();
+    if (!content) {
+        throw new Error('OpenAI returned an empty response.');
+    }
     return content;
-}
+};
 
 export const callGemini = async (settings: Settings, prompt: string, schema?: any, signal?: AbortSignal): Promise<string> => {
     if (!settings.geminiApiKey) throw new Error("Gemini API key is not set.");

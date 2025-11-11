@@ -1,6 +1,13 @@
 import type { CardKind, CardDataRef } from './csvAgentDb';
-import { saveCardResult } from './csvAgentDb';
+import { saveCardResult, readAllRows, readColumnStoreRecord, readSampledRows } from './csvAgentDb';
 import type { AnalysisPlan } from '../types';
+import {
+    buildProfileResult,
+    buildSampleResult,
+    runAggregate,
+    type DataWorkerDeps,
+} from './dataWorkerShared';
+import type { AggregatePayload, AggregateResult, ProfileResult, SampleResult } from './dataToolTypes';
 
 type WorkerAction = 'profile' | 'sample' | 'aggregate';
 
@@ -24,24 +31,6 @@ interface SamplePayload {
     withColumns?: boolean;
 }
 
-type AggregatePayload = {
-    datasetId: string;
-    by?: string[];
-    metrics: Array<{ column?: string; fn: 'sum' | 'avg' | 'count' | 'min' | 'max'; as?: string }>;
-    filter?: Array<{
-        column: string;
-        op: 'eq' | 'neq' | 'gt' | 'lt' | 'gte' | 'lte' | 'contains' | 'in';
-        value?: string | number | null;
-        values?: Array<string | number | null>;
-        caseInsensitive?: boolean;
-    }>;
-    orderBy?: Array<{ column: string; direction?: 'asc' | 'desc' }>;
-    limit?: number;
-    mode?: 'sample' | 'full';
-    sampleSize?: number;
-    allowFullScan?: boolean;
-};
-
 type WorkerPayloadMap = {
     profile: ProfilePayload;
     sample: SamplePayload;
@@ -52,44 +41,11 @@ export type ToolResult<T> =
     | { ok: true; data: T; durationMs: number }
     | { ok: false; reason: string; hint?: string; durationMs?: number };
 
-type ProfileResult = {
-    rowCount: number;
-    sampledRows: number;
-    columns: Array<{
-        name: string;
-        type: string;
-        distinct: number;
-        emptyPercentage: number;
-        examples: string[];
-    }>;
-    warnings: string[];
-};
-
-type SampleResult = {
-    rows: Array<Record<string, any>>;
-    sampled: boolean;
-    columns?: Array<{ name: string; type: string }>;
-};
-
-type AggregateResult = {
-    schema: Array<{ name: string; type: string }>;
-    rows: Array<Record<string, any>>;
-    provenance: {
-        datasetId: string;
-        sampled: boolean;
-        mode: 'sample' | 'full';
-        processedRows: number;
-        totalRows: number;
-        queryHash: string;
-        filterCount: number;
-        warnings: string[];
-    };
-};
-
 type PendingResolver<T> = (response: WorkerEnvelope<T>) => void;
 
 let workerInstance: Worker | null = null;
 const pendingRequests = new Map<string, PendingResolver<any>>();
+let workerDisabledReason: string | null = null;
 
 const createWorker = (): Worker => {
     if (typeof window === 'undefined' || typeof Worker === 'undefined') {
@@ -165,13 +121,91 @@ const callWorker = async <K extends WorkerAction, R>(
     }
 };
 
+const disableWorker = (reason?: string) => {
+    if (workerDisabledReason) return;
+    workerDisabledReason = reason ?? 'Data worker disabled due to browser limitations.';
+    if (workerInstance) {
+        workerInstance.terminate();
+        workerInstance = null;
+    }
+    pendingRequests.clear();
+    console.warn(`[dataTools] Worker disabled: ${workerDisabledReason}`);
+};
+
+const shouldDisableWorker = (reason?: string, hint?: string): boolean => {
+    const text = `${reason ?? ''} ${hint ?? ''}`.toLowerCase();
+    return text.includes('indexeddb') || text.includes('falling back to main thread');
+};
+
+const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+const formatError = (error: unknown) => (error instanceof Error ? error.message : String(error ?? 'Unknown error'));
+
+const mainThreadDeps: DataWorkerDeps = {
+    readColumnStoreRecord,
+    readSampledRows,
+    readAllRows,
+};
+
+const runLocalProfile = async (datasetId: string, sampleSize?: number): Promise<ToolResult<ProfileResult>> => {
+    try {
+        const started = now();
+        const data = await buildProfileResult(mainThreadDeps, { datasetId, sampleSize });
+        return { ok: true, data, durationMs: now() - started };
+    } catch (error) {
+        return { ok: false, reason: formatError(error) };
+    }
+};
+
+const runLocalSample = async (
+    datasetId: string,
+    options: { n?: number; withColumns?: boolean },
+): Promise<ToolResult<SampleResult>> => {
+    try {
+        const started = now();
+        const data = await buildSampleResult(mainThreadDeps, { datasetId, ...options });
+        return { ok: true, data, durationMs: now() - started };
+    } catch (error) {
+        return { ok: false, reason: formatError(error) };
+    }
+};
+
+const runLocalAggregate = async (payload: AggregatePayload): Promise<ToolResult<AggregateResult>> => {
+    try {
+        const started = now();
+        const data = await runAggregate(mainThreadDeps, payload);
+        return { ok: true, data, durationMs: now() - started };
+    } catch (error) {
+        return { ok: false, reason: formatError(error) };
+    }
+};
+
+const runWithFallback = async <K extends WorkerAction, R>(
+    action: K,
+    payload: WorkerPayloadMap[K],
+    fallback: () => Promise<ToolResult<R>>,
+): Promise<ToolResult<R>> => {
+    if (workerDisabledReason) {
+        return fallback();
+    }
+    const result = await callWorker<K, R>(action, payload);
+    if (!result.ok && shouldDisableWorker(result.reason, result.hint)) {
+        disableWorker(result.reason ?? result.hint);
+        return fallback();
+    }
+    return result;
+};
+
 export const dataTools = {
     profile: (datasetId: string, sampleSize?: number) =>
-        callWorker<'profile', ProfileResult>('profile', { datasetId, sampleSize }),
+        runWithFallback<'profile', ProfileResult>('profile', { datasetId, sampleSize }, () =>
+            runLocalProfile(datasetId, sampleSize),
+        ),
     sample: (datasetId: string, options?: { n?: number; withColumns?: boolean }) =>
-        callWorker<'sample', SampleResult>('sample', { datasetId, ...(options ?? {}) }),
+        runWithFallback<'sample', SampleResult>('sample', { datasetId, ...(options ?? {}) }, () =>
+            runLocalSample(datasetId, options ?? {}),
+        ),
     aggregate: (payload: AggregatePayload) =>
-        callWorker<'aggregate', AggregateResult>('aggregate', payload),
+        runWithFallback<'aggregate', AggregateResult>('aggregate', payload, () => runLocalAggregate(payload)),
     createCardFromResult: async ({
         datasetId,
         title,
@@ -215,4 +249,4 @@ export const dataTools = {
     },
 };
 
-export type { ProfileResult, SampleResult, AggregateResult, AggregatePayload };
+export type { ProfileResult, SampleResult, AggregateResult, AggregatePayload } from './dataToolTypes';

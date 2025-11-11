@@ -48,7 +48,7 @@ await run('auto-seeds plan_state_update when none active', () => {
             {
                 type: 'text_response',
                 responseType: 'text_response',
-                thought: 'Greet the user.',
+                reason: 'Greet the user.',
                 stepId: 'acknowledge_user',
                 text: 'Hello there!',
             },
@@ -68,7 +68,7 @@ await run('dom_action without target downgrades to text response', () => {
     const domAction: AiAction = {
         type: 'dom_action',
         responseType: 'dom_action',
-        thought: 'Remove a chart.',
+        reason: 'Remove a chart.',
         stepId: 'remove_card',
         domAction: {
             toolName: 'removeCard',

@@ -6,7 +6,7 @@ This document explains how the agent pipeline is structured after introducing th
 
 - Build the planner context (memory snapshot, card context, dataset sample, etc.) and call `generateChatResponse` with the correct scaffolding.
 - Validate every AI multi-action response via schema + payload guards before executing anything. Invalid payloads trigger structured telemetry and a retry instruction.
-- Dispatch actions sequentially, wrapping each executor with the core middleware stack (`chainOfThoughtGuard`, `thoughtLogging`, `telemetry`).
+- Dispatch actions sequentially, wrapping each executor with the core middleware stack (`chainOfThoughtGuard`, `reasonLogging`, `telemetry`).
 - Record traces, observations, and plan-state updates back into the global store so the UI can surface progress.
 - Manage busy state + cancellation signals, ensuring we halt cleanly when clarification requests or user cancels occur.
 

@@ -157,7 +157,12 @@ export const persistCleanDataset = async (options: {
         const columnStore = tx.objectStore(COLUMNS_STORE);
         const provenanceStore = tx.objectStore(PROVENANCE_STORE);
 
-        await cleanStore.clear();
+        const index = cleanStore.index('by_dataset');
+        let existingCursor = await index.openCursor(datasetId);
+        while (existingCursor) {
+            await existingCursor.delete();
+            existingCursor = await existingCursor.continue();
+        }
         const rowsChunks = chunkRows(rows, chunkSize);
         const now = new Date().toISOString();
         for (let index = 0; index < rowsChunks.length; index += 1) {

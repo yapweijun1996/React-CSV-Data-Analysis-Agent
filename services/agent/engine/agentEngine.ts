@@ -3,25 +3,10 @@ import type { EngineActionCandidate, EngineContext, EnginePlaybook } from './con
 import { lookupToolProfile } from './toolRegistry';
 import { selectPlaybookForIntent } from './playbooks';
 import { runAutoHealPipeline } from './autoHeal';
+import { StateTagFactory } from '../stateTagFactory';
 
 const riskWeight: Record<string, number> = { low: 0.1, medium: 0.4, high: 0.9 };
 const latencyWeight: Record<string, number> = { short: 0.1, medium: 0.3, long: 0.7 };
-
-class StateTagFactory {
-    private seq = 0;
-    private lastEpoch = 0;
-
-    mint(now: number, _hint?: string): string {
-        const epoch = now > this.lastEpoch ? now : this.lastEpoch;
-        if (epoch !== this.lastEpoch) {
-            this.seq = 0;
-            this.lastEpoch = epoch;
-        }
-        this.seq += 1;
-        const paddedEpoch = epoch.toString().padStart(13, '0');
-        return `${paddedEpoch}-${this.seq}`;
-    }
-}
 
 const intentMatchesAction = (intent: string | undefined, action: AiAction): boolean => {
     if (!intent) return false;
@@ -58,7 +43,7 @@ const createPlaybookTextResponse = (playbook: EnginePlaybook, context: EngineCon
     type: 'text_response',
     responseType: 'text_response',
     stepId: context.planState?.currentStepId ?? 'ad_hoc_response',
-    thought: `Applying playbook ${playbook.id} for intent ${playbook.intent}.`,
+    reason: `Applying playbook ${playbook.id} for intent ${playbook.intent}.`,
     text: renderTemplate(playbook.ui.message_template, context),
 });
 
@@ -71,7 +56,7 @@ const deriveCandidate = (
     const profile = lookupToolProfile(action);
     const utilityBase = action.responseType === 'plan_state_update' ? 1.2 : 0.8;
     const utilityBoost = intentMatchesAction(context.detectedIntent?.intent, action) ? 0.4 : 0;
-    const confidence = action.thought?.trim() ? Math.min(1, 0.5 + action.thought.trim().length / 200) : 0.4;
+    const confidence = action.reason?.trim() ? Math.min(1, 0.5 + action.reason.trim().length / 200) : 0.4;
     const cost = profile?.costEstimate ?? 3;
     const risk = riskWeight[profile?.risk ?? 'medium'] ?? 0.4;
     const latency = latencyWeight[profile?.latencyClass ?? 'medium'] ?? 0.3;
@@ -131,7 +116,7 @@ const limitAtomicActions = (
         selected.push({
             type: 'plan_state_update',
             responseType: 'plan_state_update',
-            thought: 'Auto-initializing plan because model skipped it.',
+            reason: 'Auto-initializing plan because model skipped it.',
             stepId: 'ad_hoc_response',
         } as AiAction);
     }
@@ -152,7 +137,7 @@ const ensureFallbackTextAction = (actions: AiAction[], context: EngineContext): 
             type: 'text_response',
             responseType: 'text_response',
             stepId: context.planState?.currentStepId ?? 'ad_hoc_response',
-            thought: 'Fallback explanation: no valid actions after governance.',
+            reason: 'Fallback explanation: no valid actions after governance.',
             text: 'I am ready to help—please let me know what to analyze or adjust.',
         },
     ];
@@ -176,7 +161,7 @@ export class AgentEngine {
                 type: 'plan_state_update',
                 responseType: 'plan_state_update',
                 stepId: context.planState?.currentStepId ?? 'ad_hoc_response',
-                thought: `Playbook ${playbook.id} requires a plan snapshot.`,
+                reason: `Playbook ${playbook.id} requires a plan snapshot.`,
                 planState: context.planState ?? undefined,
             };
             candidates.unshift(deriveCandidate(planAction, context, 'playbook', playbook));

@@ -97,6 +97,7 @@ export interface StoreActions {
     handleTopNChange: (cardId: string, topN: number | null) => void;
     handleHideOthersChange: (cardId: string, hide: boolean) => void;
     handleToggleLegendLabel: (cardId: string, label: string) => void;
+    rerunAggregationForCard: (cardId: string, options?: { mode?: 'sample' | 'full'; allowFullScan?: boolean }) => Promise<boolean>;
     clearCardFilter: (cardId: string) => void;
     handleLoadReport: (id: string) => Promise<void>;
     handleDeleteReport: (id: string) => Promise<void>;

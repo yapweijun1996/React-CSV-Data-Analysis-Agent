@@ -126,17 +126,25 @@ export const createChatSlice = (
                         deps.updateClarificationStatus(clarificationId, 'resolving');
                         const { pendingPlan, targetProperty } = targetClarification;
 
+                        const completeClarification = () => {
+                            set(state => ({
+                                pendingClarifications: state.pendingClarifications.map(clar =>
+                                    clar.id === clarificationId ? { ...clar, status: 'resolved' } : clar,
+                                ),
+                                agentAwaitingUserInput: false,
+                                agentAwaitingPromptId:
+                                    state.agentAwaitingPromptId === clarificationId ? null : state.agentAwaitingPromptId,
+                                activeClarificationId:
+                                    state.activeClarificationId === clarificationId ? null : state.activeClarificationId,
+                            }));
+                        };
+
                         if (targetClarification.contextType === 'dom_action' && pendingPlan?.domActionContext) {
                             const domContext = pendingPlan.domActionContext;
                             const mergedArgs = { ...(domContext.args ?? {}), cardId: userChoice.value, cardTitle: userChoice.label };
                             get().executeDomAction({ toolName: domContext.toolName, args: mergedArgs });
                             deps.updateClarificationStatus(clarificationId, 'resolved');
                             set(state => ({
-                                pendingClarifications: state.pendingClarifications.map(clar =>
-                                    clar.id === clarificationId ? { ...clar, status: 'resolved' } : clar,
-                                ),
-                                agentAwaitingUserInput: false,
-                                agentAwaitingPromptId: null,
                                 chatHistory: [
                                     ...state.chatHistory,
                                     {
@@ -150,6 +158,7 @@ export const createChatSlice = (
                                     },
                                 ],
                             }));
+                            completeClarification();
                             get().addProgress(`Applied ${domContext.toolName} to "${userChoice.label}".`);
                             return;
                         }
@@ -273,6 +282,7 @@ export const createChatSlice = (
 
                         await deps.runPlanWithChatLifecycle(completedPlan, csvData, runId);
                         deps.updateClarificationStatus(clarificationId, 'resolved');
+                        completeClarification();
                     } catch (error) {
                         if (!get().isRunCancellationRequested(runId)) {
                             const errorMessage = error instanceof Error ? error.message : String(error);
@@ -315,6 +325,14 @@ export const createChatSlice = (
             deps.updateClarificationStatus(clarificationId, 'skipped');
             set(prev => ({
                 chatHistory: [...prev.chatHistory, userResponseMessage, aiMessage],
+                pendingClarifications: prev.pendingClarifications.map(clar =>
+                    clar.id === clarificationId ? { ...clar, status: 'skipped' } : clar,
+                ),
+                agentAwaitingUserInput: false,
+                agentAwaitingPromptId:
+                    prev.agentAwaitingPromptId === clarificationId ? null : prev.agentAwaitingPromptId,
+                activeClarificationId:
+                    prev.activeClarificationId === clarificationId ? null : prev.activeClarificationId,
             }));
             get().endBusy();
         },

@@ -3,6 +3,7 @@ import { create } from 'zustand';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import {
     AnalysisCardData,
+    AggregationMeta,
     ChatMessage,
     ProgressMessage,
     CsvData,
@@ -227,6 +228,7 @@ const MIN_MAIN_WIDTH = 600;
 const MAX_AGENT_TRACE_HISTORY = 40;
 const MAX_PLANNER_OBSERVATIONS = 12;
 const MAX_AGENT_VALIDATION_EVENTS = 25;
+const AUTO_FULL_SCAN_ROW_THRESHOLD = 5000;
 
 const deriveAliasMap = (profiles: ColumnProfile[] = []) => buildColumnAliasMap(profiles.map(p => p.name));
 
@@ -254,6 +256,66 @@ const inferCardKind = (plan: AnalysisPlan): CardKind => {
     }
 };
 
+const buildAggregatePayloadForPlan = (
+    plan: AnalysisPlan,
+    datasetId: string | null,
+    csvData: CsvData | null,
+    rowCountHint?: number,
+): AggregatePayload | null => {
+    if (!datasetId) return null;
+    if (plan.chartType === 'scatter' || plan.chartType === 'combo') return null;
+    if (!plan.groupByColumn || !plan.aggregation) return null;
+    if (plan.aggregation !== 'count' && !plan.valueColumn) return null;
+    const alias = plan.valueColumn ?? 'count';
+    const fallbackOrder =
+        plan.chartType === 'line'
+            ? [{ column: plan.groupByColumn, direction: 'asc' as const }]
+            : [{ column: alias, direction: 'desc' as const }];
+    const orderBy =
+        plan.orderBy && plan.orderBy.length > 0
+            ? plan.orderBy.map(order => ({
+                  column: order.column,
+                  direction: (order.direction ?? (plan.chartType === 'line' ? 'asc' : 'desc')) as 'asc' | 'desc',
+              }))
+            : fallbackOrder;
+    const availableRows = rowCountHint ?? csvData?.data?.length ?? 0;
+    const sampleSize = availableRows > 0 ? Math.min(5000, availableRows) : 5000;
+    const shouldForceFullScan = availableRows > 0 && availableRows <= AUTO_FULL_SCAN_ROW_THRESHOLD;
+    const limit = typeof plan.limit === 'number' ? plan.limit : plan.defaultTopN;
+    const payload: AggregatePayload = {
+        datasetId,
+        by: [plan.groupByColumn],
+        metrics: [
+            {
+                fn: plan.aggregation as AggregatePayload['metrics'][number]['fn'],
+                column: plan.aggregation === 'count' ? undefined : plan.valueColumn,
+                as: alias,
+            },
+        ],
+        filter: plan.rowFilter
+            ? [
+                  {
+                      column: plan.rowFilter.column,
+                      op: 'in',
+                      values: plan.rowFilter.values,
+                  },
+              ]
+            : undefined,
+        limit: typeof limit === 'number' ? limit : undefined,
+        mode: shouldForceFullScan ? 'full' : 'sample',
+        sampleSize,
+        orderBy,
+        allowFullScan: shouldForceFullScan,
+    };
+    if (shouldForceFullScan) {
+        payload.allowFullScan = true;
+    }
+    if (!shouldForceFullScan) {
+        payload.allowFullScan = false;
+    }
+    return payload;
+};
+
 const convertViewToCard = (view: ViewStoreRecord<CardDataRef>): AnalysisCardData => {
     const snapshot = view.dataRef.planSnapshot ?? {};
     const chartType = snapshot.chartType ?? 'bar';
@@ -271,6 +333,8 @@ const convertViewToCard = (view: ViewStoreRecord<CardDataRef>): AnalysisCardData
         defaultTopN: snapshot.defaultTopN,
         defaultHideOthers: snapshot.defaultHideOthers,
         rowFilter: snapshot.rowFilter,
+        orderBy: snapshot.orderBy,
+        limit: snapshot.limit ?? null,
     };
     return {
         id: view.id,
@@ -286,6 +350,14 @@ const convertViewToCard = (view: ViewStoreRecord<CardDataRef>): AnalysisCardData
         dataRefId: view.id,
         queryHash: view.queryHash,
         isSampledResult: view.dataRef.sampled,
+        aggregationMeta: {
+            mode: view.dataRef.sampled ? 'sample' : 'full',
+            sampled: view.dataRef.sampled,
+            processedRows: view.dataRef.rows.length,
+            totalRows: view.dataRef.rows.length,
+            warnings: [],
+            lastRunAt: view.createdAt ?? new Date().toISOString(),
+        },
     };
 };
 
@@ -874,46 +946,22 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             });
         };
 
-        const buildAggregatePayload = (plan: AnalysisPlan): AggregatePayload | null => {
-            if (!datasetId) return null;
-            if (plan.chartType === 'scatter' || plan.chartType === 'combo') return null;
-            if (!plan.groupByColumn || !plan.aggregation) return null;
-            if (plan.aggregation !== 'count' && !plan.valueColumn) return null;
-            const alias = plan.valueColumn ?? 'count';
-            const orderBy =
-                plan.chartType === 'line'
-                    ? [{ column: plan.groupByColumn, direction: 'asc' as const }]
-                    : [{ column: alias, direction: 'desc' as const }];
-            const payload: AggregatePayload = {
-                datasetId,
-                by: [plan.groupByColumn],
-                metrics: [
-                    {
-                        fn: plan.aggregation as AggregatePayload['metrics'][number]['fn'],
-                        column: plan.aggregation === 'count' ? undefined : plan.valueColumn,
-                        as: alias,
-                    },
-                ],
-                filter: plan.rowFilter
-                    ? [
-                          {
-                              column: plan.rowFilter.column,
-                              op: 'in',
-                              values: plan.rowFilter.values,
-                          },
-                      ]
-                    : undefined,
-                limit: plan.defaultTopN ?? undefined,
-                mode: 'sample',
-                sampleSize: Math.min(5000, data.data.length),
-                orderBy,
-            };
-            return payload;
-        };
+        const datasetRowCountHint = get().datasetProfile?.rowCount ?? data.data.length;
+        const buildAggregatePayload = (plan: AnalysisPlan): AggregatePayload | null =>
+            buildAggregatePayloadForPlan(plan, datasetId, data, datasetRowCountHint);
 
-        const aggregateWithWorker = async (plan: AnalysisPlan): Promise<AggregateResult | null> => {
+        const aggregateWithWorker = async (
+            plan: AnalysisPlan,
+            overrides?: { mode?: 'sample' | 'full'; allowFullScan?: boolean },
+        ): Promise<{ result: AggregateResult; durationMs: number } | null> => {
             const payload = buildAggregatePayload(plan);
             if (!payload) return null;
+            if (overrides?.mode) {
+                payload.mode = overrides.mode;
+            }
+            if (overrides?.allowFullScan) {
+                payload.allowFullScan = true;
+            }
             const response = await dataTools.aggregate(payload);
             if (!response.ok) {
                 addProgress(`Aggregation worker failed for "${plan.title}": ${response.reason}`, 'error');
@@ -926,7 +974,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 addProgress(`Skipping "${plan.title}" due to empty aggregation result.`, 'error');
                 return null;
             }
-            return response.data;
+            return { result: response.data, durationMs: response.durationMs ?? 0 };
         };
 
         if (shouldTrackTimeline && plans.length > 0) {
@@ -956,11 +1004,17 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 preparation.warnings.forEach(warning => addProgress(`${plan.title}: ${warning}`));
 
                 const preparedPlan = preparation.plan;
+                let aggregateResultWrapper: { result: AggregateResult; durationMs: number } | null = null;
                 let aggregateResult: AggregateResult | null = null;
+                let aggregateDuration = 0;
                 let aggregatedData: CsvRow[] = [];
                 try {
                     if (datasetId) {
-                        aggregateResult = await aggregateWithWorker(preparedPlan);
+                        aggregateResultWrapper = await aggregateWithWorker(preparedPlan);
+                        if (aggregateResultWrapper) {
+                            aggregateResult = aggregateResultWrapper.result;
+                            aggregateDuration = aggregateResultWrapper.durationMs;
+                        }
                     }
                     if (aggregateResult) {
                         aggregatedData = aggregateResult.rows;
@@ -1015,6 +1069,29 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
 
                 const categoryCount = aggregatedData.length;
                 const shouldApplyDefaultTop8 = preparedPlan.chartType !== 'scatter' && categoryCount > 15;
+                const aggregationMeta: AggregationMeta | undefined = aggregateResult
+                    ? {
+                          mode: aggregateResult.provenance.mode,
+                          sampled: aggregateResult.provenance.sampled,
+                          processedRows: aggregateResult.provenance.processedRows,
+                          totalRows: aggregateResult.provenance.totalRows,
+                          warnings: aggregateResult.provenance.warnings,
+                          durationMs: aggregateDuration,
+                          lastRunAt: new Date().toISOString(),
+                          filterCount: aggregateResult.provenance.filterCount,
+                      }
+                    : {
+                          mode: 'full',
+                          sampled: false,
+                          processedRows: aggregatedData.length,
+                          totalRows: aggregatedData.length,
+                          warnings: datasetId
+                              ? ['Aggregated on main thread because the worker response was unavailable.']
+                              : [],
+                          durationMs: aggregateDuration || undefined,
+                          lastRunAt: new Date().toISOString(),
+                          filterCount: preparedPlan.rowFilter ? 1 : 0,
+                      };
 
                 const newCard: AnalysisCardData = {
                     id: `card-${Date.now()}-${Math.random()}`,
@@ -1029,7 +1106,8 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                     hiddenLabels: [],
                     dataRefId,
                     queryHash,
-                    isSampledResult,
+                    isSampledResult: aggregationMeta?.sampled ?? isSampledResult,
+                    aggregationMeta,
                 };
 
                 set(prev => ({ analysisCards: [...prev.analysisCards, newCard] }));
@@ -1476,6 +1554,95 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 return c;
             })
         }));
+    },
+    rerunAggregationForCard: async (cardId, options = {}) => {
+        const card = get().analysisCards.find(c => c.id === cardId);
+        const datasetId = get().datasetHash;
+        const csvData = get().csvData;
+        if (!card || !datasetId) {
+            get().addProgress('Cannot refresh this chart because the dataset is unavailable.', 'error');
+            return false;
+        }
+        const datasetRowCount = get().datasetProfile?.rowCount ?? csvData?.data?.length ?? 0;
+        const payload = buildAggregatePayloadForPlan(card.plan, datasetId, csvData, datasetRowCount);
+        if (!payload) {
+            get().addProgress(`"${card.plan.title}" cannot be recalculated automatically.`, 'error');
+            return false;
+        }
+        if (options.mode) {
+            payload.mode = options.mode;
+        }
+        if (options.allowFullScan) {
+            payload.allowFullScan = true;
+        }
+        const traceId = get().beginAgentActionTrace(
+            'proceed_to_analysis',
+            `Manual aggregation rerun: ${card.plan.title}`,
+            'system',
+        );
+        get().updateAgentActionTrace(traceId, 'executing', undefined, {
+            metadata: {
+                cardId,
+                requestedMode: payload.mode,
+                allowFullScan: !!payload.allowFullScan,
+            },
+        });
+        const response = await dataTools.aggregate(payload);
+        if (!response.ok) {
+            get().addProgress(`Aggregation refresh failed for "${card.plan.title}": ${response.reason}`, 'error');
+            get().addToast(`Full scan failed: ${response.reason}`, 'error');
+            get().updateAgentActionTrace(traceId, 'failed', response.reason ?? 'Aggregation failed.', {
+                metadata: {
+                    cardId,
+                    requestedMode: payload.mode,
+                    allowFullScan: !!payload.allowFullScan,
+                },
+            });
+            return false;
+        }
+        const aggregateResult = response.data;
+        const aggregationMeta: AggregationMeta = {
+            mode: aggregateResult.provenance.mode,
+            sampled: aggregateResult.provenance.sampled,
+            processedRows: aggregateResult.provenance.processedRows,
+            totalRows: aggregateResult.provenance.totalRows,
+            warnings: aggregateResult.provenance.warnings,
+            durationMs: response.durationMs ?? 0,
+            lastRunAt: new Date().toISOString(),
+            filterCount: aggregateResult.provenance.filterCount,
+        };
+        set(state => ({
+            analysisCards: state.analysisCards.map(existing =>
+                existing.id === cardId
+                    ? {
+                          ...existing,
+                          aggregatedData: aggregateResult.rows,
+                          isSampledResult: aggregationMeta.sampled,
+                          aggregationMeta,
+                      }
+                    : existing,
+            ),
+        }));
+        get().addProgress(
+            `${card.plan.title} refreshed (${aggregationMeta.sampled ? 'sampled' : 'full scan'}).`,
+        );
+        get().addToast(
+            aggregationMeta.sampled
+                ? `"${card.plan.title}" refreshed on sampled rows.`
+                : `"${card.plan.title}" full scan completed.`,
+            'success',
+        );
+        get().updateAgentActionTrace(traceId, 'succeeded', 'Aggregation refreshed.', {
+            metadata: {
+                cardId,
+                mode: aggregationMeta.mode,
+                processedRows: aggregationMeta.processedRows,
+                totalRows: aggregationMeta.totalRows,
+                durationMs: aggregationMeta.durationMs,
+                warnings: aggregationMeta.warnings,
+            },
+        });
+        return true;
     },
 
     clearCardFilter: (cardId) => {

@@ -1,4 +1,7 @@
-<input id="openAiTableBtn" type="button" class="boxstyle_hdr" name="excelBtn" size="6" align="middle" value="AI Chart" title="AI Chart" onclick="javascript:void(0);">
+<div class="ai-chart-button-row" style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+  <input id="openAiTableBtn" type="button" class="boxstyle_hdr" name="excelBtn" size="6" align="middle" value="AI Chart（New Tab）" title="AI Chart" onclick="javascript:void(0);">
+  <input id="openAiTableBtnSelf" type="button" class="boxstyle_hdr" name="excelBtnSelf" size="6" align="middle" value="AI Chart（Same Tab）" title="AI Chart Same Tab" onclick="javascript:void(0);">
+</div>
 <textarea class="csv_raw_table"></textarea>
 <textarea class="csv_converted_long_format"></textarea>
 
@@ -8653,12 +8656,17 @@ Subtotal for Weltek Inc
 <script>
 window.addEventListener('load', () => {
 (() => {
-const btn = document.getElementById('openAiTableBtn');
+const newTabBtn = document.getElementById('openAiTableBtn');
+const sameTabBtn = document.getElementById('openAiTableBtnSelf');
 const headerTableEl = document.getElementById('rpt_header_table_div');
 const rowHeaderEl = document.getElementById('rowheader');
 const TARGET_ORIGIN = location.origin;
-if (!btn || !rowHeaderEl) {
-if (btn) btn.style.display = 'none';
+const PENDING_PAYLOAD_PREFIX = '__CSV_AGENT_PENDING_PAYLOAD__';
+const PENDING_PAYLOAD_QUERY_PARAM = 'pendingPayloadKey';
+const actionButtons = [newTabBtn, sameTabBtn].filter(Boolean);
+const hideActionButtons = () => actionButtons.forEach(btn => (btn.style.display = 'none'));
+if ((!actionButtons.length) || !rowHeaderEl) {
+hideActionButtons();
 console.log("AI Chart Unable to work — missing button or rowHeader element. Please contact engineer to check.");
 return;
 }
@@ -8767,16 +8775,36 @@ const s = String(raw || "").replace(/^\uFEFF/, "");
 const parts = s.split(/\r?\n\r?\n/);
 return (parts.length ? parts[0].trim() : "").trim();
 }
+function createPendingPayloadKey() {
+const salt = Math.random().toString(36).slice(2, 8);
+return `${PENDING_PAYLOAD_PREFIX}${Date.now()}_${salt}`;
+}
+function buildIndexUrlWithKey(key) {
+const targetUrl = new URL('index.html', window.location.href);
+if (key) targetUrl.searchParams.set(PENDING_PAYLOAD_QUERY_PARAM, key);
+return targetUrl.toString();
+}
+function persistPendingPayload(messagePayload) {
+if (!('sessionStorage' in window)) {
+throw new Error('sessionStorage is unavailable in this environment.');
+}
+const payloadKey = createPendingPayloadKey();
+sessionStorage.setItem(
+payloadKey,
+JSON.stringify(Object.assign({ storedAt: Date.now() }, messagePayload))
+);
+return payloadKey;
+}
 /* -------------------- Auto enable & fill raw textarea -------------------- */
 try {
 const testTables = collectTables();
 if (!testTables.length) {
-btn.style.display = 'none';
+hideActionButtons();
 console.log("AI Chart Unable to work — no tables found to export. Please contact engineer to check.");
 return;
 }
 } catch (err) {
-btn.style.display = 'none';
+hideActionButtons();
 console.error("AI Chart Unable to work — error during table collection:", err);
 return;
 }
@@ -8788,7 +8816,7 @@ document.querySelectorAll('textarea.csv_raw_table').forEach(t => { t.value = csv
 console.error('Failed to build initial CSV for .csv_raw_table:', e);
 }
 /* -------------------- Button: prefer converted, else raw; rebuild if both empty -------------------- */
-btn.addEventListener('click', () => {
+function launchAiChart(openInSameTab) {
 const rawTa = document.querySelector('textarea.csv_raw_table');
 const convertedTa = document.querySelector('textarea.csv_converted_long_format');
 let rawCsv = rawTa ? String(rawTa.value || "") : "";
@@ -8812,6 +8840,21 @@ const headerFromRaw = extractHeaderFromRaw(rawCsv) ||
 (headerTableEl ? headerTableEl.innerText.trim() : "");
 const BOM = '\uFEFF';
 const payload = BOM + csvToSend;
+const messagePayload = {
+type: 'table_csv',
+csv: payload,
+header: headerFromRaw
+};
+if (openInSameTab) {
+try {
+const payloadKey = persistPendingPayload(messagePayload);
+window.location.assign(buildIndexUrlWithKey(payloadKey));
+return;
+} catch (error) {
+console.error('Failed to persist CSV payload for same-tab navigation:', error);
+alert('Browser blocked same-tab AI Chart view. Opening a new tab instead.');
+}
+}
 const reportTab = window.open('index.html', '_blank');
 if (!reportTab) { alert('Please allow pop-ups for this site.'); return; }
 let messageSent = false;
@@ -8821,10 +8864,7 @@ if (e.source !== reportTab) return;
 if (e.data && e.data.type === 'ready' && !messageSent) {
 messageSent = true;
 window.removeEventListener('message', onMessage);
-reportTab.postMessage(
-{ type: 'table_csv', csv: payload, header: headerFromRaw },
-TARGET_ORIGIN
-);
+reportTab.postMessage(messagePayload, TARGET_ORIGIN);
 }
 };
 window.addEventListener('message', onMessage);
@@ -8833,14 +8873,13 @@ setTimeout(() => {
 if (!messageSent) {
 try {
 messageSent = true;
-reportTab.postMessage(
-{ type: 'table_csv', csv: payload, header: headerFromRaw },
-TARGET_ORIGIN
-);
+reportTab.postMessage(messagePayload, TARGET_ORIGIN);
 } catch {}
 }
 }, 2500);
-});
+}
+if (newTabBtn) newTabBtn.addEventListener('click', () => launchAiChart(false));
+if (sameTabBtn) sameTabBtn.addEventListener('click', () => launchAiChart(true));
 })();
 });
 </script>

@@ -1,5 +1,5 @@
-import React, { useRef, useState, useMemo, useEffect } from 'react';
-import { AnalysisPlanRowFilter, AnalysisCardData, ChartType } from '../types';
+import React, { useRef, useState, useMemo, useEffect, useCallback } from 'react';
+import { AnalysisPlanRowFilter, AnalysisCardData, AggregationMeta, ChartType, AnalysisPlan } from '../types';
 import { ChartRenderer, ChartRendererHandle } from './ChartRenderer';
 import { DataTable } from './DataTable';
 import { exportToPng, exportToCsv, exportToHtml } from '../utils/exportUtils';
@@ -31,6 +31,135 @@ const ClearSelectionIcon: React.FC = () => (
     </svg>
 );
 
+const WarningIcon: React.FC = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-amber-600" viewBox="0 0 20 20" fill="currentColor">
+        <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.721-1.36 3.486 0l6.518 11.59c.75 1.334-.213 2.987-1.743 2.987H3.482c-1.53 0-2.493-1.653-1.743-2.987l6.518-11.59zM10 7a1 1 0 00-1 1v3.25a1 1 0 002 0V8a1 1 0 00-1-1zm0 8a1.25 1.25 0 100-2.5A1.25 1.25 0 0010 15z" clipRule="evenodd" />
+    </svg>
+);
+
+const formatDuration = (ms?: number) => {
+    if (typeof ms !== 'number' || Number.isNaN(ms)) return null;
+    if (ms < 1000) return `${Math.round(ms)} ms`;
+    return `${(ms / 1000).toFixed(1)} s`;
+};
+
+const formatTimestamp = (iso?: string) => {
+    if (!iso) return null;
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return null;
+    return date.toLocaleTimeString();
+};
+
+const AggregationStatusBanner: React.FC<{
+    meta?: AggregationMeta;
+    onRunFullScan?: () => Promise<void> | void;
+    isRefreshing?: boolean;
+}> = ({ meta, onRunFullScan, isRefreshing }) => {
+    if (!meta) {
+        return null;
+    }
+    const sampled = meta.sampled;
+    const badgeStyles = sampled
+        ? 'bg-amber-100 text-amber-800 border-amber-200'
+        : 'bg-emerald-100 text-emerald-700 border-emerald-200';
+    const statusLabel = sampled ? 'Sampled result' : 'Full scan';
+    const processedLabel = sampled
+        ? `${meta.processedRows.toLocaleString()} of ${meta.totalRows.toLocaleString()} rows`
+        : `${meta.totalRows.toLocaleString()} rows`;
+    const durationLabel = formatDuration(meta.durationMs);
+    const lastRunLabel = formatTimestamp(meta.lastRunAt);
+    const warnings = meta.warnings?.filter(Boolean) ?? [];
+
+    return (
+        <div className="mb-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+            <div className="flex flex-wrap items-center gap-2">
+                <span className={`px-2 py-0.5 rounded-full text-xs font-semibold border ${badgeStyles}`}>
+                    {statusLabel}
+                </span>
+                <span>{processedLabel}</span>
+                {durationLabel && <span className="text-slate-400">·</span>}
+                {durationLabel && <span>{durationLabel}</span>}
+                {lastRunLabel && (
+                    <>
+                        <span className="text-slate-400">·</span>
+                        <span>Last run {lastRunLabel}</span>
+                    </>
+                )}
+                {sampled && (
+                    <>
+                        <span className="text-slate-400">·</span>
+                        <span className="text-xs text-slate-500">
+                            Showing a quick preview. Full scan processes every row.
+                        </span>
+                    </>
+                )}
+                {sampled && onRunFullScan && (
+                    <button
+                        type="button"
+                        onClick={() => onRunFullScan()}
+                        disabled={isRefreshing}
+                        className="ml-auto inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                    >
+                        {isRefreshing ? 'Running…' : 'Run full scan'}
+                    </button>
+                )}
+            </div>
+            {warnings.length > 0 && (
+                <div className="mt-2 flex items-start gap-2 text-xs text-amber-700">
+                    <WarningIcon />
+                    <span className="flex-1">{warnings.join(' • ')}</span>
+                </div>
+            )}
+        </div>
+    );
+};
+
+const AggregationMetaFooter: React.FC<{ meta?: AggregationMeta; plan: AnalysisPlan }> = ({ meta, plan }) => {
+    if (!meta) return null;
+    const rowsLabel = `${meta.processedRows.toLocaleString()} / ${meta.totalRows.toLocaleString()}`;
+    const filterLabel =
+        meta.filterCount && meta.filterCount > 0
+            ? `${meta.filterCount} ${meta.filterCount === 1 ? 'filter' : 'filters'} applied`
+            : 'No filters applied';
+    const orderSummary =
+        plan.orderBy && plan.orderBy.length > 0
+            ? plan.orderBy
+                  .map(order => `${order.column} ${(order.direction ?? 'desc').toUpperCase()}`)
+                  .join(', ')
+            : plan.chartType === 'line' && plan.groupByColumn
+            ? `${plan.groupByColumn} ASC`
+            : `${plan.valueColumn ?? 'count'} DESC`;
+    const limitLabel =
+        typeof plan.limit === 'number'
+            ? `${plan.limit.toLocaleString()} rows`
+            : plan.defaultTopN
+            ? `${plan.defaultTopN.toLocaleString()} rows (default)`
+            : 'All rows';
+
+    return (
+        <div className="mt-4 border-t border-slate-200 pt-3 text-xs text-slate-500">
+            <div className="flex flex-wrap gap-x-6 gap-y-2">
+                <div>
+                    <span className="text-slate-400">Rows processed</span>
+                    <span className="ml-1 font-semibold text-slate-700">{rowsLabel}</span>
+                </div>
+                <div>
+                    <span className="text-slate-400">Filters</span>
+                    <span className="ml-1 text-slate-700">{filterLabel}</span>
+                </div>
+                <div>
+                    <span className="text-slate-400">Order</span>
+                    <span className="ml-1 text-slate-700">{orderSummary}</span>
+                </div>
+                <div>
+                    <span className="text-slate-400">Limit</span>
+                    <span className="ml-1 text-slate-700">{limitLabel}</span>
+                </div>
+            </div>
+        </div>
+    );
+};
+
 const RowFilterBadge: React.FC<{ filter: AnalysisPlanRowFilter }> = ({ filter }) => {
     const MAX_VALUES_PREVIEW = 3;
     const preview = filter.values.slice(0, MAX_VALUES_PREVIEW).map(value => String(value)).join(', ');
@@ -56,6 +185,7 @@ export const AnalysisCard: React.FC<AnalysisCardProps> = ({ cardId }) => {
         handleTopNChange, 
         handleHideOthersChange, 
         handleToggleLegendLabel,
+        rerunAggregationForCard,
         linkChartSelectionToRawData,
         clearCardFilter,
     } = useAppStore(state => ({
@@ -64,6 +194,7 @@ export const AnalysisCard: React.FC<AnalysisCardProps> = ({ cardId }) => {
         handleTopNChange: state.handleTopNChange,
         handleHideOthersChange: state.handleHideOthersChange,
         handleToggleLegendLabel: state.handleToggleLegendLabel,
+        rerunAggregationForCard: state.rerunAggregationForCard,
         linkChartSelectionToRawData: state.linkChartSelectionToRawData,
         clearCardFilter: state.clearCardFilter,
     }));
@@ -75,13 +206,14 @@ export const AnalysisCard: React.FC<AnalysisCardProps> = ({ cardId }) => {
     const [selectedIndices, setSelectedIndices] = useState<number[]>([]);
     const [isZoomed, setIsZoomed] = useState(false);
     const [showSelectionDetails, setShowSelectionDetails] = useState(true);
+    const [isAggRefreshing, setIsAggRefreshing] = useState(false);
     
     // If cardData is not found (e.g., during a state update), render nothing to avoid errors.
     if (!cardData) {
         return null;
     }
 
-    const { id, plan, aggregatedData, summary, displayChartType, isDataVisible, topN, hideOthers, disableAnimation, filter, hiddenLabels = [] } = cardData;
+    const { id, plan, aggregatedData, summary, displayChartType, isDataVisible, topN, hideOthers, disableAnimation, filter, hiddenLabels = [], aggregationMeta } = cardData;
 
     const summaryParts = summary.split('---');
     const englishSummary = summaryParts[0]?.trim();
@@ -163,6 +295,16 @@ export const AnalysisCard: React.FC<AnalysisCardProps> = ({ cardId }) => {
     
     const selectedData = selectedIndices.map(index => dataForDisplay[index]);
 
+    const handleRunFullScan = useCallback(async () => {
+        if (!rerunAggregationForCard) return;
+        setIsAggRefreshing(true);
+        try {
+            await rerunAggregationForCard(id, { mode: 'full', allowFullScan: true });
+        } finally {
+            setIsAggRefreshing(false);
+        }
+    }, [id, rerunAggregationForCard]);
+
     useEffect(() => {
         if (!groupByKey || selectedIndices.length === 0) {
             linkChartSelectionToRawData(id, null, [], plan.title);
@@ -211,6 +353,11 @@ export const AnalysisCard: React.FC<AnalysisCardProps> = ({ cardId }) => {
                 </div>
             </div>
             <p className="text-sm text-slate-500 mb-4">{plan.description}</p>
+            <AggregationStatusBanner
+                meta={aggregationMeta}
+                onRunFullScan={aggregationMeta?.sampled ? handleRunFullScan : undefined}
+                isRefreshing={isAggRefreshing}
+            />
 
             <div className="grid gap-4 flex-grow grid-cols-1">
                 <div className="relative h-64">
@@ -337,6 +484,8 @@ export const AnalysisCard: React.FC<AnalysisCardProps> = ({ cardId }) => {
                     <DataTable data={dataForDisplay} />
                 </div>
             )}
+
+            <AggregationMetaFooter meta={aggregationMeta} plan={plan} />
         </div>
     );
 };

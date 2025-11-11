@@ -15,6 +15,7 @@ import {
 import { callGemini, callOpenAI } from './apiClient';
 import { multiActionChatResponseSchema, multiActionChatResponseJsonSchema } from './schemas';
 import { createChatPrompt, createPlanPrimerPrompt } from '../promptTemplates';
+import { StateTagFactory } from '../agent/stateTagFactory';
 
 export interface PromptProfile {
     mode: 'plan_only' | 'full';
@@ -37,6 +38,46 @@ const hasMissingExecutableCode = (response: AiChatResponse): boolean => {
     });
 };
 
+const fallbackStateTagFactory = new StateTagFactory();
+const ACTION_SCHEMA_EXAMPLE = `Example JSON response (plan_state_update + text acknowledgement):
+\`\`\`json
+{
+  "actions": [
+    {
+      "type": "plan_state_update",
+      "responseType": "plan_state_update",
+      "stepId": "plan-init",
+      "stateTag": "1731234567890-1",
+      "timestamp": "2024-05-18T09:00:00.000Z",
+      "reason": "Restating the plan so the UI stays in sync.",
+      "planState": {
+        "planId": "plan-abc123",
+        "goal": "Compare revenue vs. orders by channel.",
+        "contextSummary": "User asked for the top-performing channels in 2024.",
+        "progress": "Ready to build the comparison card.",
+        "blockedBy": null,
+        "observationIds": [],
+        "confidence": 0.65,
+        "updatedAt": "2024-05-18T09:00:00.000Z",
+        "currentStepId": "plan-init",
+        "nextSteps": [{ "id": "plan-init", "label": "Draft comparison plan", "status": "in_progress" }],
+        "steps": [{ "id": "plan-init", "label": "Draft comparison plan", "status": "in_progress" }],
+        "stateTag": "1731234567890-1"
+      }
+    },
+    {
+      "type": "text_response",
+      "responseType": "text_response",
+      "stepId": "plan-init",
+      "stateTag": "1731234567890-2",
+      "timestamp": "2024-05-18T09:00:05.000Z",
+      "reason": "Let the user know I captured the plan.",
+      "text": "Plan updated—ready when you are to proceed with the channel comparison."
+    }
+  ]
+}
+\`\`\``;
+
 export const generateChatResponse = async (
     columns: ColumnProfile[],
     chatHistory: ChatMessage[],
@@ -56,7 +97,7 @@ export const generateChatResponse = async (
 ): Promise<AiChatResponse> => {
     const isApiKeySet = (settings.provider === 'google' && !!settings.geminiApiKey) || (settings.provider === 'openai' && !!settings.openAIApiKey);
     if (!isApiKeySet) {
-        const fallbackStateTag = `${Date.now()}-1-fallback`;
+        const fallbackStateTag = fallbackStateTagFactory.mint(Date.now(), 'fallback');
         return {
             actions: [
                 {
@@ -65,7 +106,7 @@ export const generateChatResponse = async (
                     stepId: 'ad_hoc_response',
                     stateTag: fallbackStateTag,
                     text: 'Cloud AI is disabled. API Key not provided.',
-                    thought: 'API key is missing, so I must inform the user.',
+                    reason: 'API key is missing, so I must inform the user.',
                 },
             ],
         };
@@ -113,7 +154,8 @@ export const generateChatResponse = async (
             });
         }
 
-        const baseSystemPrompt = `You are an expert data analyst and business strategist, required to operate using a Reason-Act (ReAct) framework. For every action you take, you must first explain your reasoning in the 'thought' field, and then define the action itself. You also maintain an explicit goal tracker by emitting a 'plan_state_update' action at the start of each response (and whenever the mission changes) so the UI can display your progress. Every action JSON object must include \`type\`, \`responseType\`, \`stepId\`, and a monotonic \`stateTag\` formatted as "<epochMs>-<seq>" (or a known label like \`awaiting_clarification\`). The plan_state_update payload must include \`planId\`, \`currentStepId\`, and a \`steps\` array (each entry with intent + status). Emit at most two actions per response: the plan_state_update plus a single atomic action. Your final conversational responses should be in ${settings.language}.
+        const baseSystemPrompt = `You are an expert data analyst and business strategist, required to operate using a Reason-Act (ReAct) framework. For every action you take, you must first explain your reasoning in the 'reason' field, and then define the action itself. Keep each reason under 280 characters (ideally two sentences or fewer) and tie it to the plan step you're executing. You also maintain an explicit goal tracker by emitting a 'plan_state_update' action at the start of each response (and whenever the mission changes) so the UI can display your progress. Every action JSON object must include \`type\`, \`responseType\`, \`stepId\`, a monotonic \`stateTag\` formatted as "<epochMs>-<seq>" (or a known label like \`awaiting_clarification\`), **and** a \`timestamp\` string in ISO-8601 format. The plan_state_update payload must include \`planId\`, \`currentStepId\`, and a \`steps\` array (each entry with intent + status). Emit at most two actions per response: the plan_state_update plus a single atomic action. Your final conversational responses should be in ${settings.language}.
+${ACTION_SCHEMA_EXAMPLE}
 Your output MUST be a single JSON object with an "actions" key containing an array of action objects.`;
         const maxAttempts = settings.provider === 'openai' ? 2 : 1;
         let retryInstruction = '';
@@ -126,7 +168,7 @@ Your output MUST be a single JSON object with an "actions" key containing an arr
                 jsonStr = await callOpenAI(
                     settings,
                     messages,
-                    true,
+                    { name: 'MultiActionResponse', schema: multiActionChatResponseJsonSchema, strict: true },
                     options?.signal
                 );
             } else {

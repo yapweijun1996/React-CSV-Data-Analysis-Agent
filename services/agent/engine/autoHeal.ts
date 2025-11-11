@@ -183,7 +183,7 @@ export const runAutoHealPipeline = (
                 responseType: 'plan_state_update',
                 stepId: FALLBACK_STEP_ID,
                 stateTag: mintStateTag('plan'),
-                thought: 'Seeding plan tracker automatically.',
+                reason: 'Seeding plan tracker automatically.',
                 planState: buildScaffoldPlan(context, () => mintStateTag('plan')),
             });
             mutated = true;

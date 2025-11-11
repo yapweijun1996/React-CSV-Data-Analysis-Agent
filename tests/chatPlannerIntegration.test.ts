@@ -31,6 +31,8 @@ type PlannerStore = {
     progressLog: string[];
     pendingClarifications: any[];
     activeClarificationId: string | null;
+    agentAwaitingUserInput: boolean;
+    agentAwaitingPromptId: string | null;
     csvData: CsvData | null;
     columnProfiles: ColumnProfile[];
     executedPlans: string[];
@@ -52,6 +54,8 @@ const defaultStore = (): PlannerStore => ({
     progressLog: [],
     pendingClarifications: [],
     activeClarificationId: null,
+    agentAwaitingUserInput: false,
+    agentAwaitingPromptId: null,
     csvData: {
         fileName: 'test.csv',
         data: [
@@ -214,6 +218,11 @@ const buildPlannerContext = (response: AiChatResponse) => ({
     requestAiResponse: async () => wrapResponse(response),
 });
 
+const buildRawPlannerContext = (response: AiChatResponse) => ({
+    memorySnapshot: [],
+    requestAiResponse: async () => response,
+});
+
 const buildMultiResponseContext = (responses: AiChatResponse[]) => {
     const queue = [...responses];
     let requestCount = 0;
@@ -328,13 +337,13 @@ const wrapResponse = (response: AiChatResponse): AiChatResponse => ({
 
 const planStateAction = {
     responseType: 'plan_state_update' as const,
-    thought: 'Clarify mission',
+    reason: 'Clarify mission',
     planState: buildPlanStatePayload(),
 };
 
-const buildTextResponseAction = (text: string, thought = 'Acknowledged'): AiAction => ({
+const buildTextResponseAction = (text: string, reason = 'Acknowledged'): AiAction => ({
     responseType: 'text_response',
-    thought,
+    reason,
     text,
     stepId: FIRST_STEP_ID,
 });
@@ -342,7 +351,7 @@ const buildTextResponseAction = (text: string, thought = 'Acknowledged'): AiActi
 await test('runPlannerWorkflow executes plan_state then reply', async () => {
     const textResponseAction = {
         responseType: 'text_response' as const,
-        thought: 'Acknowledge plan',
+        reason: 'Acknowledge plan',
         text: 'Plan noted. Starting with cohort analysis.',
         stepId: FIRST_STEP_ID,
     };
@@ -371,7 +380,7 @@ await test('runPlannerWorkflow executes plan_state then reply', async () => {
 await test('missing plan_state_update triggers validation retry', async () => {
     const textResponseAction = {
         responseType: 'text_response' as const,
-        thought: 'Jump straight to reply',
+        reason: 'Jump straight to reply',
         text: 'On it.',
         stepId: FIRST_STEP_ID,
     };
@@ -406,11 +415,11 @@ await test('missing plan_state_update triggers validation retry', async () => {
 await test('greeting auto-fills missing plan_state_update payload', async () => {
     const incompletePlanStateAction = {
         responseType: 'plan_state_update' as const,
-        thought: 'Wave back',
+        reason: 'Wave back',
     };
     const greetingReply = {
         responseType: 'text_response' as const,
-        thought: 'Say hello',
+        reason: 'Say hello',
         text: 'Hi there! How can I help today?',
     };
 
@@ -440,6 +449,72 @@ await test('greeting auto-fills missing plan_state_update payload', async () => 
     );
 });
 
+await test('auto-heals missing plan_state_update when no plan tracker exists', async () => {
+    const planCreationAction: AiAction = {
+        responseType: 'plan_creation',
+        type: 'plan_creation',
+        reason: 'Build auto-heal chart',
+        stepId: 'auto-heal-step',
+        stateTag: nextPlannerStateTag(),
+        plan: {
+            chartType: 'bar',
+            title: 'Auto-Heal Chart',
+            description: 'Auto-healed plan creation',
+            aggregation: 'sum',
+            groupByColumn: 'Month',
+            valueColumn: 'Revenue_total',
+        },
+    };
+
+    const { runtime, store } = createPlannerHarness();
+    await runPlannerWorkflow(
+        'Create a revenue chart',
+        buildPlannerContext({ actions: [planCreationAction] }),
+        runtime as any,
+    );
+
+    assert.deepStrictEqual(store.executedPlans, ['Auto-Heal Chart']);
+    assert.ok(
+        store.agentActionTraces.some(trace => trace.actionType === 'plan_state_update'),
+        'plan_state_update should be auto-inserted ahead of the plan_creation action',
+    );
+    assert.ok(
+        store.progressLog.includes('Auto-inserted plan_state_update to bootstrap the planner.'),
+        'auto-heal should log bootstrap message',
+    );
+});
+
+await test('auto-assigns stepId for non-text actions missing it', async () => {
+    const primerAction = wrapActionEnvelope({ ...planStateAction });
+    const planCreationMissingStep: AiAction = {
+        responseType: 'plan_creation',
+        type: 'plan_creation',
+        reason: 'Build auto-step chart',
+        stateTag: nextPlannerStateTag(),
+        plan: {
+            chartType: 'bar',
+            title: 'Auto-Step Chart',
+            description: 'Plan creation without explicit stepId',
+            aggregation: 'sum',
+            groupByColumn: 'Month',
+            valueColumn: 'Revenue_total',
+        },
+    };
+
+    const { runtime, store } = createPlannerHarness();
+    await runPlannerWorkflow(
+        'Need another chart',
+        buildRawPlannerContext({ actions: [primerAction, planCreationMissingStep] }),
+        runtime as any,
+    );
+
+    assert.deepStrictEqual(store.executedPlans, ['Auto-Step Chart']);
+    assert.ok(
+        store.validationEvents.some(event => event.reason === 'auto_step_id_assigned'),
+        'auto-assignment should record a validation event',
+    );
+});
+
 await test('text_response without stepId auto-tags when planner steps empty', async () => {
     const { runtime, store } = createPlannerHarness({
         plannerSession: {
@@ -464,7 +539,7 @@ await test('text_response without stepId auto-tags when planner steps empty', as
             actions: [
                 {
                     responseType: 'text_response',
-                    thought: 'Respond casually',
+                    reason: 'Respond casually',
                     text: 'Still here and ready to help.',
                 },
             ],
@@ -479,7 +554,7 @@ await test('text_response without stepId auto-tags when planner steps empty', as
 await test('invalid dom_action payload triggers validation telemetry before retry', async () => {
     const invalidDomAction = {
         responseType: 'dom_action' as const,
-        thought: 'Highlight the chart',
+        reason: 'Highlight the chart',
         stepId: FIRST_STEP_ID,
         domAction: {
             toolName: 'highlightCard' as const,
@@ -488,7 +563,7 @@ await test('invalid dom_action payload triggers validation telemetry before retr
     };
     const validDomAction = {
         responseType: 'dom_action' as const,
-        thought: 'Highlight the chart',
+        reason: 'Highlight the chart',
         stepId: FIRST_STEP_ID,
         domAction: {
             toolName: 'highlightCard' as const,
@@ -521,7 +596,7 @@ await test('invalid dom_action payload triggers validation telemetry before retr
 await test('removeCard dom_action can rely on cardTitle fallback', async () => {
     const removeByTitleAction = {
         responseType: 'dom_action' as const,
-        thought: 'Clean redundant chart',
+        reason: 'Clean redundant chart',
         stepId: FIRST_STEP_ID,
         domAction: {
             toolName: 'removeCard' as const,
@@ -580,13 +655,13 @@ await test('required remove_card action auto-inserted when missing', async () =>
 await test('too-short filter query triggers validation retry', async () => {
     const shortFilterAction = {
         responseType: 'filter_spreadsheet' as const,
-        thought: 'Need to scan entries',
+        reason: 'Need to scan entries',
         args: { query: 'hi' },
         stepId: FIRST_STEP_ID,
     };
     const validFilterAction = {
         responseType: 'filter_spreadsheet' as const,
-        thought: 'Zoom into Hannah orders',
+        reason: 'Zoom into Hannah orders',
         args: { query: 'show orders for Hannah in March' },
         stepId: FIRST_STEP_ID,
     };
@@ -645,7 +720,7 @@ await test('required filter action auto-inserted when missing', async () => {
 await test('filter payload auto-filled using user request when intent is filter', async () => {
     const blankFilterAction = {
         responseType: 'filter_spreadsheet' as const,
-        thought: 'Need to narrow results',
+        reason: 'Need to narrow results',
         stepId: FIRST_STEP_ID,
         args: {},
     };
@@ -678,7 +753,7 @@ await test('filter payload auto-filled using user request when intent is filter'
 await test('dom_action payload auto-filled using intent hints', async () => {
     const missingPayloadAction = {
         responseType: 'dom_action' as const,
-        thought: 'Clean chart',
+        reason: 'Clean chart',
         stepId: FIRST_STEP_ID,
         domAction: {
             toolName: 'removeCard' as const,
@@ -719,7 +794,7 @@ await test('dom_action payload auto-filled using intent hints', async () => {
 await test('execute_js_code without return statement is rejected before retry', async () => {
     const invalidTransformAction = {
         responseType: 'execute_js_code' as const,
-        thought: 'Scale revenue',
+        reason: 'Scale revenue',
         code: {
             explanation: 'Scale totals',
             jsFunctionBody: 'data.map(row => ({ ...row, Revenue_total: row.Revenue_total * 1.1 }));',
@@ -728,7 +803,7 @@ await test('execute_js_code without return statement is rejected before retry', 
     };
     const validTransformAction = {
         responseType: 'execute_js_code' as const,
-        thought: 'Scale revenue properly',
+        reason: 'Scale revenue properly',
         code: {
             explanation: 'Scale totals by 10%',
             jsFunctionBody:
@@ -763,7 +838,7 @@ await test('execute_js_code without return statement is rejected before retry', 
 await test('runPlannerWorkflow halts when clarification is required', async () => {
     const clarificationAction = {
         responseType: 'clarification_request' as const,
-        thought: 'Need target metric',
+        reason: 'Need target metric',
         stepId: FIRST_STEP_ID,
         clarification: {
             question: 'Which revenue metric should I use?',
@@ -801,6 +876,12 @@ await test('runPlannerWorkflow halts when clarification is required', async () =
         ['plan_state_update', 'clarification_request'],
     );
     assert.ok(store.progressLog.includes('busy:end'), 'busy state should end after clarification');
+    assert.strictEqual(store.plannerSession.planState?.stateTag, 'awaiting_clarification');
+    assert.strictEqual(store.agentAwaitingUserInput, true);
+    assert.ok(
+        store.progressLog.includes('Waiting for your choice to continue.'),
+        'planner should announce await-user pause',
+    );
 });
 
 await test('clarification resolution allows planner to continue with plan execution', async () => {
@@ -831,7 +912,7 @@ await test('clarification resolution allows planner to continue with plan execut
 
     const planCreationAction = {
         responseType: 'plan_creation' as const,
-        thought: 'Execute requested chart',
+        reason: 'Execute requested chart',
         stepId: FIRST_STEP_ID,
         plan: {
             chartType: 'bar',
@@ -844,7 +925,7 @@ await test('clarification resolution allows planner to continue with plan execut
     };
     const textResponseAction = {
         responseType: 'text_response' as const,
-        thought: 'Explain result',
+        reason: 'Explain result',
         text: 'Created the revenue chart.',
         stepId: SECOND_STEP_ID,
     };
@@ -867,7 +948,7 @@ await test('clarification resolution allows planner to continue with plan execut
 await test('single-option clarification auto-resolves and continues immediately', async () => {
     const clarificationAction = {
         responseType: 'clarification_request' as const,
-        thought: 'Need metric column',
+        reason: 'Need metric column',
         stepId: FIRST_STEP_ID,
         clarification: {
             question: 'Confirm revenue metric?',
@@ -886,7 +967,7 @@ await test('single-option clarification auto-resolves and continues immediately'
     };
     const planCreationAction = {
         responseType: 'plan_creation' as const,
-        thought: 'Execute after auto clarification',
+        reason: 'Execute after auto clarification',
         stepId: SECOND_STEP_ID,
         plan: {
             chartType: 'bar',
@@ -920,7 +1001,7 @@ await test('planner continues when plan_state next steps remain', async () => {
 
     const continuationPlanState = {
         responseType: 'plan_state_update' as const,
-        thought: 'Need to keep going',
+        reason: 'Need to keep going',
         planState: {
             goal: 'Deliver continuation chart',
             contextSummary: 'User wants more detail',
@@ -935,7 +1016,7 @@ await test('planner continues when plan_state next steps remain', async () => {
 
     const followUpPlanState = {
         responseType: 'plan_state_update' as const,
-        thought: 'Continuing execution',
+        reason: 'Continuing execution',
         planState: {
             goal: 'Deliver continuation chart',
             contextSummary: 'User wants more detail',
@@ -950,7 +1031,7 @@ await test('planner continues when plan_state next steps remain', async () => {
 
     const planCreationAction = {
         responseType: 'plan_creation' as const,
-        thought: 'Build continuation chart',
+        reason: 'Build continuation chart',
         stepId: followUpSteps[0].id,
         plan: {
             chartType: 'bar',
@@ -989,7 +1070,7 @@ await test('planner continues when plan_state next steps remain', async () => {
 await test('planner halts continuation when stateTag is blocked', async () => {
     const blockedPlanState = {
         responseType: 'plan_state_update' as const,
-        thought: 'Waiting on user input',
+        reason: 'Waiting on user input',
         planState: {
             goal: 'Await clarification',
             contextSummary: 'Need user to confirm column',
@@ -1020,7 +1101,7 @@ await test('planner halts continuation when stateTag is blocked', async () => {
 await test('execute_js_code failure triggers auto-retry flow', async () => {
     const failingTransformAction = {
         responseType: 'execute_js_code' as const,
-        thought: 'Transform dataset',
+        reason: 'Transform dataset',
         stepId: FIRST_STEP_ID,
         code: {
             explanation: 'Attempt transform',
@@ -1029,7 +1110,7 @@ await test('execute_js_code failure triggers auto-retry flow', async () => {
     };
     const successTextAction = {
         responseType: 'text_response' as const,
-        thought: 'Explain retry result',
+        reason: 'Explain retry result',
         text: 'Transformation failed, so I shared the error details.',
         stepId: SECOND_STEP_ID,
     };
@@ -1069,7 +1150,7 @@ await test('execute_js_code failure triggers auto-retry flow', async () => {
 await test('execute_js_code intent stays unsatisfied until a successful tool runs', async () => {
     const noChangeTransform = {
         responseType: 'execute_js_code' as const,
-        thought: 'Try transform without effect',
+        reason: 'Try transform without effect',
         stepId: FIRST_STEP_ID,
         code: {
             explanation: 'Return the dataset unchanged',
@@ -1078,13 +1159,13 @@ await test('execute_js_code intent stays unsatisfied until a successful tool run
     };
     const missingToolText = {
         responseType: 'text_response' as const,
-        thought: 'Skip tool for now',
+        reason: 'Skip tool for now',
         text: 'Let me re-evaluate before changing the data.',
         stepId: FIRST_STEP_ID,
     };
     const successfulTransform = {
         responseType: 'execute_js_code' as const,
-        thought: 'Add a normalized metric',
+        reason: 'Add a normalized metric',
         stepId: FIRST_STEP_ID,
         code: {
             explanation: 'Create a bonus column for each row',
@@ -1124,7 +1205,7 @@ await test('execute_js_code intent stays unsatisfied until a successful tool run
 await test('execute_js_code success queues pending data transform', async () => {
     const transformAction = {
         responseType: 'execute_js_code' as const,
-        thought: 'Normalize revenue columns',
+        reason: 'Normalize revenue columns',
         stepId: FIRST_STEP_ID,
         code: {
             explanation: 'Trim whitespace from columns',
@@ -1133,7 +1214,7 @@ await test('execute_js_code success queues pending data transform', async () => 
     };
     const textResponseAction = {
         responseType: 'text_response' as const,
-        thought: 'Inform user of pending transform',
+        reason: 'Inform user of pending transform',
         text: 'I staged a data cleanup. Please review before applying.',
         stepId: SECOND_STEP_ID,
     };
@@ -1155,7 +1236,7 @@ await test('execute_js_code success queues pending data transform', async () => 
 await test('approving pending transform updates dataset before next plan', async () => {
     const transformAction = {
         responseType: 'execute_js_code' as const,
-        thought: 'Scale revenue for inflation',
+        reason: 'Scale revenue for inflation',
         stepId: FIRST_STEP_ID,
         code: {
             explanation: 'Increase revenue totals by 5%',
@@ -1164,7 +1245,7 @@ await test('approving pending transform updates dataset before next plan', async
     };
     const planCreationAction = {
         responseType: 'plan_creation' as const,
-        thought: 'Build chart using adjusted revenue',
+        reason: 'Build chart using adjusted revenue',
         stepId: SECOND_STEP_ID,
         plan: {
             chartType: 'bar',
@@ -1205,7 +1286,7 @@ await test('approving pending transform updates dataset before next plan', async
 await test('discarding pending transform keeps dataset unchanged and planner continues', async () => {
     const transformAction = {
         responseType: 'execute_js_code' as const,
-        thought: 'Attempt risky transform',
+        reason: 'Attempt risky transform',
         stepId: FIRST_STEP_ID,
         code: {
             explanation: 'Normalize totals',
@@ -1214,7 +1295,7 @@ await test('discarding pending transform keeps dataset unchanged and planner con
     };
     const planCreationAction = {
         responseType: 'plan_creation' as const,
-        thought: 'Proceed without prior transform',
+        reason: 'Proceed without prior transform',
         stepId: SECOND_STEP_ID,
         plan: {
             chartType: 'bar',

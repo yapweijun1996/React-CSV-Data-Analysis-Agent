@@ -15,6 +15,20 @@ const analysisPlanItemSchema = {
         secondaryAggregation: { type: Type.STRING, enum: ['sum', 'count', 'avg'], description: 'For combo charts, the aggregation for the secondary value column.' },
         defaultTopN: { type: Type.INTEGER, description: 'Optional. If the analysis has many categories, this suggests a default Top N view (e.g., 8).' },
         defaultHideOthers: { type: Type.BOOLEAN, description: 'Optional. If using defaultTopN, suggests whether to hide the "Others" category by default.' },
+        orderBy: {
+            type: Type.ARRAY,
+            description: 'Optional ordering instructions applied before limiting rows.',
+            items: {
+                type: Type.OBJECT,
+                properties: {
+                    column: { type: Type.STRING, description: 'Column to sort by (group or metric alias).' },
+                    direction: { type: Type.STRING, enum: ['asc', 'desc'], description: 'Sort direction (default desc).' },
+                },
+                required: ['column', 'direction'],
+                additionalProperties: false,
+            },
+        },
+        limit: { type: Type.INTEGER, description: 'Optional limit applied after sorting (e.g., Top N rows).' },
         rowFilter: {
             type: Type.OBJECT,
             description: 'Optional row-level filter to limit rows before aggregation (e.g., single customer or region).',
@@ -72,7 +86,8 @@ export const dataPreparationSchema = {
             items: columnProfileSchema,
         },
     },
-    required: ['explanation', 'jsFunctionBody', 'outputColumns']
+    required: ['explanation', 'jsFunctionBody', 'outputColumns'],
+    additionalProperties: false,
 };
 
 export const filterFunctionSchema = {
@@ -84,7 +99,8 @@ export const filterFunctionSchema = {
             description: "The body of a JavaScript function that takes 'data' and '_util' as arguments and returns a filtered array of objects. It should be a single line starting with 'return data.filter(...);'."
         },
     },
-    required: ['explanation', 'jsFunctionBody']
+    required: ['explanation', 'jsFunctionBody'],
+    additionalProperties: false,
 };
 
 export const proactiveInsightSchema = {
@@ -94,6 +110,7 @@ export const proactiveInsightSchema = {
         cardId: { type: Type.STRING, description: "The ID of the card where this insight was observed." },
     },
     required: ['insight', 'cardId'],
+    additionalProperties: false,
 };
 
 export const singlePlanSchema = analysisPlanItemSchema;
@@ -131,6 +148,19 @@ const clarificationRequestSchema = {
               secondaryAggregation: { type: Type.STRING, enum: ['sum', 'count', 'avg'] },
               defaultTopN: { type: Type.INTEGER },
               defaultHideOthers: { type: Type.BOOLEAN },
+              orderBy: {
+                  type: Type.ARRAY,
+                  items: {
+                      type: Type.OBJECT,
+                      properties: {
+                          column: { type: Type.STRING },
+                          direction: { type: Type.STRING, enum: ['asc', 'desc'] },
+                      },
+                      required: ['column', 'direction'],
+                      additionalProperties: false,
+                  },
+              },
+              limit: { type: Type.INTEGER },
               rowFilter: {
                   type: Type.OBJECT,
                   properties: {
@@ -211,7 +241,7 @@ const planStateSnapshotSchema = {
                         description: 'Current status for the step.',
                     },
                 },
-                required: ['id', 'label', 'status'],
+                required: ['id', 'label', 'intent', 'status'],
                 additionalProperties: false,
             },
         },
@@ -235,7 +265,11 @@ export const multiActionChatResponseSchema = {
             items: {
                 type: Type.OBJECT,
                 properties: {
-                    thought: { type: Type.STRING, description: "The AI's reasoning or thought process before performing the action. This explains *why* this action is being taken. This is a mandatory part of the ReAct pattern." },
+                    reason: {
+                        type: Type.STRING,
+                        maxLength: 280,
+                        description: "Short, auditable explanation (1-2 sentences) describing why this specific action is being taken.",
+                    },
                     type: {
                         type: Type.STRING,
                         enum: ['text_response', 'plan_creation', 'dom_action', 'execute_js_code', 'proceed_to_analysis', 'filter_spreadsheet', 'clarification_request', 'plan_state_update'],
@@ -247,6 +281,7 @@ export const multiActionChatResponseSchema = {
                     },
                     stepId: { type: Type.STRING, description: "The identifier of the plan step this action is advancing. Required for every action including plan_state_update." },
                     responseType: { type: Type.STRING, enum: ['text_response', 'plan_creation', 'dom_action', 'execute_js_code', 'proceed_to_analysis', 'filter_spreadsheet', 'clarification_request', 'plan_state_update'] },
+                    timestamp: { type: Type.STRING, description: 'ISO timestamp indicating when the action was created.' },
                     text: { type: Type.STRING, description: "A conversational text response to the user. Required for 'text_response'." },
                     cardId: { type: Type.STRING, description: "Optional. The ID of the card this text response refers to. Used to link text to a specific chart." },
                     meta: {
@@ -258,6 +293,7 @@ export const multiActionChatResponseSchema = {
                             resumePlanner: { type: Type.BOOLEAN, description: 'Set true to explicitly resume the planner after a previous pause.' },
                             promptId: { type: Type.STRING, description: 'Stable identifier for matching follow-up UI (e.g., question cards).' },
                         },
+                        required: ['awaitUser', 'haltAfter', 'resumePlanner', 'promptId'],
                         additionalProperties: false,
                     },
                     plan: {
@@ -277,10 +313,11 @@ export const multiActionChatResponseSchema = {
                                 type: Type.OBJECT,
                                 description: 'Declaration of the DOM target. Provide byId (card id), byTitle, or a CSS selector.',
                                 properties: {
-                                    byId: { type: Type.STRING },
-                                    byTitle: { type: Type.STRING },
-                                    selector: { type: Type.STRING },
+                                    byId: { type: Type.STRING, description: 'Card id target (preferred).' },
+                                    byTitle: { type: Type.STRING, description: 'Fallback title target.' },
+                                    selector: { type: Type.STRING, description: 'CSS selector when id/title are unavailable.' },
                                 },
+                                required: ['byId', 'byTitle', 'selector'],
                                 additionalProperties: false,
                             },
                             args: {
@@ -302,7 +339,7 @@ export const multiActionChatResponseSchema = {
                                 additionalProperties: false,
                             },
                         },
-                        required: ['toolName', 'args'],
+                        required: ['toolName', 'target', 'args'],
                     },
                     code: {
                         type: Type.OBJECT,
@@ -329,7 +366,7 @@ export const multiActionChatResponseSchema = {
                         description: "The clarification request object. Required for 'clarification_request'."
                     },
                 },
-                required: ['type', 'responseType', 'thought', 'stateTag', 'stepId']
+                required: ['type', 'responseType', 'reason', 'stateTag', 'stepId', 'timestamp', 'text']
             }
         }
     },
@@ -361,6 +398,7 @@ const strictAdditionalPropsPaths = new Set([
 ]);
 
 const strictAllPropsRequiredPaths = new Set([
+    'properties.actions.items',
     'properties.actions.items.properties.args',
     'properties.actions.items.properties.plan',
     'properties.actions.items.properties.planState',
@@ -369,10 +407,12 @@ const strictAllPropsRequiredPaths = new Set([
 ]);
 
 const nullablePropertyPaths = new Set([
+    'properties.actions.items.properties.reason',
     'properties.actions.items.properties.text',
     'properties.actions.items.properties.stateTag',
     'properties.actions.items.properties.stepId',
     'properties.actions.items.properties.cardId',
+    'properties.actions.items.properties.meta',
     'properties.actions.items.properties.plan',
     'properties.actions.items.properties.plan.properties.aggregation',
     'properties.actions.items.properties.plan.properties.groupByColumn',
@@ -383,9 +423,12 @@ const nullablePropertyPaths = new Set([
     'properties.actions.items.properties.plan.properties.secondaryAggregation',
     'properties.actions.items.properties.plan.properties.defaultTopN',
     'properties.actions.items.properties.plan.properties.defaultHideOthers',
+    'properties.actions.items.properties.plan.properties.orderBy',
+    'properties.actions.items.properties.plan.properties.orderBy.items.properties.direction',
     'properties.actions.items.properties.plan.properties.rowFilter',
     'properties.actions.items.properties.plan.properties.rowFilter.properties.column',
     'properties.actions.items.properties.plan.properties.rowFilter.properties.values',
+    'properties.actions.items.properties.plan.properties.limit',
     'properties.actions.items.properties.domAction',
     'properties.actions.items.properties.domAction.properties.args',
     'properties.actions.items.properties.domAction.properties.args.properties.newType',
@@ -397,6 +440,9 @@ const nullablePropertyPaths = new Set([
     'properties.actions.items.properties.domAction.properties.args.properties.hide',
     'properties.actions.items.properties.domAction.properties.args.properties.label',
     'properties.actions.items.properties.domAction.properties.args.properties.format',
+    'properties.actions.items.properties.domAction.properties.target.properties.byId',
+    'properties.actions.items.properties.domAction.properties.target.properties.byTitle',
+    'properties.actions.items.properties.domAction.properties.target.properties.selector',
     'properties.actions.items.properties.code',
     'properties.actions.items.properties.args',
     'properties.actions.items.properties.clarification',
@@ -413,13 +459,17 @@ const nullablePropertyPaths = new Set([
     'properties.actions.items.properties.clarification.properties.pendingPlan.properties.secondaryAggregation',
     'properties.actions.items.properties.clarification.properties.pendingPlan.properties.defaultTopN',
     'properties.actions.items.properties.clarification.properties.pendingPlan.properties.defaultHideOthers',
+    'properties.actions.items.properties.clarification.properties.pendingPlan.properties.orderBy',
+    'properties.actions.items.properties.clarification.properties.pendingPlan.properties.orderBy.items.properties.direction',
     'properties.actions.items.properties.clarification.properties.pendingPlan.properties.rowFilter',
     'properties.actions.items.properties.clarification.properties.pendingPlan.properties.rowFilter.properties.column',
     'properties.actions.items.properties.clarification.properties.pendingPlan.properties.rowFilter.properties.values',
+    'properties.actions.items.properties.clarification.properties.pendingPlan.properties.limit',
     'properties.actions.items.properties.planState',
     'properties.actions.items.properties.planState.properties.contextSummary',
     'properties.actions.items.properties.planState.properties.blockedBy',
     'properties.actions.items.properties.planState.properties.stateTag',
+    'properties.actions.items.properties.planState.properties.steps.items.properties.intent',
     'properties.jsFunctionBody',
     'properties.plans.items.properties.aggregation',
     'properties.plans.items.properties.groupByColumn',
@@ -430,19 +480,21 @@ const nullablePropertyPaths = new Set([
     'properties.plans.items.properties.secondaryAggregation',
     'properties.plans.items.properties.defaultTopN',
     'properties.plans.items.properties.defaultHideOthers',
+    'properties.plans.items.properties.orderBy',
+    'properties.plans.items.properties.orderBy.items.properties.direction',
     'properties.plans.items.properties.rowFilter',
     'properties.plans.items.properties.rowFilter.properties.column',
     'properties.plans.items.properties.rowFilter.properties.values',
+    'properties.plans.items.properties.limit',
 ]);
 
 const applyNullability = (schema: any) => {
     if (!schema) return schema;
+    let skipDefaultNullOnly = false;
     if (schema.enum) {
+        skipDefaultNullOnly = true;
         if (!schema.enum.includes(null)) {
             schema.enum = [...schema.enum, null];
-        }
-        if (!schema.type) {
-            schema.type = ['null'];
         }
     }
     if (schema.type) {
@@ -453,7 +505,7 @@ const applyNullability = (schema: any) => {
         } else if (schema.type !== 'null') {
             schema.type = [schema.type, 'null'];
         }
-    } else if (!schema.anyOf) {
+    } else if (!schema.anyOf && !skipDefaultNullOnly) {
         schema.anyOf = [{ type: 'null' }];
     }
     return schema;

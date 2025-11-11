@@ -49,7 +49,7 @@
   }
 }
 </script>
-    <script type="module" crossorigin src="/agent_csv_index-Cw8BdqdE.js"></script>
+    <script type="module" crossorigin src="/agent_csv_index-aIaZ5PYi.js"></script>
   </head>
   <body class="bg-slate-50 text-slate-800">
     <div id="root"></div>
@@ -74,6 +74,41 @@
     <script>
       (function () {
         const TARGET_ORIGIN = window.location.origin;
+        const DEV_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1']);
+        const isDevEnvironment = DEV_HOSTNAMES.has(window.location.hostname) || window.location.protocol === 'file:';
+        const configuredOrigins = Array.isArray(window.CSV_AGENT_ALLOWED_ORIGINS)
+          ? window.CSV_AGENT_ALLOWED_ORIGINS
+          : [];
+        const normalizedConfiguredOrigins = Array.from(
+          new Set(
+            configuredOrigins
+              .map((origin) => {
+                if (typeof origin !== 'string' || !origin.trim()) return null;
+                try {
+                  return new URL(origin.trim(), window.location.href).origin;
+                } catch (error) {
+                  console.warn('Ignoring invalid origin in CSV_AGENT_ALLOWED_ORIGINS:', origin, error);
+                  return null;
+                }
+              })
+              .filter((origin) => typeof origin === 'string'),
+          ),
+        );
+        const crossOriginAllowList = normalizedConfiguredOrigins.filter((origin) => origin !== TARGET_ORIGIN);
+        const messageTargetOrigins = Array.from(new Set([TARGET_ORIGIN, ...crossOriginAllowList]));
+        const PENDING_PAYLOAD_PREFIX = '__CSV_AGENT_PENDING_PAYLOAD__';
+        const PENDING_PAYLOAD_QUERY_PARAM = 'pendingPayloadKey';
+        const PENDING_PAYLOAD_MAX_AGE_MS = 5 * 60 * 1000;
+
+        const isOriginAllowed = (origin) => {
+          if (!origin) return false;
+          if (origin === TARGET_ORIGIN) return true;
+          if (isDevEnvironment) {
+            return false;
+          }
+          return crossOriginAllowList.includes(origin);
+        };
+
         const queue = [];
 
         function sanitizeFileStem(rawHeader) {
@@ -99,37 +134,138 @@
           return queue.length ? queue.shift() : null;
         };
 
-        window.addEventListener('message', (event) => {
-          if (event.origin !== TARGET_ORIGIN || !event.data) return;
-          const { type, csv, header } = event.data;
-          if (type !== 'table_csv' || typeof csv !== 'string') return;
-
+        function buildQueuedPayload(csv, header) {
           const sanitizedHeader = typeof header === 'string' ? header : '';
           const fileStem = sanitizeFileStem(sanitizedHeader);
           const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
           const fileName = `${fileStem}-${timestamp}.csv`;
-
-          enqueuePayload({
+          return {
             csv,
             header: sanitizedHeader,
             fileName,
             receivedAt: Date.now(),
-          });
+          };
+        }
+
+        function enqueueFromExternalSource(csv, header) {
+          if (typeof csv !== 'string' || !csv.length) return;
+          enqueuePayload(buildQueuedPayload(csv, header));
+        }
+
+        window.addEventListener('message', (event) => {
+          if (!isOriginAllowed(event.origin) || !event.data) return;
+          const { type, csv, header } = event.data;
+          if (type !== 'table_csv' || typeof csv !== 'string') return;
+          enqueueFromExternalSource(csv, header);
         });
+
+        function consumePendingKeyFromUrl() {
+          if (!window.location || !window.location.search) return null;
+          try {
+            const url = new URL(window.location.href);
+            const key = url.searchParams.get(PENDING_PAYLOAD_QUERY_PARAM);
+            if (!key) return null;
+            url.searchParams.delete(PENDING_PAYLOAD_QUERY_PARAM);
+            if (window.history && typeof window.history.replaceState === 'function') {
+              const newRelativeUrl = url.pathname + (url.search || '') + url.hash;
+              window.history.replaceState(null, '', newRelativeUrl);
+            }
+            return key;
+          } catch (error) {
+            console.warn('CSV Agent: unable to read pending payload key from URL.', error);
+            return null;
+          }
+        }
+
+        function collectPendingKeysFromSession() {
+          if (!('sessionStorage' in window)) return [];
+          const keys = [];
+          try {
+            for (let i = 0; i < sessionStorage.length; i++) {
+              const key = sessionStorage.key(i);
+              if (typeof key === 'string' && key.startsWith(PENDING_PAYLOAD_PREFIX)) {
+                keys.push(key);
+              }
+            }
+          } catch (error) {
+            console.warn('CSV Agent: unable to inspect sessionStorage for pending payloads.', error);
+          }
+          return keys;
+        }
+
+        function consumePendingPayload(key) {
+          if (!key || !('sessionStorage' in window)) return null;
+          let raw;
+          try {
+            raw = sessionStorage.getItem(key);
+            if (raw) {
+              sessionStorage.removeItem(key);
+            }
+          } catch (error) {
+            console.warn('CSV Agent: unable to access sessionStorage for pending payload.', error);
+            return null;
+          }
+          if (!raw) return null;
+          try {
+            const parsed = JSON.parse(raw);
+            if (!parsed || typeof parsed.csv !== 'string') return null;
+            if (
+              typeof parsed.storedAt === 'number' &&
+              parsed.storedAt > 0 &&
+              Date.now() - parsed.storedAt > PENDING_PAYLOAD_MAX_AGE_MS
+            ) {
+              console.warn('CSV Agent: pending payload expired, ignoring cached data.');
+              return null;
+            }
+            return parsed;
+          } catch (error) {
+            console.warn('CSV Agent: invalid pending payload object.', error);
+            return null;
+          }
+        }
+
+        function hydratePendingPayloadFromSession() {
+          const pendingKeys = [];
+          const urlKey = consumePendingKeyFromUrl();
+          if (urlKey) pendingKeys.push(urlKey);
+          collectPendingKeysFromSession().forEach((key) => pendingKeys.push(key));
+          const uniqueKeys = Array.from(new Set(pendingKeys));
+          uniqueKeys.forEach((key) => {
+            const payload = consumePendingPayload(key);
+            if (payload) {
+              enqueueFromExternalSource(payload.csv, payload.header);
+            }
+          });
+        }
+
+        hydratePendingPayloadFromSession();
+
+        function broadcastReady(targetWindow) {
+          messageTargetOrigins.forEach((origin) => {
+            try {
+              targetWindow.postMessage({ type: 'ready' }, origin);
+            } catch (error) {
+              console.warn('Unable to notify embedding context about readiness.', { origin, error });
+            }
+          });
+        }
 
         function notifyOpenerReady() {
           if (!window.opener) return;
-          try {
-            window.opener.postMessage({ type: 'ready' }, TARGET_ORIGIN);
-          } catch (error) {
-            console.warn('Unable to notify opener about readiness.', error);
-          }
+          broadcastReady(window.opener);
+        }
+
+        function notifyParentReady() {
+          if (!window.parent || window.parent === window) return;
+          broadcastReady(window.parent);
         }
 
         if (document.readyState === 'complete') {
           notifyOpenerReady();
+          notifyParentReady();
         } else {
           window.addEventListener('load', notifyOpenerReady);
+          window.addEventListener('load', notifyParentReady);
         }
       })();
     </script>

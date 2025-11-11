@@ -63,6 +63,11 @@ export interface AnalysisPlanRowFilter {
     values: (string | number)[];
 }
 
+export interface AnalysisOrderBy {
+    column: string;
+    direction?: 'asc' | 'desc';
+}
+
 export interface PendingDataTransform {
     id: string;
     summary: string;
@@ -249,6 +254,8 @@ export interface AnalysisPlan {
     defaultTopN?: number; // Suggested Top N for charts with many categories
     defaultHideOthers?: boolean; // Suggestion for hiding 'Others' in Top N
     rowFilter?: AnalysisPlanRowFilter; // Optional row-level filter before aggregation
+    orderBy?: AnalysisOrderBy[]; // Explicit ordering for result rows
+    limit?: number | null; // Explicit row limit after sorting
 }
 
 export interface AnalysisCardData {
@@ -266,6 +273,18 @@ export interface AnalysisCardData {
     dataRefId?: string | null;
     queryHash?: string | null;
     isSampledResult?: boolean;
+    aggregationMeta?: AggregationMeta;
+}
+
+export interface AggregationMeta {
+    mode: 'sample' | 'full';
+    sampled: boolean;
+    processedRows: number;
+    totalRows: number;
+    warnings: string[];
+    durationMs?: number;
+    lastRunAt: string;
+    filterCount?: number;
 }
 
 export interface ProgressMessage {
@@ -408,7 +427,7 @@ export interface AgentActionMeta {
 
 export interface AiAction {
   type?: AgentActionType;
-  thought?: string; // The AI's reasoning for this action (ReAct pattern).
+  reason?: string; // Short explanation (<=280 chars) for why this action is taken.
   responseType: AgentActionType;
   stateTag?: AgentStateTag;
   stepId?: string | null;
@@ -426,6 +445,7 @@ export interface AiAction {
   };
   clarification?: ClarificationRequestPayload;
   planState?: AgentPlanState;
+  timestamp?: string;
 }
 
 export interface AiChatResponse {
