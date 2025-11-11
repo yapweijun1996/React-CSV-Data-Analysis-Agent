@@ -1,3 +1,5 @@
+import type { GraphObservation } from '@/src/graph/schema';
+
 export type CsvRow = { [key: string]: string | number };
 
 // Changed from CsvRow[] to an object to include filename metadata
@@ -225,6 +227,18 @@ export interface AgentPromptMetric {
     runId?: string | null;
 }
 
+export interface LlmUsageEntry {
+    id: string;
+    timestamp: string;
+    provider: 'openai' | 'gemini';
+    model: string;
+    promptTokens?: number;
+    completionTokens?: number;
+    totalTokens?: number;
+    estimatedCostUsd?: number | null;
+    context: string;
+}
+
 export interface AgentValidationEvent {
     id: string;
     actionType: AgentActionType;
@@ -422,6 +436,33 @@ export interface AwaitUserPayload {
     placeholder?: string;
 }
 
+export interface AwaitInteractionRecord {
+    promptId: string | null;
+    question: string;
+    optionsSnapshot: AwaitUserOption[];
+    allowFreeText: boolean;
+    placeholder?: string;
+    askedAt: string;
+    status: 'waiting' | 'answered';
+    responseLabel?: string | null;
+    responseValue?: string | null;
+    responseType?: 'option' | 'free_text';
+    respondedAt?: string | null;
+}
+
+export type GraphToolKind = 'profile_dataset' | 'normalize_invoice_month' | 'detect_outliers' | 'aggregate_plan';
+
+export interface GraphToolCall {
+    kind: GraphToolKind;
+    params?: Record<string, unknown>;
+}
+
+export interface GraphToolInFlightSnapshot {
+    kind: GraphToolKind;
+    label: string;
+    startedAt: string;
+}
+
 export interface AppState {
     currentView: AppView;
     isBusy: boolean;
@@ -467,6 +508,14 @@ export interface AppState {
     graphLastReadyAt: string | null;
     graphAwaitPrompt: AwaitUserPayload | null;
     graphAwaitPromptId: string | null;
+    graphAwaitHistory: AwaitInteractionRecord[];
+    graphSessionId: string | null;
+    graphLastToolSummary: string | null;
+    graphToolInFlight: GraphToolInFlightSnapshot | null;
+    langChainLastPlan: AnalysisPlan | null;
+    langChainPlannerEnabled: boolean;
+    llmUsageLog: LlmUsageEntry[];
+    graphObservations: GraphObservation[];
 }
 
 export interface DomActionTarget {
@@ -495,6 +544,7 @@ export interface AgentActionMeta {
     haltAfter?: boolean;
     resumePlanner?: boolean;
     promptId?: string;
+    toolCall?: GraphToolCall;
 }
 
 export interface AiAction {
@@ -519,6 +569,7 @@ export interface AiAction {
   planState?: AgentPlanState;
   timestamp?: string;
   awaitUserPayload?: AwaitUserPayload;
+  toolCall?: GraphToolCall;
 }
 
 export interface AiChatResponse {

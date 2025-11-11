@@ -8,11 +8,12 @@ import { MemoryPanel } from './components/MemoryPanel';
 import { SpreadsheetPanel } from './components/SpreadsheetPanel';
 import { DataPrepDebugPanel } from './components/DataPrepDebugPanel';
 import { AppHeader } from './components/AppHeader';
-import { AnalysisTimeline } from './components/AnalysisTimeline';
 import { BusyStatusBar } from './components/BusyStatusBar';
 import { ToastStack } from './components/ToastStack';
 import { DataTransformGuard } from './components/DataTransformGuard';
 import { useAppStore } from './store/useAppStore';
+import { LangChainDebugPanel } from './components/LangChainDebugPanel';
+import { LlmUsagePanel } from './components/LlmUsagePanel';
 import { ExternalCsvPayload } from './types';
 
 declare global {
@@ -133,6 +134,10 @@ const App: React.FC = () => {
                         <DataPrepDebugPanel isVisible={isDataPrepDebugVisible} />
                     </div>
                 )}
+                <div className="mt-8 space-y-8">
+                    <LangChainDebugPanel />
+                    <LlmUsagePanel />
+                </div>
                 <div className="mt-8">
                     <SpreadsheetPanel isVisible={isSpreadsheetVisible} />
                 </div>
@@ -148,7 +153,6 @@ const App: React.FC = () => {
             <ToastStack />
             <main className="flex-1 overflow-hidden p-4 flex flex-col">
                 <AppHeader />
-                <AnalysisTimeline />
                 <BusyStatusBar />
                 <DataTransformGuard />
                 {renderMainContent()}

@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@google/genai": "^1.28.0",
+    "@langchain/core": "^1.0.4",
     "idb": "^8.0.3",
     "openai": "^4.52.7",
     "react": "^19.2.0",

@@ -34,6 +34,24 @@ export type GraphClientEvent =
           optionId?: string;
           freeText?: string;
           timestamp?: number;
+      }
+    | {
+          type: 'graph/tool_result';
+          sessionId?: string;
+          verification: {
+              description: string;
+              summary?: string;
+              meta: {
+                  source?: 'sample' | 'full';
+                  rows?: number;
+                  warnings?: string[];
+                  processedRows?: number;
+                  totalRows?: number;
+                  durationMs?: number;
+              };
+              payload?: Record<string, unknown>;
+          };
+          timestamp?: number;
       };
 
 export type GraphWorkerEvent =

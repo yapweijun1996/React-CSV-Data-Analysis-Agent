@@ -27,6 +27,17 @@ export interface PendingPlanSummary {
 export interface PendingVerificationSummary {
     id: string;
     description: string;
+    meta: {
+        source?: 'sample' | 'full';
+        rows?: number;
+        warnings?: string[];
+        processedRows?: number;
+        totalRows?: number;
+        durationMs?: number;
+        summary?: string;
+    } | null;
+    summary?: string | null;
+    payload?: Record<string, unknown> | null;
     createdAt: string;
 }
 

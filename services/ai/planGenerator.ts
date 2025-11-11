@@ -1,12 +1,25 @@
 
 import { CsvData, ColumnProfile, Settings, AnalysisPlan, CsvRow, AggregationType } from '../../types';
-import { callGemini, callOpenAI, robustlyParseJsonArray, PlanParsingError } from './apiClient';
+import { callGemini, callOpenAI, robustlyParseJsonArray, PlanParsingError, type LlmUsageMetrics } from './apiClient';
 import { planSchema, planJsonSchema } from './schemas';
 import { createCandidatePlansPrompt, createRefinePlansPrompt } from '../promptTemplates';
 import { executePlan } from '../../utils/dataProcessor';
 import type { MemorySnapshotRecord } from '../csvAgentDb';
 
 const ALLOWED_AGGREGATIONS: Set<AggregationType> = new Set(['sum', 'count', 'avg']);
+
+type PlanUsageLabel = 'plan_candidates' | 'plan_refine';
+
+export interface AnalysisPlanOptions {
+    signal?: AbortSignal;
+    memorySnapshots?: MemorySnapshotRecord[];
+}
+
+export type PlanGenerationUsageEntry = LlmUsageMetrics & { label: PlanUsageLabel };
+
+interface InternalPlanGenerationOptions extends AnalysisPlanOptions {
+    usageCollector?: (entry: PlanGenerationUsageEntry) => void;
+}
 
 const formatMemoryHighlights = (snapshots?: MemorySnapshotRecord[], limit = 4): string[] => {
     if (!snapshots || snapshots.length === 0) return [];
@@ -189,7 +202,7 @@ const generateCandidatePlans = async (
     sampleData: CsvRow[],
     settings: Settings,
     numPlans: number,
-    options?: { signal?: AbortSignal; memorySnapshots?: MemorySnapshotRecord[] },
+    options?: InternalPlanGenerationOptions,
 ): Promise<AnalysisPlan[]> => {
     const categoricalCols = columns.filter(c => c.type === 'categorical' || c.type === 'date' || c.type === 'time').map(c => c.name);
     const numericalCols = columns.filter(c => c.type === 'numerical' || c.type === 'currency' || c.type === 'percentage').map(c => c.name);
@@ -212,12 +225,20 @@ You MUST respond with JSON that adheres exactly to the provided schema (an array
             settings,
             messages,
             { name: 'AnalysisPlanArray', schema: planJsonSchema, strict: true },
-            options?.signal
+            {
+                signal: options?.signal,
+                operation: 'analysis_plan.candidates',
+                onUsage: usage => options?.usageCollector?.({ ...usage, label: 'plan_candidates' }),
+            }
         );
         plans = robustlyParseJsonArray(content, { rootKey: 'plans', requireRootKeyOnly: true });
     
     } else { // Google Gemini
-        const content = await callGemini(settings, promptContent, planSchema, options?.signal);
+        const content = await callGemini(settings, promptContent, planSchema, {
+            signal: options?.signal,
+            operation: 'analysis_plan.candidates',
+            onUsage: usage => options?.usageCollector?.({ ...usage, label: 'plan_candidates' }),
+        });
         plans = robustlyParseJsonArray(content, { rootKey: 'plans', requireRootKeyOnly: true });
     }
 
@@ -231,7 +252,7 @@ const refineAndConfigurePlans = async (
     plansWithData: { plan: AnalysisPlan; aggregatedSample: CsvRow[] }[],
     settings: Settings,
     columns: ColumnProfile[],
-    options?: { signal?: AbortSignal; memorySnapshots?: MemorySnapshotRecord[] },
+    options?: InternalPlanGenerationOptions,
 ): Promise<AnalysisPlan[]> => {
     let rawPlans: any[];
     const promptContent = createRefinePlansPrompt(plansWithData, formatMemoryHighlights(options?.memorySnapshots));
@@ -245,12 +266,20 @@ You MUST respond with JSON that strictly adheres to the provided schema (an arra
             settings,
             messages,
             { name: 'RefinedAnalysisPlanArray', schema: planJsonSchema, strict: true },
-            options?.signal
+            {
+                signal: options?.signal,
+                operation: 'analysis_plan.refine',
+                onUsage: usage => options?.usageCollector?.({ ...usage, label: 'plan_refine' }),
+            }
         );
         rawPlans = robustlyParseJsonArray(content, { rootKey: 'plans', requireRootKeyOnly: true });
 
     } else { // Google Gemini
-        const content = await callGemini(settings, promptContent, planSchema, options?.signal);
+        const content = await callGemini(settings, promptContent, planSchema, {
+            signal: options?.signal,
+            operation: 'analysis_plan.refine',
+            onUsage: usage => options?.usageCollector?.({ ...usage, label: 'plan_refine' }),
+        });
         rawPlans = robustlyParseJsonArray(content, { rootKey: 'plans', requireRootKeyOnly: true });
     }
     
@@ -269,28 +298,25 @@ You MUST respond with JSON that strictly adheres to the provided schema (an arra
 };
 
 
-interface AnalysisPlanOptions {
-    signal?: AbortSignal;
-    memorySnapshots?: MemorySnapshotRecord[];
-}
-
 const generatePlansWithQualityGate = async (
     columns: ColumnProfile[], 
     sampleData: CsvData['data'],
     settings: Settings,
     options?: AnalysisPlanOptions
-): Promise<{ plans: AnalysisPlan[]; warnings: PlanGenerationWarning[] }> => {
+): Promise<{ plans: AnalysisPlan[]; warnings: PlanGenerationWarning[]; telemetry: PlanGenerationUsageEntry[] }> => {
     const isApiKeySet = (settings.provider === 'google' && !!settings.geminiApiKey) || (settings.provider === 'openai' && !!settings.openAIApiKey);
     if (!isApiKeySet) throw new Error("API Key not provided.");
     const warnings: PlanGenerationWarning[] = [];
     const columnUniqueness = buildColumnUniquenessMap(sampleData);
+    const telemetry: PlanGenerationUsageEntry[] = [];
 
     // Step 1: Generate a broad list of candidate plans (already validated inside the function)
     const candidatePlans = await generateCandidatePlans(columns, sampleData, settings, 12, {
         signal: options?.signal,
         memorySnapshots: options?.memorySnapshots,
+        usageCollector: usage => telemetry.push(usage),
     });
-    if (candidatePlans.length === 0) return { plans: [], warnings };
+    if (candidatePlans.length === 0) return { plans: [], warnings, telemetry };
 
     // Step 2: Execute plans on sample data to get data for the AI to review
     const sampleCsvData = { fileName: 'sample', data: sampleData };
@@ -314,13 +340,14 @@ const generatePlansWithQualityGate = async (
     
     if (viablePlans.length === 0) {
         console.warn("No candidate plans produced high-value samples, returning initial valid candidates.");
-        return { plans: candidatePlans.slice(0, 4), warnings };
+        return { plans: candidatePlans.slice(0, 4), warnings, telemetry };
     }
     
     // Step 3: AI Quality Gate - Ask AI to review and refine the plans (already validated inside the function)
     const refinedPlans = await refineAndConfigurePlans(viablePlans, settings, columns, {
         signal: options?.signal,
         memorySnapshots: options?.memorySnapshots,
+        usageCollector: usage => telemetry.push(usage),
     });
 
     // Ensure we have a minimum number of plans
@@ -332,7 +359,7 @@ const generatePlansWithQualityGate = async (
         finalPlans.push(...fallbackPlans.slice(0, needed));
     }
 
-    return { plans: finalPlans.slice(0, 12), warnings }; // Return between 4 and 12 of the best plans
+    return { plans: finalPlans.slice(0, 12), warnings, telemetry }; // Return between 4 and 12 of the best plans
 };
 
 export interface PlanGenerationWarning {
@@ -356,6 +383,7 @@ export class PlanGenerationFatalError extends Error {
 export interface PlanGenerationResult {
     plans: AnalysisPlan[];
     warnings: PlanGenerationWarning[];
+    telemetry?: PlanGenerationUsageEntry[];
 }
 
 export const generateAnalysisPlans = async (
@@ -370,9 +398,14 @@ export const generateAnalysisPlans = async (
     const warnings: PlanGenerationWarning[] = [];
 
     try {
-        const { plans, warnings: gateWarnings } = await generatePlansWithQualityGate(columns, sampleData, settings, options);
+        const { plans, warnings: gateWarnings, telemetry } = await generatePlansWithQualityGate(
+            columns,
+            sampleData,
+            settings,
+            options,
+        );
         warnings.push(...gateWarnings);
-        return { plans, warnings };
+        return { plans, warnings, telemetry };
     } catch (error) {
         const isParsingError = error instanceof PlanParsingError;
         const warningMessage = isParsingError
@@ -385,11 +418,13 @@ export const generateAnalysisPlans = async (
         });
         console.warn("Plan generation warning:", error);
         try {
+            const fallbackTelemetry: PlanGenerationUsageEntry[] = [];
             const fallbackPlans = await generateCandidatePlans(columns, sampleData, settings, 8, {
                 signal: options?.signal,
                 memorySnapshots: options?.memorySnapshots,
+                usageCollector: usage => fallbackTelemetry.push(usage),
             });
-            return { plans: fallbackPlans, warnings };
+            return { plans: fallbackPlans, warnings, telemetry: fallbackTelemetry };
         } catch (fallbackError) {
             console.error("Fallback plan generation also failed:", fallbackError);
             throw new PlanGenerationFatalError("Failed to generate any analysis plans from AI.", warnings, fallbackError);

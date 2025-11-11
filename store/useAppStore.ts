@@ -35,7 +35,13 @@ import {
     QuickActionId,
     DatasetRuntimeConfig,
     AiAction,
+    AwaitUserPayload,
+    AwaitInteractionRecord,
+    GraphToolCall,
+    GraphToolInFlightSnapshot,
+    LlmUsageEntry,
 } from '../types';
+import type { GraphObservation } from '@/src/graph/schema';
 import { executePlan, applyTopNWithOthers, PlanExecutionError } from '../utils/dataProcessor';
 import {
     generateAnalysisPlans,
@@ -61,7 +67,11 @@ import { computeDatasetHash } from '../utils/datasetHash';
 import { graphBus } from '../src/bus/client';
 import type { GraphWorkerEvent } from '../src/graph/contracts';
 import { buildAggregatePayloadForPlan } from '@/utils/aggregatePayload';
-import { graphDataTools } from '@/tools/data';
+import { graphDataTools, type GraphToolMeta } from '@/tools/data';
+import { isGraphToolOption } from '@/src/graph/toolSpecs';
+import { toLangChainPlanGraphPayload } from '@/services/langchain/types';
+import type { LangChainPlanEnvelope, LangChainPlanTelemetry } from '@/services/langchain/types';
+import type { PlanGenerationUsageEntry } from '@/services/ai/planGenerator';
 import { dataTools, type AggregateResult, type AggregatePayload, type ProfileResult } from '../services/dataTools';
 import {
     persistCleanDataset,
@@ -88,6 +98,8 @@ import { getErrorMessage } from '../services/errorMessages';
 import { ERROR_CODES, type ErrorCode } from '../services/errorCodes';
 import { getGroupableColumnCandidates } from '../utils/groupByInference';
 import { AUTO_FULL_SCAN_ROW_THRESHOLD } from '../services/runtimeConfig';
+import { estimateLlmCostUsd } from '../services/ai/llmPricing';
+import type { LlmUsageMetrics } from '@/services/ai/apiClient';
 
 const createClarificationId = () =>
     typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -124,11 +136,172 @@ const triggerAutoSaveImmediately = () => {
 const describeToolFailure = (code?: ErrorCode, reason?: string): string =>
     getErrorMessage(code, reason).detail;
 
+const buildToolObservation = (
+    kind: GraphToolCall['kind'],
+    summary: string,
+    meta: GraphToolMeta,
+    payload?: Record<string, unknown>,
+): AgentObservation => ({
+    id: `obs-tool-${kind}-${Date.now().toString(36)}`,
+    actionId: kind,
+    responseType: 'execute_js_code',
+    status: 'success',
+    timestamp: new Date().toISOString(),
+    outputs: {
+        summary,
+        meta,
+        payload,
+    },
+});
+
 const requestFullScanApproval = (title: string): boolean => {
     if (typeof window === 'undefined') return true;
     return window.confirm(
         `“${title}” 需要扫描所有已缓存的行才能完成分析。\n这可能耗时更久。是否启用全量扫描？`,
     );
+};
+
+const MAX_LLM_USAGE_LOG = 40;
+
+const createLlmUsageEntry = (usage: Omit<LlmUsageEntry, 'id' | 'timestamp'>): LlmUsageEntry => ({
+    ...usage,
+    id: `llm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    timestamp: new Date().toISOString(),
+});
+
+const formatTokenSummary = (entry: LlmUsageEntry): string => {
+    const segments: string[] = [];
+    if (typeof entry.promptTokens === 'number') {
+        segments.push(`in ${entry.promptTokens}`);
+    }
+    if (typeof entry.completionTokens === 'number') {
+        segments.push(`out ${entry.completionTokens}`);
+    }
+    if (typeof entry.totalTokens === 'number') {
+        segments.push(`total ${entry.totalTokens}`);
+    }
+    return segments.length > 0 ? `tokens ${segments.join(' / ')}` : 'tokens n/a';
+};
+
+const describeLlmUsageEntry = (entry: LlmUsageEntry): string => {
+    const costText =
+        entry.estimatedCostUsd != null ? `$${entry.estimatedCostUsd.toFixed(4)}` : 'cost n/a';
+    return `${entry.context}: ${entry.provider}/${entry.model} — ${formatTokenSummary(entry)}, ${costText}`;
+};
+
+const mapUsageMetricsToEntry = (
+    usage: LlmUsageMetrics,
+    fallbackContext: string,
+): Omit<LlmUsageEntry, 'id' | 'timestamp'> => ({
+    provider: usage.provider,
+    model: usage.model,
+    promptTokens: usage.promptTokens,
+    completionTokens: usage.completionTokens,
+    totalTokens: usage.totalTokens,
+    context: usage.operation ?? fallbackContext,
+});
+
+const graphObservationKindLabel: Record<string, string> = {
+    langchain_plan: 'LangChain Plan',
+    aggregate_plan: 'Plan Preview',
+    profile_dataset: 'Dataset Profile',
+    normalize_invoice_month: 'Invoice Month Cleanup',
+    detect_outliers: 'Outlier Detection',
+    tool_result: 'Tool Result',
+};
+
+const formatGraphObservationForLog = (observation: GraphObservation): string => {
+    const payload = (observation.payload ?? {}) as Record<string, any>;
+    const label = graphObservationKindLabel[observation.kind] ?? observation.kind;
+    const parts: string[] = [`[Observation] ${label}`];
+    if (typeof payload.summary === 'string') {
+        parts.push(payload.summary);
+    } else if (typeof payload.description === 'string') {
+        parts.push(payload.description);
+    }
+    const meta = payload.meta ?? {};
+    if (typeof meta.rows === 'number') {
+        parts.push(`${meta.rows} 行`);
+    }
+    if (typeof meta.source === 'string') {
+        parts.push(meta.source === 'full' ? '全量' : '采样');
+    }
+    const telemetry = payload.telemetry ?? meta.telemetry;
+    if (telemetry) {
+        const tokenUsage = telemetry.tokenUsage;
+        if (tokenUsage) {
+            const tokenParts: string[] = [];
+            if (tokenUsage.promptTokens != null) tokenParts.push(`in ${tokenUsage.promptTokens}`);
+            if (tokenUsage.completionTokens != null) tokenParts.push(`out ${tokenUsage.completionTokens}`);
+            if (tokenUsage.totalTokens != null) tokenParts.push(`total ${tokenUsage.totalTokens}`);
+            if (tokenParts.length) {
+                parts.push(`Tok ${tokenParts.join(' / ')}`);
+            }
+        }
+        if (telemetry.estimatedCostUsd != null) {
+            parts.push(`$${telemetry.estimatedCostUsd.toFixed(4)}`);
+        } else if (telemetry.latencyMs != null) {
+            parts.push(`${Math.round(telemetry.latencyMs)} ms`);
+        }
+    } else if (typeof meta.durationMs === 'number') {
+        parts.push(`${Math.round(meta.durationMs)} ms`);
+    }
+    return parts.join(' · ');
+};
+
+const formatLangChainTelemetry = (telemetry?: LangChainPlanTelemetry): string => {
+    if (!telemetry) {
+        return 'latency n/a, tokens n/a, cost n/a';
+    }
+    const latencyText = `${Math.round(telemetry.latencyMs)} ms`;
+    const usage = telemetry.tokenUsage;
+    let tokenText = 'tokens n/a';
+    if (usage) {
+        const prompt = usage.promptTokens;
+        const completion = usage.completionTokens;
+        const total =
+            usage.totalTokens ??
+            (prompt != null || completion != null
+                ? (prompt ?? 0) + (completion ?? 0)
+                : undefined);
+        if (prompt != null || completion != null) {
+            tokenText = `tokens ${prompt ?? '?'} in / ${completion ?? '?'} out${
+                total != null ? ` (${total} total)` : ''
+            }`;
+        } else if (total != null) {
+            tokenText = `tokens ${total}`;
+        }
+    }
+    const costText =
+        telemetry.estimatedCostUsd != null ? `$${telemetry.estimatedCostUsd.toFixed(4)}` : 'cost n/a';
+    return `${latencyText}, ${tokenText}, cost ${costText}`;
+};
+
+const shouldUseLangChainPlannerForReply = (
+    state: AppStore,
+    optionId?: string | null,
+    freeText?: string | null,
+): boolean => {
+    if (!state.langChainPlannerEnabled || !state.isApiKeySet) return false;
+    if (isGraphToolOption(optionId)) return false;
+    if (!state.datasetHash || !state.csvData || state.csvData.data.length === 0) return false;
+    if (!state.columnProfiles.length) return false;
+    // Allow free-text requests or non-tool options.
+    return Boolean(optionId || (freeText && freeText.length > 0));
+};
+
+const runLangChainPlannerEnvelope = async (state: AppStore): Promise<LangChainPlanEnvelope> => {
+    if (!state.datasetHash || !state.csvData) {
+        throw new Error('Dataset unavailable for LangChain planner.');
+    }
+    const { generateLangChainPlanEnvelope } = await import('@/services/langchain/planBridge');
+    return generateLangChainPlanEnvelope({
+        datasetId: state.datasetHash,
+        columns: state.columnProfiles,
+        rows: state.csvData.data,
+        settings: state.settings,
+        addProgress: state.addProgress,
+    });
 };
 
 const QUICK_ACTION_LABELS: Record<QuickActionId, { label: string; helper: string }> = {
@@ -202,6 +375,108 @@ const buildQuickTopNPlan = (profiles: ColumnProfile[], sampleRows: CsvRow[]): An
 const getNextAwaitingClarificationId = (clarifications: ClarificationRequest[]): string | null =>
     clarifications.find(c => c.status === 'pending')?.id ?? null;
 
+const MAX_GRAPH_AWAIT_HISTORY = 6;
+
+const appendAwaitHistoryEntry = (
+    history: AwaitInteractionRecord[],
+    prompt: AwaitUserPayload,
+    askedAt: string,
+): AwaitInteractionRecord[] => {
+    if (prompt.promptId) {
+        const existingIndex = history.findIndex(entry => entry.promptId === prompt.promptId);
+        if (existingIndex >= 0) {
+            const nextHistory = [...history];
+            nextHistory[existingIndex] = {
+                ...nextHistory[existingIndex],
+                question: prompt.question,
+                optionsSnapshot: prompt.options,
+                allowFreeText: prompt.allowFreeText,
+                placeholder: prompt.placeholder,
+                status: nextHistory[existingIndex].status === 'answered' ? 'answered' : 'waiting',
+            };
+            return nextHistory;
+        }
+    }
+    const nextEntry: AwaitInteractionRecord = {
+        promptId: prompt.promptId ?? null,
+        question: prompt.question,
+        optionsSnapshot: prompt.options,
+        allowFreeText: prompt.allowFreeText,
+        placeholder: prompt.placeholder,
+        askedAt,
+        status: 'waiting',
+    };
+    const updated = [...history, nextEntry];
+    return updated.length > MAX_GRAPH_AWAIT_HISTORY ? updated.slice(-MAX_GRAPH_AWAIT_HISTORY) : updated;
+};
+
+const markAwaitHistoryAnswered = (
+    history: AwaitInteractionRecord[],
+    promptId: string | null,
+    respondedAt: string,
+    response: { label: string | null; value: string | null; type: 'option' | 'free_text' },
+): AwaitInteractionRecord[] => {
+    if (!history.length) return history;
+    let targetIndex = -1;
+    if (promptId) {
+        targetIndex = history.findIndex(entry => entry.promptId === promptId);
+    }
+    if (targetIndex === -1) {
+        for (let i = history.length - 1; i >= 0; i -= 1) {
+            if (history[i].status === 'waiting') {
+                targetIndex = i;
+                break;
+            }
+        }
+    }
+    if (targetIndex === -1) return history;
+    const updated = [...history];
+    updated[targetIndex] = {
+        ...updated[targetIndex],
+        status: 'answered',
+        respondedAt,
+        responseLabel: response.label ?? response.value ?? null,
+        responseValue: response.value,
+        responseType: response.type,
+    };
+    return updated;
+};
+
+interface GraphToolVerificationPayload {
+    description: string;
+    summary: string;
+    meta: GraphToolMeta;
+    payload?: Record<string, unknown>;
+}
+
+const dispatchGraphToolResult = (verification: GraphToolVerificationPayload) => {
+    if (!graphBus.isSupported) return;
+    graphBus.post({
+        type: 'graph/tool_result',
+        verification,
+        timestamp: Date.now(),
+    });
+    graphBus.post({ type: 'graph/runPipeline', payload: { reason: 'verification' }, timestamp: Date.now() });
+};
+
+const describeGraphToolCall = (toolCall: GraphToolCall): string => {
+    switch (toolCall.kind) {
+        case 'profile_dataset':
+            return '生成列画像';
+        case 'normalize_invoice_month': {
+            const column = typeof toolCall.params?.column === 'string' ? (toolCall.params.column as string) : 'InvoiceMonth';
+            return `标准化 ${column}`;
+        }
+        case 'detect_outliers': {
+            const valueColumn = typeof toolCall.params?.valueColumn === 'string' ? (toolCall.params.valueColumn as string) : 'Amount';
+            return `侦测 ${valueColumn} 异常值`;
+        }
+        case 'aggregate_plan':
+        default:
+            return '运行数据工具';
+    }
+};
+
 const normalizePlanSteps = (steps: AgentPlanStep[] | undefined | null): AgentPlanStep[] => {
     return (steps ?? [])
         .map(step => ({
@@ -263,7 +538,12 @@ const buildSerializableAppState = (state: AppStore): AppState => ({
     plannerDatasetHash: state.plannerDatasetHash,
     agentAwaitingUserInput: state.agentAwaitingUserInput,
     agentAwaitingPromptId: state.agentAwaitingPromptId,
+    graphToolInFlight: state.graphToolInFlight,
     analysisTimeline: state.analysisTimeline,
+    langChainLastPlan: state.langChainLastPlan,
+    langChainPlannerEnabled: state.langChainPlannerEnabled,
+    llmUsageLog: state.llmUsageLog,
+    graphObservations: state.graphObservations,
 });
 
 const buildFileNameFromHeader = (header?: string | null) => {
@@ -459,6 +739,14 @@ const initialAppState: AppState = {
     graphLastReadyAt: null,
     graphAwaitPrompt: null,
     graphAwaitPromptId: null,
+    graphAwaitHistory: [],
+    graphSessionId: null,
+    graphLastToolSummary: null,
+    graphToolInFlight: null,
+    langChainLastPlan: null,
+    langChainPlannerEnabled: true,
+    llmUsageLog: [],
+    graphObservations: [],
 };
 
 export const useAppStore = create<StoreState & StoreActions>((set, get) => {
@@ -492,6 +780,167 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 activeClarificationId: nextActive,
             };
         });
+    };
+
+    const recordPlanTelemetryBatch = (contextPrefix: string, telemetry?: PlanGenerationUsageEntry[]) => {
+        if (!telemetry || telemetry.length === 0) return;
+        const recorder = get().recordLlmUsage;
+        telemetry.forEach(entry => {
+            recorder(mapUsageMetricsToEntry(entry, `${contextPrefix}.${entry.label}`));
+        });
+    };
+
+const beginGraphTool = (toolCall: GraphToolCall) => {
+    const snapshot: GraphToolInFlightSnapshot = {
+        kind: toolCall.kind,
+        label: describeGraphToolCall(toolCall),
+        startedAt: new Date().toISOString(),
+    };
+    set({ graphToolInFlight: snapshot });
+};
+
+const endGraphTool = () => {
+    set({ graphToolInFlight: null });
+};
+
+    const executeGraphToolCall = async (toolCall?: GraphToolCall): Promise<boolean> => {
+        if (!toolCall) {
+            return false;
+        }
+        switch (toolCall.kind) {
+            case 'profile_dataset': {
+                const datasetId = get().datasetHash;
+                if (!datasetId) {
+                    get().addProgress('Graph profile request skipped：没有载入的数据集。', 'error');
+                    return false;
+                }
+                try {
+                    beginGraphTool(toolCall);
+                    const sampleSize = typeof toolCall.params?.sampleSize === 'number' ? (toolCall.params.sampleSize as number) : undefined;
+                    const profile = await graphDataTools.profileDataset(datasetId, sampleSize);
+                    const summary = `数据画像：${profile.columns} 列 · ${profile.rowCount.toLocaleString()} 行（采样 ${profile.sampledRows.toLocaleString()}）`;
+                    const meta: GraphToolMeta = {
+                        source: profile.sampledRows === profile.rowCount ? 'full' : 'sample',
+                        rows: profile.rowCount,
+                        warnings: profile.warnings,
+                        processedRows: profile.sampledRows,
+                        totalRows: profile.rowCount,
+                        durationMs: profile.durationMs ?? 0,
+                    };
+                    const payload = {
+                        kind: 'profile_dataset' as const,
+                        columns: profile.columns,
+                        rowCount: profile.rowCount,
+                        sampledRows: profile.sampledRows,
+                    };
+                    set({ graphLastToolSummary: summary });
+                    get().addProgress(summary);
+                    dispatchGraphToolResult({
+                        description: 'Dataset profile',
+                        summary,
+                        meta,
+                        payload,
+                    });
+                    get().appendPlannerObservation(buildToolObservation('profile_dataset', summary, meta, payload));
+                    return true;
+                } catch (error) {
+                    const reason = error instanceof Error ? error.message : String(error);
+                    get().addProgress(`Graph profile request failed: ${reason}`, 'error');
+                    return false;
+                } finally {
+                    endGraphTool();
+                }
+            }
+            case 'normalize_invoice_month': {
+                const csvData = get().csvData;
+                if (!csvData) {
+                    get().addProgress('Graph normalize request skipped：暂无 CSV 数据。', 'error');
+                    return false;
+                }
+                const column = typeof toolCall.params?.column === 'string' ? (toolCall.params.column as string) : 'InvoiceMonth';
+                beginGraphTool(toolCall);
+                try {
+                    const normalization = graphDataTools.normalizeInvoiceMonth(csvData, column);
+                    const totalRows = normalization.normalizedCount + normalization.skippedCount;
+                    const summary = `标准化 ${column}：成功 ${normalization.normalizedCount}，跳过 ${normalization.skippedCount}`;
+                    const meta: GraphToolMeta = {
+                        source: 'full',
+                        rows: normalization.normalizedCount,
+                        warnings: normalization.skippedCount ? [`Skipped ${normalization.skippedCount} rows`] : [],
+                        processedRows: totalRows,
+                        totalRows,
+                        durationMs: 0,
+                    };
+                    const payload = {
+                        kind: 'normalize_invoice_month' as const,
+                        column: normalization.column,
+                        normalizedCount: normalization.normalizedCount,
+                        skippedCount: normalization.skippedCount,
+                        sampleValues: normalization.sampleValues,
+                    };
+                    set({ graphLastToolSummary: summary });
+                    get().addProgress(summary);
+                    dispatchGraphToolResult({
+                        description: `Normalize ${column}`,
+                        summary,
+                        meta,
+                        payload,
+                    });
+                    get().appendPlannerObservation(buildToolObservation('normalize_invoice_month', summary, meta, payload));
+                    return true;
+                } finally {
+                    endGraphTool();
+                }
+            }
+            case 'detect_outliers': {
+                const csvData = get().csvData;
+                if (!csvData) {
+                    get().addProgress('Graph outlier request skipped：暂无 CSV 数据。', 'error');
+                    return false;
+                }
+                const valueColumn = typeof toolCall.params?.valueColumn === 'string' ? (toolCall.params.valueColumn as string) : null;
+                if (!valueColumn) {
+                    get().addProgress('Graph outlier request failed：未指定 valueColumn。', 'error');
+                    return false;
+                }
+                const thresholdMultiplier = typeof toolCall.params?.multiplier === 'number' ? (toolCall.params.multiplier as number) : 2;
+                beginGraphTool(toolCall);
+                try {
+                    const outliers = graphDataTools.detectOutliers(csvData, valueColumn, thresholdMultiplier);
+                    const totalRows = csvData.data.length;
+                    const summary = `异常检测 ${valueColumn}：找到 ${outliers.count} 条高于阈值 ${outliers.threshold}`;
+                    const meta: GraphToolMeta = {
+                        source: 'full',
+                        rows: outliers.count,
+                        warnings: [],
+                        processedRows: totalRows,
+                        totalRows,
+                        durationMs: 0,
+                    };
+                    const payload = {
+                        kind: 'detect_outliers' as const,
+                        column: outliers.column,
+                        threshold: outliers.threshold,
+                        count: outliers.count,
+                        rows: outliers.rows,
+                    };
+                    set({ graphLastToolSummary: summary });
+                    get().addProgress(summary);
+                    dispatchGraphToolResult({
+                        description: `Detect outliers (${valueColumn})`,
+                        summary,
+                        meta,
+                        payload,
+                    });
+                    get().appendPlannerObservation(buildToolObservation('detect_outliers', summary, meta, payload));
+                    return true;
+                } finally {
+                    endGraphTool();
+                }
+            }
+            default:
+                return false;
+        }
     };
 
     const getRunSignal = (runId?: string) => (runId ? get().createAbortController(runId)?.signal : undefined);
@@ -954,6 +1403,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 plannerDatasetHash: currentSession.appState.plannerDatasetHash ?? currentSession.appState.datasetHash ?? null,
                 datasetProfile: currentSession.appState.datasetProfile ?? null,
                 analysisTimeline: currentSession.appState.analysisTimeline ?? { ...initialAppState.analysisTimeline },
+                graphObservations: currentSession.appState.graphObservations ?? [],
             });
             await restoreVectorMemoryFromSnapshot(
                 currentSession.appState.vectorStoreDocuments,
@@ -1014,15 +1464,27 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                     get().addProgress(`Graph error: ${event.message}`, 'error');
                     return;
                 case 'graph/pipeline': {
+                    const prevObservations = get().graphObservations ?? [];
+                    const prevIds = new Set(prevObservations.map(obs => obs.id));
+                    const incomingObservations = event.state.observations ?? [];
+                    const newObservations = incomingObservations.filter(obs => !prevIds.has(obs.id));
                     const heartbeat = new Date(event.timestamp).toISOString();
                     const awaitingPrompt = event.state.awaitPrompt ?? null;
-                    set({
+                    set(current => ({
                         graphStatus: 'ready',
                         graphStatusMessage: `Pipeline node ${event.node} emitted ${event.actions.length} action(s).`,
                         graphLastReadyAt: heartbeat,
                         graphAwaitPrompt: awaitingPrompt,
                         graphAwaitPromptId: awaitingPrompt?.promptId ?? null,
                         agentAwaitingUserInput: Boolean(awaitingPrompt),
+                        graphSessionId: event.state.sessionId ?? current.graphSessionId ?? null,
+                        graphAwaitHistory: awaitingPrompt
+                            ? appendAwaitHistoryEntry(current.graphAwaitHistory, awaitingPrompt, heartbeat)
+                            : current.graphAwaitHistory,
+                        graphObservations: event.state.observations ?? current.graphObservations,
+                    }));
+                    newObservations.forEach(obs => {
+                        get().addProgress(formatGraphObservationForLog(obs));
                     });
                     if (awaitingPrompt) {
                         get().addProgress(`Graph awaiting your choice: ${awaitingPrompt.question}`);
@@ -1051,10 +1513,71 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         if (!graphBus.isSupported) return;
         graphBus.post({ type: 'graph/runPipeline', payload, timestamp: Date.now() });
     },
-    sendGraphUserReply: (optionId, freeText) => {
+    sendGraphUserReply: async (optionId, freeText) => {
         if (!graphBus.isSupported) return;
-        graphBus.post({ type: 'graph/userReply', optionId, freeText, timestamp: Date.now() });
-        graphBus.post({ type: 'graph/runPipeline', payload: { reason: 'user_reply' }, timestamp: Date.now() });
+        const promptSnapshot = get().graphAwaitPrompt;
+        const respondedAt = new Date().toISOString();
+        const trimmedFreeText = typeof freeText === 'string' ? freeText.trim() : undefined;
+        if (!optionId && !trimmedFreeText) {
+            return;
+        }
+        const optionLabel = optionId && promptSnapshot
+            ? promptSnapshot.options.find(opt => opt.id === optionId)?.label ?? optionId
+            : null;
+        const responseLine = optionId
+            ? `我选择了「${optionLabel ?? optionId}」`
+            : `我输入了「${trimmedFreeText ?? ''}」`;
+        const prefixedText = promptSnapshot
+            ? `【${promptSnapshot.question}】\n${responseLine}`
+            : responseLine;
+        const userMessage: ChatMessage = {
+            sender: 'user',
+            text: prefixedText,
+            timestamp: new Date(),
+            type: 'user_message',
+        };
+        set(state => ({
+            chatHistory: [...state.chatHistory, userMessage],
+            graphAwaitHistory: promptSnapshot
+                ? markAwaitHistoryAnswered(state.graphAwaitHistory, promptSnapshot.promptId ?? null, respondedAt, {
+                      label: optionLabel ?? trimmedFreeText ?? null,
+                      value: optionId ?? trimmedFreeText ?? null,
+                      type: optionId ? 'option' : 'free_text',
+                  })
+                : state.graphAwaitHistory,
+        }));
+        graphBus.post({ type: 'graph/userReply', optionId, freeText: trimmedFreeText, timestamp: Date.now() });
+        const state = get();
+        const useLangChain = shouldUseLangChainPlannerForReply(state, optionId, trimmedFreeText);
+        if (!useLangChain) {
+            graphBus.post({ type: 'graph/runPipeline', payload: { reason: 'user_reply' }, timestamp: Date.now() });
+            return;
+        }
+        try {
+            const envelope = await runLangChainPlannerEnvelope(state);
+            get().setLangChainLastPlan(envelope.plan);
+            get().appendPlannerObservation(envelope.observation);
+            get().updatePlannerPlanState(envelope.planState);
+            recordPlanTelemetryBatch('langchain_plan', envelope.usageLog);
+            const telemetryText = formatLangChainTelemetry(envelope.telemetry);
+            get().addProgress(`↺ LangChain plan ready (${telemetryText}) — ${envelope.summary}`);
+            graphBus.post({
+                type: 'graph/runPipeline',
+                payload: {
+                    reason: 'langchain_plan',
+                    langChainPlan: toLangChainPlanGraphPayload(envelope),
+                },
+                timestamp: Date.now(),
+            });
+        } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error);
+            get().addProgress(`LangChain planner failed: ${reason}，改用本地 planner。`, 'error');
+            graphBus.post({
+                type: 'graph/runPipeline',
+                payload: { reason: 'langchain_plan_fallback' },
+                timestamp: Date.now(),
+            });
+        }
     },
     processGraphActions: async (actions: AiAction[]) => {
         if (!Array.isArray(actions) || actions.length === 0) return;
@@ -1075,7 +1598,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                         const datasetId = get().datasetHash;
                         const rowCountHint = get().datasetProfile?.rowCount ?? dataset.data.length;
                         try {
-                            const preview = await runAggregateToolForPlan({
+                            const preview = await graphDataTools.aggregatePlan({
                                 plan: action.plan,
                                 datasetId,
                                 csvData: dataset,
@@ -1085,8 +1608,28 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                                     runtimeConfig: get().datasetRuntimeConfig,
                                 },
                             });
-                            get().addProgress(
-                                `Graph aggregate preview (${preview.meta.source}) rows=${preview.meta.rows}, warnings=${preview.meta.warnings.length}.`,
+                            const summary = `预览 ${action.plan.title ?? 'analysis'}: ${preview.meta.rows} 行（${
+                                preview.meta.source
+                            }），警告 ${preview.meta.warnings.length}。`;
+                            set({ graphLastToolSummary: summary });
+                            get().addProgress(summary);
+                            dispatchGraphToolResult({
+                                description: action.plan.title ?? 'analysis',
+                                summary,
+                                meta: preview.meta,
+                                payload: {
+                                    kind: 'aggregate_plan',
+                                    planTitle: action.plan.title ?? 'analysis',
+                                    rows: preview.meta.rows,
+                                    viewId: preview.viewId,
+                                },
+                            });
+                            get().appendPlannerObservation(
+                                buildToolObservation('aggregate_plan', summary, preview.meta, {
+                                    planTitle: action.plan.title ?? 'analysis',
+                                    rows: preview.meta.rows,
+                                    viewId: preview.viewId,
+                                }),
                             );
                         } catch (error) {
                             const reason = error instanceof Error ? error.message : String(error);
@@ -1095,6 +1638,11 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                         get().addProgress(`Graph executing plan "${action.plan.title ?? 'analysis'}" via data pipeline.`);
                         const runId = createRunId();
                         await runPlanWithChatLifecycle(action.plan, dataset, runId);
+                    }
+                    break;
+                case 'execute_js_code':
+                    if (action.toolCall || action.meta?.toolCall) {
+                        await executeGraphToolCall(action.toolCall ?? action.meta?.toolCall);
                     }
                     break;
                 case 'text_response':
@@ -1303,7 +1851,14 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
 
                 addProgress(`AI is summarizing: ${plan.title}...`);
                 if (runId) get().updateBusyStatus(`Summarizing "${plan.title}"...`);
-                const summary = await generateSummary(preparedPlan.title, aggregatedData, settings, { signal: requestSignal() });
+                const summary = await generateSummary(preparedPlan.title, aggregatedData, settings, {
+                    signal: requestSignal(),
+                    onUsage: usage => {
+                        get().recordLlmUsage(
+                            mapUsageMetricsToEntry(usage, 'summary.generate'),
+                        );
+                    },
+                });
 
                 if (shouldAbort()) return null;
 
@@ -1442,7 +1997,12 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 aggregatedDataSample: c.aggregatedData.slice(0, 10),
             }));
 
-            const coreSummary = await generateCoreAnalysisSummary(cardContext, get().columnProfiles, settings, { signal: requestSignal() });
+            const coreSummary = await generateCoreAnalysisSummary(cardContext, get().columnProfiles, settings, {
+                signal: requestSignal(),
+                onUsage: usage => {
+                    get().recordLlmUsage(mapUsageMetricsToEntry(usage, 'summary.core_analysis'));
+                },
+            });
             if (shouldAbort()) return createdCards;
 
             const thinkingMessage: ChatMessage = { sender: 'ai', text: coreSummary, timestamp: new Date(), type: 'ai_thinking' };
@@ -1459,7 +2019,12 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
 
             addProgress('AI is looking for key insights...');
             if (runId) get().updateBusyStatus('Looking for key insights...');
-            const proactiveInsight = await generateProactiveInsights(cardContext, settings, { signal: requestSignal() });
+            const proactiveInsight = await generateProactiveInsights(cardContext, settings, {
+                signal: requestSignal(),
+                onUsage: usage => {
+                    get().recordLlmUsage(mapUsageMetricsToEntry(usage, 'summary.proactive_insight'));
+                },
+            });
 
             if (shouldAbort()) return createdCards;
 
@@ -1477,7 +2042,12 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
 
             if (shouldAbort()) return createdCards;
 
-            const finalSummaryText = await generateFinalSummary(createdCards, settings, { signal: requestSignal() });
+            const finalSummaryText = await generateFinalSummary(createdCards, settings, {
+                signal: requestSignal(),
+                onUsage: usage => {
+                    get().recordLlmUsage(mapUsageMetricsToEntry(usage, 'summary.final'));
+                },
+            });
             if (shouldAbort()) return createdCards;
 
             set({ finalSummary: finalSummaryText });
@@ -1532,6 +2102,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                         get().addToast(warning.message, 'error', 6000);
                     });
                     const plans = planResult.plans;
+                    recordPlanTelemetryBatch('analysis_plan', planResult.telemetry);
 
                     if (runId && get().isRunCancellationRequested(runId)) {
                         get().addProgress('Analysis cancelled before execution.');
@@ -1609,7 +2180,12 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                     if (existingPlans.length > 0) {
                         const newCards = await get().runAnalysisPipeline(existingPlans, newData, { isChatRequest: true, runId });
                         if (newCards.length > 0 && !(runId && get().isRunCancellationRequested(runId))) {
-                            const newFinalSummary = await generateFinalSummary(newCards, get().settings, { signal: getRunSignal(runId) });
+                            const newFinalSummary = await generateFinalSummary(newCards, get().settings, {
+                                signal: getRunSignal(runId),
+                                onUsage: usage => {
+                                    get().recordLlmUsage(mapUsageMetricsToEntry(usage, 'summary.final'));
+                                },
+                            });
                             if (!(runId && get().isRunCancellationRequested(runId))) {
                                 set({ finalSummary: newFinalSummary });
                                 get().addProgress('All analysis cards have been updated.');
@@ -1651,6 +2227,26 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                         return;
                     }
                     get().applyDatasetProfileSnapshot(profileResult.data);
+                    const quickSummary = `数据画像：${profileResult.data.columns.length} 列 · ${profileResult.data.rowCount.toLocaleString()} 行（采样 ${profileResult.data.sampledRows.toLocaleString()}）`;
+                    set({ graphLastToolSummary: quickSummary });
+                    dispatchGraphToolResult({
+                        description: 'Dataset profile (quick action)',
+                        summary: quickSummary,
+                        meta: {
+                            source: profileResult.data.sampledRows === profileResult.data.rowCount ? 'full' : 'sample',
+                            rows: profileResult.data.rowCount,
+                            warnings: profileResult.data.warnings,
+                            processedRows: profileResult.data.sampledRows,
+                            totalRows: profileResult.data.rowCount,
+                            durationMs: profileResult.durationMs ?? 0,
+                        },
+                        payload: {
+                            kind: 'profile_dataset',
+                            columns: profileResult.data.columns.length,
+                            rowCount: profileResult.data.rowCount,
+                            sampledRows: profileResult.data.sampledRows,
+                        },
+                    });
                     const summaryMessage: ChatMessage = {
                         sender: 'ai',
                         text: `✅ 数据画像完成：共 ${profileResult.data.columns.length} 列、${profileResult.data.rowCount.toLocaleString()} 行。展开 “Data Profile” 面板即可查看细节。`,
@@ -1985,6 +2581,36 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 ? '全量模式开启：后续聚合会扫描整表（需确认）。'
                 : '快速模式开启：聚合优先使用采样。';
         get().addProgress(summary);
+    },
+    recordLlmUsage: usage => {
+        const estimatedCostUsd =
+            usage.estimatedCostUsd != null
+                ? usage.estimatedCostUsd
+                : estimateLlmCostUsd({
+                      provider: usage.provider,
+                      model: usage.model,
+                      promptTokens: usage.promptTokens,
+                      completionTokens: usage.completionTokens,
+                      totalTokens: usage.totalTokens,
+                  });
+        const entry = createLlmUsageEntry({
+            ...usage,
+            estimatedCostUsd: estimatedCostUsd ?? null,
+        });
+        set(state => {
+            const next = [...state.llmUsageLog, entry];
+            return { llmUsageLog: next.slice(-MAX_LLM_USAGE_LOG) };
+        });
+        get().addProgress(`LLM ${describeLlmUsageEntry(entry)}`);
+    },
+    clearLlmUsage: () => {
+        set({ llmUsageLog: [] });
+    },
+    setLangChainLastPlan: plan => {
+        set({ langChainLastPlan: plan });
+    },
+    setLangChainPlannerEnabled: enabled => {
+        set({ langChainPlannerEnabled: enabled });
     },
     rerunAggregationForCard: async (cardId, options = {}) => {
         const card = get().analysisCards.find(c => c.id === cardId);

@@ -241,11 +241,24 @@ export const createFileUploadSlice = (
                 get().addProgress('AI is analyzing data for cleaning and reshaping...');
                 const initialProfiles = profileData(dataForAnalysis.data);
                 get().updateBusyStatus('Drafting data preparation plan...');
+                const prepSignal = get().createAbortController(runId)?.signal;
                 prepPlan = await generateDataPreparationPlan(
                     initialProfiles,
                     dataForAnalysis.data.slice(0, 20),
                     get().settings,
-                    { signal: get().createAbortController(runId)?.signal }
+                    {
+                        signal: prepSignal,
+                        onUsage: usage => {
+                            get().recordLlmUsage({
+                                provider: usage.provider,
+                                model: usage.model,
+                                promptTokens: usage.promptTokens,
+                                completionTokens: usage.completionTokens,
+                                totalTokens: usage.totalTokens,
+                                context: usage.operation ?? 'data_prep.plan',
+                            });
+                        },
+                    }
                 );
 
                 if (get().isRunCancellationRequested(runId)) {

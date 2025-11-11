@@ -19,7 +19,7 @@ This advanced tool allows users to have a conversation with their data, asking f
     *   **Resizable Columns & Pagination**: Easily navigate large datasets with resizable columns and a paginated view.
     *   **Verify Transformations**: See the direct results of any data cleaning or transformation the AI performs on your data.
 
-*   **Planner + ReAct Framework**: For complex requests, the agent now acts as a planner. It first formulates a step-by-step plan, announces it, and then executes that plan using the Reason+Act (ReAct) model.
+*   **Planner + ReAct Framework（即將換成 LangChain/LangGraph）**: 目前的 ReAct/Planner 邏輯已開始用 LangChain prompt + LangGraph pipeline 逐步取代。短期內仍有自研 orchestrator，接下來的版本會由 LangChain/LangGraph 接管工具調用與 state machine，讓規則和可視化更容易維護。
     *   **Explicit Planning**: Before starting a multi-step task, the AI will state its plan inside the `reason` field (e.g., "Plan: 1. Filter the data. 2. Create a chart. 3. Summarize the results."). This makes its strategy clear from the outset.
     *   **Sequential Execution**: The agent executes the plan by chaining multiple tools together in a sequence. It can perform a data transformation, then create several analysis cards from the new data, and finally provide a text summary that synthesizes the results, all in response to a single prompt.
     *   **Full Self-Explanation**: The agent remembers every action it takes, including the initial data preparation script. You can ask it, "Where did the 'Software Product 10' value come from?", and it will consult its logs to explain exactly how it cleaned and standardized the raw data, building trust and ensuring reproducibility.

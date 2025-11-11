@@ -4,13 +4,12 @@ import {
     ProgressMessage,
     ChatMessage,
     AgentActionTrace,
-    AgentObservation,
-    AgentObservationStatus,
     AgentPhaseState,
     AgentPlanStep,
     AgentPlanStepStatus,
     QuickActionId,
 } from '../types';
+import type { GraphObservation } from '@/src/graph/schema';
 import { useAppStore } from '../store/useAppStore';
 import { useAutosizeTextArea } from '../hooks/useAutosizeTextArea';
 import { getUiVisibilityConfig } from '../services/bootstrapConfig';
@@ -94,42 +93,7 @@ const helperToneIcon: Record<HelperTone, string> = {
 
 const MAX_CHAT_INPUT_HEIGHT = 240;
 const uiFlags = getUiVisibilityConfig();
-
-type ChoiceBarAction = {
-    id: 'clean_months' | 'top_suppliers' | 'anomaly_amount' | 'type_structure';
-    label: string;
-    helper: string;
-    prompt: string;
-};
-
-const CHOICE_BAR_ACTIONS: ChoiceBarAction[] = [
-    {
-        id: 'clean_months',
-        label: '① 清洗月份',
-        helper: '标准化发票月份 (YYYY-MM)',
-        prompt: '请清洗我刚上传的发票或明细数据，把所有月份字段统一为 YYYY-MM 格式，并告诉我清洗影响。',
-    },
-    {
-        id: 'top_suppliers',
-        label: '② Top 供应商',
-        helper: '金额 / 单数 / 客单价',
-        prompt: '生成一个按供应商聚合的 Top 列表，同时展示总金额、单据量与客单价，并用图表呈现。',
-    },
-    {
-        id: 'anomaly_amount',
-        label: '③ 异常金额',
-        helper: '找出高于阈值的付款',
-        prompt: '请在当前数据里扫描异常金额（如超过平均值 3 倍），列出可疑记录并说明原因。',
-    },
-    {
-        id: 'type_structure',
-        label: '④ 按类型结构',
-        helper: '查看类型分布与趋势',
-        prompt: '按业务或费用类型输出结构化视图，包含占比和最近三个月的趋势。',
-    },
-];
-
-const CHOICE_WAITING_HINT_MS = 10_000;
+const AWAIT_HINT_DELAY_MS = 10_000;
 
 const phaseDescriptors: Record<
     AgentPhaseState['phase'],
@@ -261,14 +225,17 @@ const useChatCore = () =>
             toggleMemoryPreviewSelection: state.toggleMemoryPreviewSelection,
             isMemoryPreviewLoading: state.isMemoryPreviewLoading,
         agentPhase: state.agentPhase,
-    agentAwaitingUserInput: state.agentAwaitingUserInput,
-    agentAwaitingPromptId: state.agentAwaitingPromptId,
+        agentAwaitingUserInput: state.agentAwaitingUserInput,
+        agentAwaitingPromptId: state.agentAwaitingPromptId,
         executeQuickAction: state.executeQuickAction,
         graphAwaitPrompt: state.graphAwaitPrompt,
         graphAwaitPromptId: state.graphAwaitPromptId,
+        graphAwaitHistory: state.graphAwaitHistory,
+        graphToolInFlight: state.graphToolInFlight,
         sendGraphUserReply: state.sendGraphUserReply,
         runGraphPipeline: state.runGraphPipeline,
         addProgress: state.addProgress,
+        graphObservations: state.graphObservations,
     }),
         shallow,
     );
@@ -306,9 +273,12 @@ export const ChatPanel: React.FC = () => {
         executeQuickAction,
         graphAwaitPrompt,
         graphAwaitPromptId,
+        graphAwaitHistory,
+        graphToolInFlight,
         sendGraphUserReply,
         runGraphPipeline,
         addProgress,
+        graphObservations,
     } = core;
 
     const [input, setInput] = useState('');
@@ -316,11 +286,50 @@ export const ChatPanel: React.FC = () => {
     const [manualGroupSelections, setManualGroupSelections] = useState<Record<string, string>>({});
     const [awaitHint, setAwaitHint] = useState<string | null>(null);
     const lastAwaitPromptIdRef = useRef<string | null>(graphAwaitPromptId);
-    const [isChoiceReminderVisible, setIsChoiceReminderVisible] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
-    const choiceReminderTimerRef = useRef<number | null>(null);
     useAutosizeTextArea(textareaRef, input, { maxHeight: MAX_CHAT_INPUT_HEIGHT });
+    const formatClockTime = useCallback((iso?: string | null) => {
+        if (!iso) return '';
+        const date = new Date(iso);
+        if (Number.isNaN(date.getTime())) return '';
+        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }, []);
+    const awaitInteractionDisabled = isBusy || !!graphToolInFlight;
+
+    const awaitingHistoryEntry = useMemo(() => {
+        if (!graphAwaitPromptId) return null;
+        return graphAwaitHistory.find(entry => entry.promptId === graphAwaitPromptId) ?? null;
+    }, [graphAwaitHistory, graphAwaitPromptId]);
+
+    const recentAwaitHistory = useMemo(() => {
+        if (!graphAwaitHistory.length) return [];
+        return [...graphAwaitHistory].slice(-3).reverse();
+    }, [graphAwaitHistory]);
+
+    const lastAnsweredHistory = useMemo(() => {
+        for (let i = graphAwaitHistory.length - 1; i >= 0; i -= 1) {
+            if (graphAwaitHistory[i].status === 'answered') {
+                return graphAwaitHistory[i];
+            }
+        }
+        return null;
+    }, [graphAwaitHistory]);
+    const awaitingHintToUse = graphToolInFlight
+        ? `🔄 ${graphToolInFlight.label} 执行中，请稍候…`
+        : awaitHint;
+
+    const latestGraphObservationSummary = useMemo(() => {
+        if (!graphObservations || graphObservations.length === 0) return null;
+        return mapGraphObservationToDisplay(graphObservations[graphObservations.length - 1]);
+    }, [graphObservations]);
+    const latestObservationForAwait = latestGraphObservationSummary
+        ? {
+              title: latestGraphObservationSummary.title,
+              detail: latestGraphObservationSummary.detail ?? undefined,
+              meta: latestGraphObservationSummary.metaLine ?? undefined,
+          }
+        : undefined;
 
     const hasAwaitingClarification = pendingClarifications.some(req => req.status === 'pending');
     const timeline = useMemo(
@@ -342,27 +351,6 @@ export const ChatPanel: React.FC = () => {
         },
         [columnProfiles, datasetRows],
     );
-    const clearChoiceReminderTimer = useCallback(() => {
-        if (choiceReminderTimerRef.current !== null) {
-            if (typeof window !== 'undefined') {
-                window.clearTimeout(choiceReminderTimerRef.current);
-            }
-            choiceReminderTimerRef.current = null;
-        }
-    }, []);
-
-    const scheduleChoiceReminderTimer = useCallback(() => {
-        clearChoiceReminderTimer();
-        if (typeof window === 'undefined') return;
-        if (!agentAwaitingUserInput) {
-            setIsChoiceReminderVisible(false);
-            return;
-        }
-        choiceReminderTimerRef.current = window.setTimeout(() => {
-            setIsChoiceReminderVisible(true);
-        }, CHOICE_WAITING_HINT_MS);
-    }, [agentAwaitingUserInput, clearChoiceReminderTimer]);
-
     useEffect(() => {
         if (!graphAwaitPromptId) {
             setAwaitHint(null);
@@ -374,75 +362,46 @@ export const ChatPanel: React.FC = () => {
             return;
         }
         if (graphAwaitPromptId !== lastAwaitPromptIdRef.current) {
-            addProgress('⏸ Graph 等待你的选择…');
+            addProgress('⏸ Graph 等待你的回应…');
             lastAwaitPromptIdRef.current = graphAwaitPromptId;
         }
         setAwaitHint(null);
         const timer = window.setTimeout(() => {
-            setAwaitHint('仍在等待你的选择，点击上方选项或输入自定义指令即可继续。');
-        }, CHOICE_WAITING_HINT_MS);
+            setAwaitHint('仍在等待你的回应，处理完成后我会继续。');
+        }, AWAIT_HINT_DELAY_MS);
         return () => {
             window.clearTimeout(timer);
         };
     }, [graphAwaitPromptId, addProgress, runGraphPipeline]);
 
-    useEffect(() => {
-        scheduleChoiceReminderTimer();
-        return () => clearChoiceReminderTimer();
-    }, [scheduleChoiceReminderTimer, clearChoiceReminderTimer]);
-
-    const dismissChoiceReminder = useCallback(() => {
-        setIsChoiceReminderVisible(false);
-        clearChoiceReminderTimer();
-    }, [clearChoiceReminderTimer]);
-
-    const dispatchUserIntent = useCallback(
-        (source: 'choice' | 'text', value: string, metadata?: { choiceId?: string }) => {
-            const trimmed = value.trim();
+    const handleUserMessage = useCallback(
+        (message: string) => {
+            const trimmed = message.trim();
             if (!trimmed) return;
-            if (typeof window !== 'undefined') {
-                window.dispatchEvent(
-                    new CustomEvent('user_intent', {
-                        detail: {
-                            source,
-                            value: trimmed,
-                            choiceId: metadata?.choiceId ?? null,
-                            timestamp: Date.now(),
-                        },
-                    }),
-                );
-            }
             handleChatMessage(trimmed);
-            setIsChoiceReminderVisible(false);
-            clearChoiceReminderTimer();
         },
-        [handleChatMessage, clearChoiceReminderTimer],
-    );
-
-    const handleChoiceBarClick = useCallback(
-        (action: ChoiceBarAction) => {
-            if (isBusy || !isApiKeySet || currentView === 'file_upload') return;
-            dispatchUserIntent('choice', action.prompt, { choiceId: action.id });
-        },
-        [dispatchUserIntent, isBusy, isApiKeySet, currentView],
+        [handleChatMessage],
     );
 
     const handleAwaitOption = useCallback(
         (optionId: string) => {
-            addProgress(`📝 你选择了：${optionId}`);
+            const optionLabel = graphAwaitPrompt?.options.find(option => option.id === optionId)?.label ?? optionId;
+            const questionSuffix = graphAwaitPrompt?.question ? `（${graphAwaitPrompt.question}）` : '';
+            addProgress(`📝 你选择了「${optionLabel}」${questionSuffix}`);
             sendGraphUserReply(optionId, undefined);
         },
-        [sendGraphUserReply, addProgress],
+        [sendGraphUserReply, addProgress, graphAwaitPrompt],
     );
 
     const handleAwaitFreeText = useCallback(
         (text: string) => {
             const trimmed = text.trim();
             if (!trimmed) return;
-            addProgress(`📝 你输入了自定义指令。`);
+            const questionSuffix = graphAwaitPrompt?.question ? `（${graphAwaitPrompt.question}）` : '';
+            addProgress(`📝 你输入了自定义指令：「${trimmed}」${questionSuffix}`);
             sendGraphUserReply(undefined, trimmed);
         },
-        [sendGraphUserReply, addProgress],
+        [sendGraphUserReply, addProgress, graphAwaitPrompt],
     );
 
     const handlePromptResponse = useCallback(
@@ -647,7 +606,7 @@ export const ChatPanel: React.FC = () => {
     const handleSend = (e: React.FormEvent | React.KeyboardEvent) => {
         e.preventDefault();
         if (input.trim() && !isBusy) {
-            dispatchUserIntent('text', input);
+            handleUserMessage(input);
             setInput('');
         }
     };
@@ -976,7 +935,7 @@ export const ChatPanel: React.FC = () => {
                 <PlannerGoalTracker />
                 <AgentActionLogPanel />
                 <SystemLogPanel />
-                <AgentObservationTimeline />
+                <GraphObservationTimeline />
                 {timeline.map(renderMessage)}
                 <div ref={messagesEndRef} />
             </div>
@@ -1009,59 +968,41 @@ export const ChatPanel: React.FC = () => {
                         </div>
                     </div>
                 )}
-                {currentView !== 'file_upload' && (
-                    <div className="mb-3 space-y-2" aria-label="快速意图选择">
-                        <div className="flex flex-wrap gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2">
-                            {CHOICE_BAR_ACTIONS.map(action => (
-                                <button
-                                    key={action.id}
-                                    type="button"
-                                    onClick={() => handleChoiceBarClick(action)}
-                                    disabled={isBusy || !isApiKeySet}
-                                    className="flex-1 min-w-[120px] rounded-md border border-slate-200 bg-white px-3 py-2 text-left text-sm text-slate-700 hover:border-blue-300 hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                    <span className="font-semibold block">{action.label}</span>
-                                    <span className="text-[11px] text-slate-500 block">{action.helper}</span>
-                                </button>
-                            ))}
-                        </div>
-                        <div className="flex justify-end">
-                            <button
-                                type="button"
-                                onClick={() => runGraphPipeline({ source: 'manual' })}
-                                disabled={isBusy || !isApiKeySet}
-                                className="text-xs font-semibold text-blue-700 hover:underline disabled:text-slate-400 disabled:cursor-not-allowed"
-                            >
-                                🚀 启动 Graph Planner
-                            </button>
-                        </div>
-                        {isChoiceReminderVisible && (
-                            <div
-                                className="flex items-center justify-between rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
-                                role="status"
-                                aria-live="polite"
-                            >
-                                <span>正在等待你的选择，随时可以点击按钮或直接输入内容。</span>
-                                <button
-                                    type="button"
-                                    onClick={dismissChoiceReminder}
-                                    className="ml-3 text-amber-700 font-semibold hover:underline"
-                                >
-                                    撤销
-                                </button>
-                            </div>
-                        )}
-                    </div>
-                )}
                 {graphAwaitPrompt && (
                     <div className="mb-4" aria-live="polite">
                         <AwaitCard
                             prompt={graphAwaitPrompt}
                             onSelect={handleAwaitOption}
                             onSubmitFreeText={handleAwaitFreeText}
-                            disabled={isBusy}
-                            waitingHint={awaitHint}
+                            disabled={awaitInteractionDisabled}
+                            waitingHint={awaitingHintToUse}
+                            latestObservation={latestObservationForAwait}
                         />
+                        {graphToolInFlight && (
+                            <div className="mt-2 rounded-md border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs text-indigo-800" role="status">
+                                <p>🔄 {graphToolInFlight.label} 正在执行中…</p>
+                                <p className="text-[11px] mt-1">
+                                    {graphToolInFlight.startedAt ? `开始于 ${formatClockTime(graphToolInFlight.startedAt)}，完成后我会自动继续。` : '完成后我会自动继续。'}
+                                </p>
+                            </div>
+                        )}
+                        {recentAwaitHistory.length > 0 && (
+                            <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                                <p className="text-xs font-semibold text-slate-700">最近等待记录</p>
+                                <ul className="mt-2 space-y-1 text-[12px] text-slate-600">
+                                    {recentAwaitHistory.map(entry => (
+                                        <li key={`${entry.promptId ?? entry.askedAt}`} className="flex flex-col">
+                                            <span className="text-slate-800 font-medium">{entry.question}</span>
+                                            <span>
+                                                {entry.status === 'answered'
+                                                    ? `你已回答：${entry.responseLabel ?? entry.responseValue ?? '已回复'} · ${formatClockTime(entry.respondedAt)}`
+                                                    : '等待回应'}
+                                            </span>
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+                        )}
                     </div>
                 )}
                 <form onSubmit={handleSend} className="flex items-start space-x-2">
@@ -1519,62 +1460,110 @@ const AgentActionLogPanel = React.memo(() => {
 });
 AgentActionLogPanel.displayName = 'AgentActionLogPanel';
 
-const observationStatusChip: Record<AgentObservationStatus, string> = {
-    success: 'bg-emerald-100 text-emerald-800 border-emerald-200',
-    error: 'bg-red-100 text-red-700 border-red-200',
-    pending: 'bg-amber-50 text-amber-700 border-amber-200',
+const graphObservationKindMeta: Record<
+    string,
+    {
+        icon: string;
+        label: string;
+    }
+> = {
+    langchain_plan: { icon: '🧠', label: 'LangChain Plan' },
+    aggregate_plan: { icon: '📈', label: 'Plan Preview' },
+    profile_dataset: { icon: '📋', label: 'Dataset Profile' },
+    normalize_invoice_month: { icon: '🧼', label: 'Invoice Month Clean' },
+    detect_outliers: { icon: '🚨', label: 'Outlier Detection' },
+    tool_result: { icon: '🛠️', label: 'Tool Result' },
 };
 
-const observationStatusLabel: Record<AgentObservationStatus, string> = {
-    success: 'Completed',
-    error: 'Failed',
-    pending: 'Pending',
-};
-
-const actionLabelMap: Record<string, string> = {
-    text_response: 'Shared response',
-    plan_creation: 'Created analysis plan',
-    dom_action: 'UI interaction',
-    execute_js_code: 'Data transform',
-    filter_spreadsheet: 'Spreadsheet filter',
-    clarification_request: 'Clarification request',
-    proceed_to_analysis: 'Pipeline continuation',
-};
-
-const formatObservationTimestamp = (timestamp: string) => {
+const formatGraphObservationTimestamp = (timestamp: string) => {
     const date = new Date(timestamp);
     if (Number.isNaN(date.getTime())) return '—';
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 };
 
-const formatObservationDetail = (observation: AgentObservation) => {
-    const { outputs, uiDelta } = observation;
-    if (outputs) {
-        if (typeof outputs.summary === 'string') return outputs.summary;
-        if (typeof outputs.textPreview === 'string') return outputs.textPreview;
-        if (typeof outputs.reason === 'string') return outputs.reason;
-        const firstKey = Object.keys(outputs)[0];
-        if (firstKey) {
-            const value = outputs[firstKey];
-            const raw = typeof value === 'string' ? value : JSON.stringify(value);
-            return raw.length > 140 ? `${raw.slice(0, 140)}…` : raw;
-        }
-    }
-    if (uiDelta) {
-        return uiDelta;
-    }
-    return null;
+const formatTokenUsageShort = (usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number }) => {
+    if (!usage) return null;
+    const { promptTokens, completionTokens, totalTokens } = usage;
+    if (promptTokens == null && completionTokens == null && totalTokens == null) return null;
+    const inPart = promptTokens != null ? `in ${promptTokens}` : null;
+    const outPart = completionTokens != null ? `out ${completionTokens}` : null;
+    const totalPart =
+        totalTokens != null
+            ? `total ${totalTokens}`
+            : promptTokens != null || completionTokens != null
+              ? `total ${(promptTokens ?? 0) + (completionTokens ?? 0)}`
+              : null;
+    return ['Tok', inPart, outPart, totalPart].filter(Boolean).join(' · ');
 };
 
-const AgentObservationTimeline = React.memo(() => {
+type GraphObservationDisplay = {
+    id: string;
+    timestamp: string;
+    icon: string;
+    title: string;
+    detail?: string | null;
+    metaLine?: string | null;
+};
+
+const mapGraphObservationToDisplay = (observation: GraphObservation): GraphObservationDisplay => {
+    const payload = (observation.payload ?? {}) as Record<string, any>;
+    const meta = graphObservationKindMeta[observation.kind] ?? {
+        icon: '🧩',
+        label: observation.kind.replace(/_/g, ' '),
+    };
+    let detail: string | null = null;
+    if (typeof payload.summary === 'string') {
+        detail = payload.summary;
+    } else if (typeof payload.description === 'string') {
+        detail = payload.description;
+    } else if (typeof payload.text === 'string') {
+        detail = payload.text;
+    }
+
+    const metaParts: string[] = [];
+    const toolMeta = payload.meta ?? {};
+    if (typeof toolMeta.rows === 'number') {
+        metaParts.push(`${toolMeta.rows} 行`);
+    }
+    if (typeof toolMeta.source === 'string') {
+        metaParts.push(toolMeta.source === 'full' ? '全量' : '采样');
+    }
+    if (typeof toolMeta.durationMs === 'number') {
+        metaParts.push(`${Math.round(toolMeta.durationMs)} ms`);
+    }
+    const telemetry = payload.telemetry ?? toolMeta.telemetry;
+    if (telemetry?.latencyMs != null) {
+        metaParts.push(`Latency ${Math.round(telemetry.latencyMs)} ms`);
+    }
+    const tokenText = formatTokenUsageShort(telemetry?.tokenUsage);
+    if (tokenText) {
+        metaParts.push(tokenText);
+    }
+    if (telemetry?.estimatedCostUsd != null) {
+        metaParts.push(`$${telemetry.estimatedCostUsd.toFixed(4)}`);
+    }
+
+    const metaLine = metaParts.length > 0 ? metaParts.join(' · ') : null;
+
+    return {
+        id: observation.id,
+        timestamp: observation.at,
+        icon: meta.icon,
+        title: meta.label,
+        detail,
+        metaLine,
+    };
+};
+
+const GraphObservationTimeline = React.memo(() => {
     const { observations, isBusy } = useAppStore(
         state => ({
-            observations: state.plannerSession?.observations ?? [],
+            observations: state.graphObservations,
             isBusy: state.isBusy,
         }),
         shallow,
     );
-    const observationLog = useMemo(() => observations.slice(-8).reverse(), [observations]);
+    const observationLog = useMemo(() => observations.slice(-10).reverse(), [observations]);
 
     if (observationLog.length === 0) return null;
 
@@ -1582,9 +1571,9 @@ const AgentObservationTimeline = React.memo(() => {
         <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-sm">
             <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
-                    <span className="text-lg">📋</span>
+                    <span className="text-lg">⏱️</span>
                     <div>
-                        <h3 className="text-sm font-semibold text-slate-900">Live Agent Timeline</h3>
+                        <h3 className="text-sm font-semibold text-slate-900">Realtime Observation Timeline</h3>
                         <p className="text-xs text-slate-500">Newest events shown first</p>
                     </div>
                 </div>
@@ -1592,28 +1581,16 @@ const AgentObservationTimeline = React.memo(() => {
             </div>
             <div className="space-y-3 max-h-64 overflow-y-auto pr-1">
                 {observationLog.map(observation => {
-                    const detail = formatObservationDetail(observation);
-                    const status = observation.status ?? 'pending';
-                    const statusChip = observationStatusChip[status] ?? 'bg-slate-100 text-slate-600 border-slate-200';
-                    const label = observationStatusLabel[status] ?? status;
+                    const display = mapGraphObservationToDisplay(observation);
                     return (
-                        <div key={observation.id} className="relative border-l-2 border-slate-100 pl-3">
-                            <span
-                                className={`absolute -left-[5px] top-2 w-2 h-2 rounded-full ${
-                                    status === 'success' ? 'bg-emerald-500' : status === 'error' ? 'bg-red-500' : 'bg-amber-400'
-                                }`}
-                            ></span>
+                        <div key={display.id} className="relative border-l-2 border-slate-100 pl-3">
+                            <span className="absolute -left-[5px] top-2 text-sm">{display.icon}</span>
                             <div className="flex items-center justify-between text-[11px] text-slate-500">
-                                <span className="font-medium">{formatObservationTimestamp(observation.timestamp)}</span>
-                                <span className={`px-2 py-0.5 rounded-full border ${statusChip}`}>{label}</span>
+                                <span className="font-medium">{formatGraphObservationTimestamp(display.timestamp)}</span>
                             </div>
-                            <p className="text-sm font-semibold text-slate-800 mt-1">
-                                {actionLabelMap[observation.responseType] ?? 'Agent action'}
-                            </p>
-                            {detail && <p className="text-xs text-slate-600 mt-1 whitespace-pre-line">{detail}</p>}
-                            {observation.errorCode && (
-                                <p className="text-xs text-red-600 mt-1">Error code: {observation.errorCode}</p>
-                            )}
+                            <p className="text-sm font-semibold text-slate-800 mt-1">{display.title}</p>
+                            {display.detail && <p className="text-xs text-slate-600 mt-1 whitespace-pre-line">{display.detail}</p>}
+                            {display.metaLine && <p className="text-[11px] text-slate-500 mt-1">{display.metaLine}</p>}
                         </div>
                     );
                 })}
@@ -1621,4 +1598,4 @@ const AgentObservationTimeline = React.memo(() => {
         </div>
     );
 });
-AgentObservationTimeline.displayName = 'AgentObservationTimeline';
+GraphObservationTimeline.displayName = 'GraphObservationTimeline';

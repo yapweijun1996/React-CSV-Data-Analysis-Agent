@@ -39,7 +39,19 @@ export const createAiFilterSlice = (
                 get().columnProfiles,
                 get().csvData!.data.slice(0, 5),
                 get().settings,
-                { signal }
+                {
+                    signal,
+                    onUsage: usage => {
+                        get().recordLlmUsage({
+                            provider: usage.provider,
+                            model: usage.model,
+                            promptTokens: usage.promptTokens,
+                            completionTokens: usage.completionTokens,
+                            totalTokens: usage.totalTokens,
+                            context: usage.operation ?? 'filter.generate',
+                        });
+                    },
+                }
             );
 
             set({

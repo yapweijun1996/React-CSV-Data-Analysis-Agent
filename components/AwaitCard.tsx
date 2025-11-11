@@ -7,6 +7,11 @@ interface AwaitCardProps {
     onSubmitFreeText: (text: string) => void;
     disabled?: boolean;
     waitingHint?: string | null;
+    latestObservation?: {
+        title: string;
+        detail?: string | null;
+        meta?: string | null;
+    };
 }
 
 export const AwaitCard: React.FC<AwaitCardProps> = ({
@@ -15,6 +20,7 @@ export const AwaitCard: React.FC<AwaitCardProps> = ({
     onSubmitFreeText,
     disabled,
     waitingHint,
+    latestObservation,
 }) => {
     const [customInput, setCustomInput] = useState('');
 
@@ -34,6 +40,16 @@ export const AwaitCard: React.FC<AwaitCardProps> = ({
                     <p className="text-base font-bold">{prompt.question}</p>
                 </div>
             </div>
+            {latestObservation && (
+                <div className="border border-amber-100 bg-amber-50 rounded-lg p-3 text-xs text-amber-800 space-y-1">
+                    <p className="font-semibold flex items-center gap-1">
+                        <span>📋</span>
+                        <span>最近进度：{latestObservation.title}</span>
+                    </p>
+                    {latestObservation.detail && <p className="text-amber-700">{latestObservation.detail}</p>}
+                    {latestObservation.meta && <p className="text-[11px] text-amber-600">{latestObservation.meta}</p>}
+                </div>
+            )}
             <div className="flex flex-wrap gap-2">
                 {prompt.options.map(option => (
                     <button

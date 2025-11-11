@@ -12,7 +12,7 @@ import {
     AgentObservation,
     AgentPlanState,
 } from '../../types';
-import { callGemini, callOpenAI } from './apiClient';
+import { callGemini, callOpenAI, type LlmUsageMetrics } from './apiClient';
 import { multiActionChatResponseSchema, multiActionChatResponseJsonSchema } from './schemas';
 import { createChatPrompt, createPlanPrimerPrompt } from '../promptTemplates';
 import { StateTagFactory } from '../agent/stateTagFactory';
@@ -28,6 +28,7 @@ export interface ChatResponseOptions {
     signal?: AbortSignal;
     mode?: 'full' | 'plan_only';
     onPromptProfile?: (profile: PromptProfile) => void;
+    onUsage?: (usage: LlmUsageMetrics) => void;
 }
 
 const hasMissingExecutableCode = (response: AiChatResponse): boolean => {
@@ -114,6 +115,7 @@ export const generateChatResponse = async (
     
     try {
         const promptMode = options?.mode ?? 'full';
+        const usageOperation = promptMode === 'plan_only' ? 'chat.plan_only' : 'chat.full';
         const promptContent =
             promptMode === 'plan_only'
                 ? createPlanPrimerPrompt(
@@ -169,10 +171,18 @@ Your output MUST be a single JSON object with an "actions" key containing an arr
                     settings,
                     messages,
                     { name: 'MultiActionResponse', schema: multiActionChatResponseJsonSchema, strict: true },
-                    options?.signal
+                    {
+                        signal: options?.signal,
+                        operation: usageOperation,
+                        onUsage: usage => options?.onUsage?.({ ...usage, operation: usageOperation }),
+                    },
                 );
             } else {
-                jsonStr = await callGemini(settings, promptContent, multiActionChatResponseSchema, options?.signal);
+                jsonStr = await callGemini(settings, promptContent, multiActionChatResponseSchema, {
+                    signal: options?.signal,
+                    operation: usageOperation,
+                    onUsage: usage => options?.onUsage?.({ ...usage, operation: usageOperation }),
+                });
             }
 
             const chatResponse = JSON.parse(jsonStr) as AiChatResponse;

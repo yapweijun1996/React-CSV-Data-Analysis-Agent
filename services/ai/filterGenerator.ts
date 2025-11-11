@@ -1,10 +1,11 @@
 import { ColumnProfile, CsvRow, Settings, AiFilterResponse } from '../../types';
-import { callGemini, callOpenAI } from './apiClient';
+import { callGemini, callOpenAI, type LlmUsageMetrics } from './apiClient';
 import { filterFunctionSchema, filterFunctionJsonSchema } from './schemas';
 import { createFilterFunctionPrompt } from '../promptTemplates';
 
 interface FilterFunctionOptions {
     signal?: AbortSignal;
+    onUsage?: (usage: LlmUsageMetrics) => void;
 }
 
 export const generateFilterFunction = async (
@@ -24,6 +25,7 @@ export const generateFilterFunction = async (
         try {
             let jsonStr: string;
             const promptContent = createFilterFunctionPrompt(query, columns, sampleData);
+            const operation = 'filter.generate';
 
             if (settings.provider === 'openai') {
                 const systemPrompt = "You are an expert data analyst. Your task is to convert a user's natural language query into a JavaScript filter function body for a dataset. You MUST respond with a single valid JSON object, and nothing else. The JSON object must adhere to the provided schema.";
@@ -36,11 +38,19 @@ export const generateFilterFunction = async (
                     settings,
                     messages,
                     { name: 'FilterFunctionResponse', schema: filterFunctionJsonSchema, strict: true },
-                    options?.signal
+                    {
+                        signal: options?.signal,
+                        operation,
+                        onUsage: usage => options?.onUsage?.({ ...usage, operation }),
+                    },
                 );
 
             } else { // Google Gemini
-                jsonStr = await callGemini(settings, promptContent, filterFunctionSchema, options?.signal);
+                jsonStr = await callGemini(settings, promptContent, filterFunctionSchema, {
+                    signal: options?.signal,
+                    operation,
+                    onUsage: usage => options?.onUsage?.({ ...usage, operation }),
+                });
             }
             
             const response = JSON.parse(jsonStr) as AiFilterResponse;

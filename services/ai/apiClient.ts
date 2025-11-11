@@ -1,8 +1,36 @@
 
-import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
+import { GoogleGenAI, GenerateContentResponse } from '@google/genai';
 import OpenAI from 'openai';
 import type { ResponseCreateParams } from 'openai/resources/responses/responses';
 import { Settings } from '../../types';
+
+export interface LlmUsageMetrics {
+    provider: 'openai' | 'gemini';
+    model: string;
+    promptTokens?: number;
+    completionTokens?: number;
+    totalTokens?: number;
+    operation?: string;
+}
+
+interface LlmCallOptions {
+    signal?: AbortSignal;
+    operation?: string;
+    onUsage?: (usage: LlmUsageMetrics) => void;
+}
+
+const isAbortSignal = (value: unknown): value is AbortSignal =>
+    typeof value === 'object' && value !== null && 'aborted' in value;
+
+const resolveCallOptions = (input?: AbortSignal | LlmCallOptions): LlmCallOptions => {
+    if (!input) {
+        return {};
+    }
+    if (isAbortSignal(input)) {
+        return { signal: input };
+    }
+    return input;
+};
 
 // Helper for retrying API calls
 export const withRetry = async <T>(fn: () => Promise<T>, retries = 2, signal?: AbortSignal): Promise<T> => {
@@ -218,10 +246,11 @@ export const callOpenAI = async (
     settings: Settings,
     messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
     jsonFormatOrSchema?: boolean | OpenAIJsonSchemaFormat,
-    signal?: AbortSignal
+    signalOrOptions?: AbortSignal | LlmCallOptions,
 ): Promise<string> => {
     if (!settings.openAIApiKey) throw new Error("OpenAI API key is not set.");
     const openai = new OpenAI({ apiKey: settings.openAIApiKey, dangerouslyAllowBrowser: true });
+    const options = resolveCallOptions(signalOrOptions);
 
     const responseFormat = resolveResponseFormat(jsonFormatOrSchema);
     const requestPayload: ResponseCreateParams = {
@@ -235,10 +264,23 @@ export const callOpenAI = async (
     }
 
     const response = await withRetry(
-        () => openai.responses.create(requestPayload, signal ? { signal } : undefined),
+        () => openai.responses.create(requestPayload, options.signal ? { signal: options.signal } : undefined),
         2,
-        signal,
+        options.signal,
     );
+
+    const usageMetrics = (response as any)?.usage;
+    if (usageMetrics && options.onUsage) {
+        options.onUsage({
+            provider: 'openai',
+            model: settings.model,
+            promptTokens: usageMetrics.prompt_tokens ?? usageMetrics.input_tokens ?? usageMetrics.input_token_count,
+            completionTokens:
+                usageMetrics.completion_tokens ?? usageMetrics.output_tokens ?? usageMetrics.output_token_count,
+            totalTokens: usageMetrics.total_tokens ?? usageMetrics.total_token_count,
+            operation: options.operation,
+        });
+    }
 
     const content = (response.output_text ?? '').trim();
     if (!content) {
@@ -247,9 +289,15 @@ export const callOpenAI = async (
     return content;
 };
 
-export const callGemini = async (settings: Settings, prompt: string, schema?: any, signal?: AbortSignal): Promise<string> => {
+export const callGemini = async (
+    settings: Settings,
+    prompt: string,
+    schema?: any,
+    signalOrOptions?: AbortSignal | LlmCallOptions,
+): Promise<string> => {
     if (!settings.geminiApiKey) throw new Error("Gemini API key is not set.");
     const ai = new GoogleGenAI({ apiKey: settings.geminiApiKey });
+    const options = resolveCallOptions(signalOrOptions);
     
     // The Gemini API works better if the schema instruction is part of the main prompt text, not just in config.
     const finalPrompt = `${prompt}\n${schema ? 'Your response must be a valid JSON object adhering to the provided schema.' : ''}`;
@@ -263,7 +311,19 @@ export const callGemini = async (settings: Settings, prompt: string, schema?: an
                 responseSchema: schema,
             } : undefined,
         },
-        signal ? { signal } : undefined
-    ), 2, signal);
+        options.signal ? { signal: options.signal } : undefined
+    ), 2, options.signal);
+
+    const usageMetadata = response.usageMetadata;
+    if (usageMetadata && options.onUsage) {
+        options.onUsage({
+            provider: 'gemini',
+            model: settings.model,
+            promptTokens: usageMetadata.promptTokenCount ?? undefined,
+            completionTokens: usageMetadata.candidatesTokenCount ?? undefined,
+            totalTokens: usageMetadata.totalTokenCount ?? undefined,
+            operation: options.operation,
+        });
+    }
     return response.text.trim();
-}
+};

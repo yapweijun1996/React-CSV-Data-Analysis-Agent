@@ -1598,6 +1598,20 @@ const buildChatPlannerContext = async (
                     }
                     options?.onPromptProfile?.(profile);
                 },
+                onUsage: usage => {
+                    const recordUsage = get().recordLlmUsage;
+                    if (recordUsage) {
+                        recordUsage({
+                            provider: usage.provider,
+                            model: usage.model,
+                            promptTokens: usage.promptTokens,
+                            completionTokens: usage.completionTokens,
+                            totalTokens: usage.totalTokens,
+                            context: usage.operation ?? 'chat.response',
+                        });
+                    }
+                    options?.onUsage?.(usage);
+                },
             },
         );
 

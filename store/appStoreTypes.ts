@@ -25,6 +25,7 @@ import type {
     AgentPlanStep,
     AgentPhase,
     AgentPromptMetric,
+    LlmUsageEntry,
     QuickActionId,
 } from '../types';
 import type { ProfileResult } from '../services/dataToolTypes';
@@ -157,9 +158,13 @@ export interface StoreActions {
     recordPromptMetric: (metric: AgentPromptMetric) => void;
     clearPromptMetrics: () => void;
     setAggregationModePreference: (mode: 'sample' | 'full') => void;
+    recordLlmUsage: (entry: Omit<LlmUsageEntry, 'id' | 'timestamp'>) => void;
+    clearLlmUsage: () => void;
     runGraphPipeline: (payload?: Record<string, unknown>) => void;
-    sendGraphUserReply: (optionId?: string, freeText?: string) => void;
+    sendGraphUserReply: (optionId?: string, freeText?: string) => Promise<void>;
     processGraphActions: (actions: AiAction[]) => Promise<void> | void;
+    setLangChainLastPlan: (plan: AnalysisPlan | null) => void;
+    setLangChainPlannerEnabled: (enabled: boolean) => void;
 }
 
 export type AppStore = StoreState & StoreActions;

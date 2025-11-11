@@ -1,12 +1,13 @@
 
 import { CsvData, ColumnProfile, Settings, DataPreparationPlan } from '../../types';
-import { callGemini, callOpenAI } from './apiClient';
+import { callGemini, callOpenAI, type LlmUsageMetrics } from './apiClient';
 import { dataPreparationSchema, dataPreparationJsonSchema } from './schemas';
 import { createDataPreparationPrompt } from '../promptTemplates';
 import { robustParseFloat, splitNumericString } from '../../utils/dataProcessor';
 
 interface DataPreparationPlanOptions {
     signal?: AbortSignal;
+    onUsage?: (usage: LlmUsageMetrics) => void;
 }
 
 export const generateDataPreparationPlan = async (
@@ -25,6 +26,7 @@ export const generateDataPreparationPlan = async (
         try {
             let jsonStr: string;
             const promptContent = createDataPreparationPrompt(columns, sampleData, lastError);
+            const operation = 'data_prep.plan';
 
             if (settings.provider === 'openai') {
                 if (!settings.openAIApiKey) return { explanation: "No transformation needed as API key is not set.", jsFunctionBody: null, outputColumns: columns };
@@ -38,12 +40,20 @@ export const generateDataPreparationPlan = async (
                     settings,
                     messages,
                     { name: 'DataPreparationPlan', schema: dataPreparationJsonSchema, strict: true },
-                    options?.signal
+                    {
+                        signal: options?.signal,
+                        operation,
+                        onUsage: usage => options?.onUsage?.({ ...usage, operation }),
+                    },
                 );
 
             } else { // Google Gemini
                 if (!settings.geminiApiKey) return { explanation: "No transformation needed as Gemini API key is not set.", jsFunctionBody: null, outputColumns: columns };
-                jsonStr = await callGemini(settings, promptContent, dataPreparationSchema, options?.signal);
+                jsonStr = await callGemini(settings, promptContent, dataPreparationSchema, {
+                    signal: options?.signal,
+                    operation,
+                    onUsage: usage => options?.onUsage?.({ ...usage, operation }),
+                });
             }
             
             const plan = JSON.parse(jsonStr) as DataPreparationPlan;
