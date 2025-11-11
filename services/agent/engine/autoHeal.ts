@@ -4,6 +4,7 @@ import type { AutoHealOutcome, EngineContext } from './contracts';
 const FALLBACK_STEP_ID = 'ad_hoc_response';
 const CANONICAL_ACTION_TYPES: AgentActionType[] = [
     'text_response',
+    'await_user',
     'plan_creation',
     'dom_action',
     'execute_js_code',
@@ -37,6 +38,7 @@ const inferActionTypeFromPayload = (action: AiAction): AgentActionType => {
     if (action.plan) return 'plan_creation';
     if (action.args) return 'filter_spreadsheet';
     if (action.clarification) return 'clarification_request';
+    if (action.meta?.awaitUser) return 'await_user';
     return 'text_response';
 };
 

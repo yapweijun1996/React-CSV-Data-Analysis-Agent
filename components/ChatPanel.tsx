@@ -94,6 +94,42 @@ const helperToneIcon: Record<HelperTone, string> = {
 const MAX_CHAT_INPUT_HEIGHT = 240;
 const uiFlags = getUiVisibilityConfig();
 
+type ChoiceBarAction = {
+    id: 'clean_months' | 'top_suppliers' | 'anomaly_amount' | 'type_structure';
+    label: string;
+    helper: string;
+    prompt: string;
+};
+
+const CHOICE_BAR_ACTIONS: ChoiceBarAction[] = [
+    {
+        id: 'clean_months',
+        label: '① 清洗月份',
+        helper: '标准化发票月份 (YYYY-MM)',
+        prompt: '请清洗我刚上传的发票或明细数据，把所有月份字段统一为 YYYY-MM 格式，并告诉我清洗影响。',
+    },
+    {
+        id: 'top_suppliers',
+        label: '② Top 供应商',
+        helper: '金额 / 单数 / 客单价',
+        prompt: '生成一个按供应商聚合的 Top 列表，同时展示总金额、单据量与客单价，并用图表呈现。',
+    },
+    {
+        id: 'anomaly_amount',
+        label: '③ 异常金额',
+        helper: '找出高于阈值的付款',
+        prompt: '请在当前数据里扫描异常金额（如超过平均值 3 倍），列出可疑记录并说明原因。',
+    },
+    {
+        id: 'type_structure',
+        label: '④ 按类型结构',
+        helper: '查看类型分布与趋势',
+        prompt: '按业务或费用类型输出结构化视图，包含占比和最近三个月的趋势。',
+    },
+];
+
+const CHOICE_WAITING_HINT_MS = 10_000;
+
 const phaseDescriptors: Record<
     AgentPhaseState['phase'],
     { label: string; helper: string; icon: string; badge: string }
@@ -267,8 +303,10 @@ export const ChatPanel: React.FC = () => {
     const [input, setInput] = useState('');
     const [pendingQuickAction, setPendingQuickAction] = useState<QuickActionId | null>(null);
     const [manualGroupSelections, setManualGroupSelections] = useState<Record<string, string>>({});
+    const [isChoiceReminderVisible, setIsChoiceReminderVisible] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const choiceReminderTimerRef = useRef<number | null>(null);
     useAutosizeTextArea(textareaRef, input, { maxHeight: MAX_CHAT_INPUT_HEIGHT });
 
     const hasAwaitingClarification = pendingClarifications.some(req => req.status === 'pending');
@@ -291,6 +329,68 @@ export const ChatPanel: React.FC = () => {
         },
         [columnProfiles, datasetRows],
     );
+    const clearChoiceReminderTimer = useCallback(() => {
+        if (choiceReminderTimerRef.current !== null) {
+            if (typeof window !== 'undefined') {
+                window.clearTimeout(choiceReminderTimerRef.current);
+            }
+            choiceReminderTimerRef.current = null;
+        }
+    }, []);
+
+    const scheduleChoiceReminderTimer = useCallback(() => {
+        clearChoiceReminderTimer();
+        if (typeof window === 'undefined') return;
+        if (!agentAwaitingUserInput) {
+            setIsChoiceReminderVisible(false);
+            return;
+        }
+        choiceReminderTimerRef.current = window.setTimeout(() => {
+            setIsChoiceReminderVisible(true);
+        }, CHOICE_WAITING_HINT_MS);
+    }, [agentAwaitingUserInput, clearChoiceReminderTimer]);
+
+    useEffect(() => {
+        scheduleChoiceReminderTimer();
+        return () => clearChoiceReminderTimer();
+    }, [scheduleChoiceReminderTimer, clearChoiceReminderTimer]);
+
+    const dismissChoiceReminder = useCallback(() => {
+        setIsChoiceReminderVisible(false);
+        clearChoiceReminderTimer();
+    }, [clearChoiceReminderTimer]);
+
+    const dispatchUserIntent = useCallback(
+        (source: 'choice' | 'text', value: string, metadata?: { choiceId?: string }) => {
+            const trimmed = value.trim();
+            if (!trimmed) return;
+            if (typeof window !== 'undefined') {
+                window.dispatchEvent(
+                    new CustomEvent('user_intent', {
+                        detail: {
+                            source,
+                            value: trimmed,
+                            choiceId: metadata?.choiceId ?? null,
+                            timestamp: Date.now(),
+                        },
+                    }),
+                );
+            }
+            handleChatMessage(trimmed);
+            setIsChoiceReminderVisible(false);
+            clearChoiceReminderTimer();
+        },
+        [handleChatMessage, clearChoiceReminderTimer],
+    );
+
+    const handleChoiceBarClick = useCallback(
+        (action: ChoiceBarAction) => {
+            if (isBusy || !isApiKeySet || currentView === 'file_upload') return;
+            dispatchUserIntent('choice', action.prompt, { choiceId: action.id });
+        },
+        [dispatchUserIntent, isBusy, isApiKeySet, currentView],
+    );
+
     const handlePromptResponse = useCallback(
         (promptId: string, value: string) => {
             const trimmed = value.trim();
@@ -493,7 +593,7 @@ export const ChatPanel: React.FC = () => {
     const handleSend = (e: React.FormEvent | React.KeyboardEvent) => {
         e.preventDefault();
         if (input.trim() && !isBusy) {
-            handleChatMessage(input.trim());
+            dispatchUserIntent('text', input);
             setInput('');
         }
     };
@@ -853,6 +953,40 @@ export const ChatPanel: React.FC = () => {
                                 );
                             })}
                         </div>
+                    </div>
+                )}
+                {currentView !== 'file_upload' && (
+                    <div className="mb-3 space-y-2" aria-label="快速意图选择">
+                        <div className="flex flex-wrap gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2">
+                            {CHOICE_BAR_ACTIONS.map(action => (
+                                <button
+                                    key={action.id}
+                                    type="button"
+                                    onClick={() => handleChoiceBarClick(action)}
+                                    disabled={isBusy || !isApiKeySet}
+                                    className="flex-1 min-w-[120px] rounded-md border border-slate-200 bg-white px-3 py-2 text-left text-sm text-slate-700 hover:border-blue-300 hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    <span className="font-semibold block">{action.label}</span>
+                                    <span className="text-[11px] text-slate-500 block">{action.helper}</span>
+                                </button>
+                            ))}
+                        </div>
+                        {isChoiceReminderVisible && (
+                            <div
+                                className="flex items-center justify-between rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
+                                role="status"
+                                aria-live="polite"
+                            >
+                                <span>正在等待你的选择，随时可以点击按钮或直接输入内容。</span>
+                                <button
+                                    type="button"
+                                    onClick={dismissChoiceReminder}
+                                    className="ml-3 text-amber-700 font-semibold hover:underline"
+                                >
+                                    撤销
+                                </button>
+                            </div>
+                        )}
                     </div>
                 )}
                 <form onSubmit={handleSend} className="flex items-start space-x-2">

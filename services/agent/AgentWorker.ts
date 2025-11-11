@@ -131,6 +131,7 @@ const PLAN_PRIMER_INSTRUCTION =
 const MAX_PLAN_CONTINUATIONS = 3;
 const MAX_VALIDATION_RETRIES = 2;
 const MAX_ACTIONS_PER_RESPONSE = 2;
+const ATOMIC_ACTION_BUDGET_PER_TURN = 1;
 const CONTINUATION_STATE_TAG_DENYLIST = new Set<AgentStateTag>(['awaiting_clarification', 'blocked']);
 const FALLBACK_TEXT_RESPONSE_STEP_ID = 'ad_hoc_response';
 const DEFAULT_ACK_STEP: AgentPlanStep = {
@@ -154,6 +155,10 @@ const GREETING_REGEX_STRICT = /^(hi|hello|hey|hola|ciao|salut|嗨+|哈囉|你好
 const FALLBACK_PLAN_STATUS = 'Requesting simplified plan outline...';
 const REMOVE_CARD_REGEX = /(remove|delete)\s+card/i;
 const agentEngine = createAgentEngine();
+const DISPATCH_DEBOUNCE_MS = 400;
+const DISPATCH_LOCK_POLL_MS = 25;
+let dispatchSlotLocked = false;
+let lastDispatchReleasedAt = 0;
 
 interface MintedStateTagInfo {
     epochMs: number;
@@ -184,6 +189,7 @@ const messageRequestsPlanReset = (message: string): boolean => {
 
 const CANONICAL_ACTION_TYPES: AgentActionType[] = [
     'text_response',
+    'await_user',
     'plan_creation',
     'dom_action',
     'execute_js_code',
@@ -201,6 +207,9 @@ const ACTION_TYPE_ALIAS_MAP: Record<string, AgentActionType> = {
     agent_action: 'text_response',
     agentmessage: 'text_response',
     respond: 'text_response',
+    awaituser: 'await_user',
+    await_user: 'await_user',
+    awaiting_user: 'await_user',
 };
 
 const LOW_INTENT_INTENTS = new Set<AgentIntent>(['greeting', 'smalltalk', 'ask_user_choice']);
@@ -240,26 +249,37 @@ const setAwaitingClarificationTag = (actions: AiAction[]): boolean => {
     return true;
 };
 
+const convertToAwaitUserAction = (action: AiAction): void => {
+    action.type = 'await_user';
+    action.responseType = 'await_user';
+    const meta = ensureActionMetaDefaults(action);
+    meta.awaitUser = true;
+    meta.haltAfter = true;
+    if (!meta.promptId) {
+        const match = (action.text ?? '').match(PROMPT_ID_REGEX);
+        meta.promptId = match?.[1] ?? createPromptInteractionId();
+    }
+};
+
 const applyAwaitUserMetaSignal = (actions: AiAction[]): boolean => {
     if (!Array.isArray(actions) || actions.length === 0) {
         return false;
     }
     const candidate = [...actions]
         .reverse()
-        .find(action => action.responseType === 'text_response' && typeof action.text === 'string' && action.text.trim().length > 0);
+        .find(
+            action =>
+                (action.responseType === 'text_response' || action.responseType === 'await_user') &&
+                typeof action.text === 'string' &&
+                action.text.trim().length > 0,
+        );
     if (!candidate) {
         return false;
     }
-    if (!textResponseLooksLikeQuestion(candidate.text)) {
+    if (candidate.responseType !== 'await_user' && !textResponseLooksLikeQuestion(candidate.text)) {
         return false;
     }
-    const meta = ensureActionMetaDefaults(candidate);
-    meta.awaitUser = true;
-    meta.haltAfter = true;
-    if (!meta.promptId) {
-        const match = (candidate.text ?? '').match(PROMPT_ID_REGEX);
-        meta.promptId = match?.[1] ?? createPromptInteractionId();
-    }
+    convertToAwaitUserAction(candidate);
     setAwaitingClarificationTag(actions);
     return true;
 };
@@ -602,7 +622,9 @@ const pausePlannerForUser = (runtime: PlannerRuntime, signal: PlannerMetaSignal)
 };
 
 const shareObservationSummary = (runtime: PlannerRuntime, response: AiChatResponse): boolean => {
-    const alreadyResponded = response.actions.some(action => action.responseType === 'text_response');
+    const alreadyResponded = response.actions.some(
+        action => action.responseType === 'text_response' || action.responseType === 'await_user',
+    );
     if (alreadyResponded) {
         return true;
     }
@@ -732,6 +754,23 @@ type AgentResponseValidationResult =
       };
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+const waitFor = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+const acquireDispatchSlot = async () => {
+    while (dispatchSlotLocked) {
+        await waitFor(DISPATCH_LOCK_POLL_MS);
+    }
+    dispatchSlotLocked = true;
+    const elapsed = Date.now() - lastDispatchReleasedAt;
+    if (elapsed < DISPATCH_DEBOUNCE_MS) {
+        await waitFor(DISPATCH_DEBOUNCE_MS - elapsed);
+    }
+};
+
+const releaseDispatchSlot = () => {
+    dispatchSlotLocked = false;
+    lastDispatchReleasedAt = Date.now();
+};
 
 const ACTION_ERROR_CODES = {
     MISSING_TEXT: 'MISSING_TEXT',
@@ -1021,6 +1060,7 @@ const toAgentObservation = (
 const summarizeAction = (action: AiAction): string => {
     switch (action.responseType) {
         case 'text_response':
+        case 'await_user':
             return action.text ? action.text.slice(0, 120) : 'AI text response';
         case 'plan_creation':
             return action.plan?.title ? `Create analysis "${action.plan.title}"` : 'Create new analysis card';
@@ -2428,6 +2468,17 @@ const validateAgentResponse = (
                     }
                 }
                 break;
+            case 'text_response':
+            case 'await_user':
+                if (!hasTextPayload(action)) {
+                    return buildPayloadValidationFailure(
+                        action,
+                        index,
+                        'Text response missing text payload.',
+                        'Every text_response or await_user action must include a non-empty text field.',
+                    );
+                }
+                break;
             default:
                 break;
         }
@@ -2502,6 +2553,8 @@ const runPlannerWorkflow = async (
     let usedFallbackPlanPrompt = false;
     let usedRestatementPrompt = false;
     let continuationAttempts = 0;
+    let atomicActionsConsumed = 0;
+    let stepBudgetAlerted = false;
     const withIntentNotes = (prompt: string) => appendIntentNotesToPrompt(prompt, runtime.intentNotes);
     const executionPolicy = resolveIntentExecutionPolicy(runtime.detectedIntent);
     const validationLimit = executionPolicy.maxValidationRetries;
@@ -2594,7 +2647,7 @@ const runPlannerWorkflow = async (
 
             const remainingAutoRetries = MAX_AUTO_RETRIES - retryAttempts;
             const containsOperationalActions = response.actions.some(
-                action => !['plan_state_update', 'text_response'].includes(action.responseType),
+                action => !['plan_state_update', 'text_response', 'await_user'].includes(action.responseType),
             );
             const containsPipelineActions = response.actions.some(action =>
                 PIPELINE_CONTINUATION_ACTIONS.has(action.responseType),
@@ -2605,7 +2658,13 @@ const runPlannerWorkflow = async (
                 containsOperationalActions ? 'Executing the next step of the plan...' : 'Delivering the latest reasoning step...',
             );
             const dispatchResult = await dispatchAgentActions(response, runtime, remainingAutoRetries);
-            let observationSatisfied = response.actions.some(action => action.responseType === 'text_response');
+            const atomicActionsThisTurn = response.actions.filter(action => action.responseType !== 'plan_state_update').length;
+            if (dispatchResult.type !== 'retry') {
+                atomicActionsConsumed += atomicActionsThisTurn;
+            }
+            let observationSatisfied = response.actions.some(
+                action => action.responseType === 'text_response' || action.responseType === 'await_user',
+            );
             if (dispatchResult.type === 'complete' && !observationSatisfied) {
                 observationSatisfied = shareObservationSummary(runtime, response);
             }
@@ -2661,6 +2720,7 @@ const runPlannerWorkflow = async (
             enterAgentPhase(runtime, 'verifying', 'Reviewing what just happened before continuing...');
             const { hasPendingSteps, stateTag, hasBlocker } = plannerHasPendingSteps(runtime);
             const isStateTagBlocked = stateTag ? CONTINUATION_STATE_TAG_DENYLIST.has(stateTag) : false;
+            const stepBudgetExceeded = atomicActionsConsumed >= ATOMIC_ACTION_BUDGET_PER_TURN;
             if (
                 dispatchResult.type === 'complete' &&
                 observationSatisfied &&
@@ -2671,7 +2731,8 @@ const runPlannerWorkflow = async (
                 !isStateTagBlocked &&
                 !hasBlocker &&
                 !runtime.get().isRunCancellationRequested(runtime.runId) &&
-                !containsOperationalActions
+                !containsOperationalActions &&
+                !stepBudgetExceeded
             ) {
                 continuationAttempts++;
                 const planState = runtime.get().plannerSession.planState;
@@ -2698,6 +2759,11 @@ const runPlannerWorkflow = async (
                     { mode: 'full' },
                 ));
                 continue;
+            }
+
+            if (stepBudgetExceeded && !stepBudgetAlerted) {
+                runtime.get().addProgress('Step budget reached (plan tracker + 1 atomic action). Waiting for your next input before continuing.', 'system');
+                stepBudgetAlerted = true;
             }
 
             break;
@@ -2767,6 +2833,8 @@ const dispatchAgentActions = async (
     runtime: PlannerRuntime,
     remainingAutoRetries: number,
 ): Promise<DispatchResult> => {
+    await acquireDispatchSlot();
+    try {
     for (const action of response.actions) {
         if (runtime.get().isRunCancellationRequested(runtime.runId)) {
             runtime.get().addProgress('Cancelled remaining actions.');
@@ -2843,7 +2911,10 @@ const dispatchAgentActions = async (
         }
     }
 
-    return { type: 'complete' };
+        return { type: 'complete' };
+    } finally {
+        releaseDispatchSlot();
+    }
 };
 
 const handleTextResponseAction: AgentActionExecutor = async ({ action, runtime, markTrace }) => {
@@ -2860,8 +2931,10 @@ const handleTextResponseAction: AgentActionExecutor = async ({ action, runtime, 
 
     const quickChoices = extractQuickChoices(action.text ?? '');
     const looksLikeQuestion = textResponseLooksLikeQuestion(action.text);
+    const isAwaitUserAction = action.responseType === 'await_user';
+    const wantsAwaitUser = Boolean(action.meta?.awaitUser) || isAwaitUserAction;
 
-    if (action.meta?.awaitUser && quickChoices.length === 0) {
+    if (wantsAwaitUser && quickChoices.length === 0) {
         const retryPrompt =
             'SYSTEM NOTE: Your previous message asked the user for a choice but did not include explicit options. Restate the question and list at least two options using a numbered format (e.g., "1) … 2) …").';
         runtime
@@ -2887,7 +2960,7 @@ const handleTextResponseAction: AgentActionExecutor = async ({ action, runtime, 
         };
     }
 
-    const shouldPauseForUser = Boolean(action.meta?.awaitUser || quickChoices.length > 0 || looksLikeQuestion);
+    const shouldPauseForUser = wantsAwaitUser || quickChoices.length > 0 || looksLikeQuestion;
     if (shouldPauseForUser) {
         const meta = action.meta ?? (action.meta = {});
         meta.awaitUser = true;
@@ -3520,6 +3593,7 @@ const handleProceedToAnalysisAction: AgentActionExecutor = async ({ markTrace })
 
 const actionExecutorRegistry: Record<AgentActionType, AgentActionExecutor> = {
     text_response: handleTextResponseAction,
+    await_user: handleTextResponseAction,
     plan_creation: handlePlanCreationAction,
     plan_state_update: handlePlanStateUpdateAction,
     dom_action: handleDomAction,

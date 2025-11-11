@@ -272,7 +272,7 @@ export const multiActionChatResponseSchema = {
                     },
                     type: {
                         type: Type.STRING,
-                        enum: ['text_response', 'plan_creation', 'dom_action', 'execute_js_code', 'proceed_to_analysis', 'filter_spreadsheet', 'clarification_request', 'plan_state_update'],
+                        enum: ['text_response', 'await_user', 'plan_creation', 'dom_action', 'execute_js_code', 'proceed_to_analysis', 'filter_spreadsheet', 'clarification_request', 'plan_state_update'],
                         description: 'Primary action type identifier. Must align with responseType for backward compatibility.',
                     },
                     stateTag: {
@@ -280,9 +280,9 @@ export const multiActionChatResponseSchema = {
                         description: 'Monotonic tag minted as "<epochMs>-<seq>" that tracks action chronology (or a known label such as awaiting_clarification).',
                     },
                     stepId: { type: Type.STRING, description: "The identifier of the plan step this action is advancing. Required for every action including plan_state_update." },
-                    responseType: { type: Type.STRING, enum: ['text_response', 'plan_creation', 'dom_action', 'execute_js_code', 'proceed_to_analysis', 'filter_spreadsheet', 'clarification_request', 'plan_state_update'] },
+                    responseType: { type: Type.STRING, enum: ['text_response', 'await_user', 'plan_creation', 'dom_action', 'execute_js_code', 'proceed_to_analysis', 'filter_spreadsheet', 'clarification_request', 'plan_state_update'] },
                     timestamp: { type: Type.STRING, description: 'ISO timestamp indicating when the action was created.' },
-                    text: { type: Type.STRING, description: "A conversational text response to the user. Required for 'text_response'." },
+                    text: { type: Type.STRING, description: "A conversational text response to the user. Required for 'text_response' or 'await_user'." },
                     cardId: { type: Type.STRING, description: "Optional. The ID of the card this text response refers to. Used to link text to a specific chart." },
                     meta: {
                         type: Type.OBJECT,

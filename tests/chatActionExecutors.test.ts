@@ -226,6 +226,37 @@ await run('text_response without payload emits error telemetry', async () => {
     assert.strictEqual(failure?.telemetry?.errorCode, ACTION_ERROR_CODES.MISSING_TEXT);
 });
 
+await run('await_user without explicit options requests retry', async () => {
+    const { runtime } = createRuntime();
+    const { entries, markTrace } = createTraceRecorder();
+    const action = withEnvelope({
+        responseType: 'await_user',
+        reason: 'Need the user to select a metric',
+        text: 'Which metric should I rank?',
+    });
+
+    const result = await runActionThroughRegistry(action, runtime, 0, markTrace);
+    assert.strictEqual(result.type, 'retry');
+    const failure = entries.find(entry => entry.status === 'failed');
+    assert.strictEqual(failure?.telemetry?.errorCode, ACTION_ERROR_CODES.VALIDATION_FAILED);
+});
+
+await run('await_user with numbered options halts planner and flags awaiting user', async () => {
+    const { runtime, state } = createRuntime();
+    const { markTrace } = createTraceRecorder();
+    const action = withEnvelope({
+        responseType: 'await_user',
+        reason: 'Need clarification on metric',
+        text: '请选择分析指标：\n1) 按金额\n2) 按订单数',
+        meta: { awaitUser: true },
+    });
+
+    const result = await runActionThroughRegistry(action, runtime, 0, markTrace);
+    assert.strictEqual(result.type, 'halt');
+    assert.strictEqual(state.agentAwaitingUserInput, true);
+    assert.strictEqual(state.agentAwaitingPromptId !== null, true);
+});
+
 await run('plan_creation without dataset reports missing payload', async () => {
     const { runtime } = createRuntime();
     const { entries, markTrace } = createTraceRecorder();

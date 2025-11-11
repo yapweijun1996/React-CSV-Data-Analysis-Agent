@@ -123,6 +123,7 @@ export type AggregationType = 'sum' | 'count' | 'avg';
 export type AgentActionType =
     | 'plan_creation'
     | 'text_response'
+    | 'await_user'
     | 'dom_action'
     | 'execute_js_code'
     | 'proceed_to_analysis'
