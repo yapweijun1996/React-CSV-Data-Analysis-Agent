@@ -7,7 +7,7 @@ import { generateDataPreparationPlan } from '../../services/aiService';
 import { vectorStore } from '../../services/vectorStore';
 import { getReport, saveReport, deleteReport, CURRENT_SESSION_KEY } from '../../storageService';
 import { computeDatasetHash } from '../../utils/datasetHash';
-import { persistCleanDataset } from '../../services/csvAgentDb';
+import { persistCleanDataset, readProvenance } from '../../services/csvAgentDb';
 import { dataTools } from '../../services/dataTools';
 import { rememberDatasetId, forgetDatasetId } from '../../utils/datasetCache';
 
@@ -85,6 +85,18 @@ export const createFileUploadSlice = (
 
             const persistCleanSnapshot = async (datasetId: string, columns: ColumnProfile[]) => {
                 try {
+                    const existingProvenance = await readProvenance(datasetId);
+                    if (existingProvenance?.checksum && existingProvenance.checksum === datasetId) {
+                        const shouldContinue =
+                            typeof window === 'undefined'
+                                ? true
+                                : window.confirm('检测到相同数据，是否仍要覆盖本地缓存？选择取消将跳过导入。');
+                        if (!shouldContinue) {
+                            get().addProgress('跳过缓存：检测到与现有数据相同的 CSV 指纹。', 'system');
+                            return;
+                        }
+                        get().addProgress('数据未变化，但按照指示重新写入缓存…');
+                    }
                     set(state => ({
                         analysisTimeline: { ...state.analysisTimeline, stage: 'persisting', totalCards: 0, completedCards: 0 },
                     }));

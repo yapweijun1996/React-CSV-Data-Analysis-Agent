@@ -9,6 +9,7 @@ import {
     COLUMN_METADATA_ERROR,
 } from './dataWorkerShared';
 import type { AggregatePayload, AggregateResult, ProfileResult, SampleResult } from './dataToolTypes';
+import type { ErrorCode } from './errorCodes';
 
 type WorkerAction = 'profile' | 'sample' | 'aggregate';
 
@@ -19,6 +20,7 @@ interface WorkerEnvelope<T = any> {
     reason?: string;
     hint?: string;
     durationMs?: number;
+    code?: ErrorCode;
 }
 
 interface ProfilePayload {
@@ -40,7 +42,7 @@ type WorkerPayloadMap = {
 
 export type ToolResult<T> =
     | { ok: true; data: T; durationMs: number }
-    | { ok: false; reason: string; hint?: string; durationMs?: number };
+    | { ok: false; reason: string; hint?: string; durationMs?: number; code?: ErrorCode };
 
 type PendingResolver<T> = (response: WorkerEnvelope<T>) => void;
 
@@ -107,6 +109,7 @@ const callWorker = async <K extends WorkerAction, R>(
                         reason: response.reason ?? 'Worker failed to respond.',
                         hint: response.hint,
                         durationMs: response.durationMs,
+                        code: response.code,
                     });
                 }
             });

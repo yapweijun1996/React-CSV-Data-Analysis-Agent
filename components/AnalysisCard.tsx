@@ -2,7 +2,7 @@ import React, { useRef, useState, useMemo, useEffect, useCallback } from 'react'
 import { AnalysisPlanRowFilter, AnalysisCardData, AggregationMeta, ChartType, AnalysisPlan } from '../types';
 import { ChartRenderer, ChartRendererHandle } from './ChartRenderer';
 import { DataTable } from './DataTable';
-import { exportToPng, exportToCsv, exportToHtml } from '../utils/exportUtils';
+import { exportToPng, exportToCsv, exportToHtml, exportToJson } from '../utils/exportUtils';
 import { ChartTypeSwitcher } from './ChartTypeSwitcher';
 import { applyTopNWithOthers } from '../utils/dataProcessor';
 import { InteractiveLegend } from './InteractiveLegend';
@@ -242,7 +242,7 @@ export const AnalysisCard: React.FC<AnalysisCardProps> = ({ cardId }) => {
         return null;
     }
 
-    const { id, plan, aggregatedData, summary, displayChartType, isDataVisible, topN, hideOthers, disableAnimation, filter, hiddenLabels = [], aggregationMeta } = cardData;
+    const { id, plan, aggregatedData, summary, displayChartType, isDataVisible, topN, hideOthers, disableAnimation, filter, hiddenLabels = [], aggregationMeta, valueSchema } = cardData;
 
     const summaryParts = summary.split('---');
     const englishSummary = summaryParts[0]?.trim();
@@ -282,7 +282,7 @@ export const AnalysisCard: React.FC<AnalysisCardProps> = ({ cardId }) => {
     }, [dataAfterFilter, valueKey]);
 
 
-    const handleExport = async (format: 'png' | 'csv' | 'html') => {
+    const handleExport = async (format: 'png' | 'csv' | 'html' | 'json') => {
         if (!cardRef.current) return;
         setIsExporting(true);
         try {
@@ -295,6 +295,14 @@ export const AnalysisCard: React.FC<AnalysisCardProps> = ({ cardId }) => {
                     break;
                 case 'html':
                     await exportToHtml(cardRef.current, plan.title, dataForDisplay, summary);
+                    break;
+                case 'json':
+                    exportToJson({
+                        plan,
+                        data: dataForDisplay,
+                        aggregationMeta,
+                        schema: valueSchema ?? [],
+                    });
                     break;
             }
         } finally {
@@ -376,7 +384,8 @@ export const AnalysisCard: React.FC<AnalysisCardProps> = ({ cardId }) => {
                         <div className="absolute right-0 mt-2 w-36 bg-white border border-slate-200 rounded-md shadow-lg opacity-0 group-hover:opacity-100 transition-opacity z-10 pointer-events-none group-hover:pointer-events-auto">
                             <a onClick={() => handleExport('png')} className="block px-4 py-2 text-sm text-slate-700 hover:bg-slate-100 cursor-pointer rounded-t-md">Export as PNG</a>
                             <a onClick={() => handleExport('csv')} className="block px-4 py-2 text-sm text-slate-700 hover:bg-slate-100 cursor-pointer">Export as CSV</a>
-                            <a onClick={() => handleExport('html')} className="block px-4 py-2 text-sm text-slate-700 hover:bg-slate-100 cursor-pointer rounded-b-md">Export as HTML</a>
+                            <a onClick={() => handleExport('html')} className="block px-4 py-2 text-sm text-slate-700 hover:bg-slate-100 cursor-pointer">Export as HTML</a>
+                            <a onClick={() => handleExport('json')} className="block px-4 py-2 text-sm text-slate-700 hover:bg-slate-100 cursor-pointer rounded-b-md">Export as JSON</a>
                         </div>
                     </div>
                 </div>
@@ -504,13 +513,13 @@ export const AnalysisCard: React.FC<AnalysisCardProps> = ({ cardId }) => {
                      <button onClick={() => setShowSelectionDetails(!showSelectionDetails)} className="w-full text-left font-semibold text-blue-600 mb-1">
                         {showSelectionDetails ? '▾' : '▸'} Selection Details ({selectedIndices.length} items)
                     </button>
-                    {showSelectionDetails && <DataTable data={selectedData} />}
+                    {showSelectionDetails && <DataTable data={selectedData} schema={valueSchema} />}
                 </div>
             )}
             
             {isDataVisible && (
                  <div className="mt-2 max-h-48 overflow-y-auto border border-slate-200 rounded-md">
-                    <DataTable data={dataForDisplay} />
+                    <DataTable data={dataForDisplay} schema={valueSchema} />
                 </div>
             )}
 

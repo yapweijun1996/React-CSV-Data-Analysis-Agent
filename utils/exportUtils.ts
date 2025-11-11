@@ -1,4 +1,4 @@
-import { CsvRow } from '../types';
+import { CsvRow, AggregationMeta, AnalysisPlan } from '../types';
 
 declare const htmlToImage: any;
 declare const Papa: any;
@@ -94,4 +94,21 @@ export const exportToHtml = async (element: HTMLElement, title: string, data: Cs
   } catch (error) {
     console.error('Error exporting to HTML:', error);
   }
+};
+
+export const exportToJson = (payload: {
+    plan: AnalysisPlan;
+    data: CsvRow[];
+    aggregationMeta?: AggregationMeta;
+    schema?: Array<{ name: string; type: string }>;
+}) => {
+    try {
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8;' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.setAttribute('download', `${payload.plan.title.replace(/ /g, '_')}.json`);
+        link.click();
+    } catch (error) {
+        console.error('Error exporting JSON:', error);
+    }
 };

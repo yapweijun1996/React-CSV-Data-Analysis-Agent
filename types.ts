@@ -278,6 +278,7 @@ export interface AnalysisCardData {
     queryHash?: string | null;
     isSampledResult?: boolean;
     aggregationMeta?: AggregationMeta;
+    valueSchema?: Array<{ name: string; type: string }>;
 }
 
 export interface AggregationMeta {

@@ -209,6 +209,25 @@ const textResponseLooksLikeQuestion = (text?: string | null): boolean => {
     return false;
 };
 
+const ensureActionMetaDefaults = (action: AiAction): Required<NonNullable<AiAction['meta']>> => {
+    const meta = action.meta ?? (action.meta = { awaitUser: false, haltAfter: false, resumePlanner: false, promptId: '' });
+    meta.awaitUser = Boolean(meta.awaitUser);
+    meta.haltAfter = Boolean(meta.haltAfter);
+    meta.resumePlanner = Boolean(meta.resumePlanner);
+    meta.promptId = typeof meta.promptId === 'string' ? meta.promptId : '';
+    return meta;
+};
+
+const setAwaitingClarificationTag = (actions: AiAction[]): boolean => {
+    const planAction = actions.find(action => action.responseType === 'plan_state_update');
+    if (!planAction) return false;
+    planAction.stateTag = 'awaiting_clarification';
+    if (hasPlanStatePayload(planAction)) {
+        planAction.planState.stateTag = 'awaiting_clarification';
+    }
+    return true;
+};
+
 const applyAwaitUserMetaSignal = (actions: AiAction[]): boolean => {
     if (!Array.isArray(actions) || actions.length === 0) {
         return false;
@@ -222,13 +241,14 @@ const applyAwaitUserMetaSignal = (actions: AiAction[]): boolean => {
     if (!textResponseLooksLikeQuestion(candidate.text)) {
         return false;
     }
-    const meta = candidate.meta ?? (candidate.meta = {});
+    const meta = ensureActionMetaDefaults(candidate);
     meta.awaitUser = true;
     meta.haltAfter = true;
     if (!meta.promptId) {
         const match = (candidate.text ?? '').match(PROMPT_ID_REGEX);
         meta.promptId = match?.[1] ?? createPromptInteractionId();
     }
+    setAwaitingClarificationTag(actions);
     return true;
 };
 
@@ -236,13 +256,14 @@ const enforceClarificationAwaitSignal = (actions: AiAction[]): void => {
     if (!Array.isArray(actions) || actions.length === 0) return;
     actions.forEach(action => {
         if (action.responseType !== 'clarification_request') return;
-        const meta = action.meta ?? (action.meta = {});
+        const meta = ensureActionMetaDefaults(action);
         meta.awaitUser = true;
         meta.haltAfter = true;
         if (!meta.promptId) {
             meta.promptId = createPromptInteractionId();
         }
     });
+    setAwaitingClarificationTag(actions);
 };
 
 interface IntentExecutionPolicy {
@@ -366,6 +387,15 @@ const applyResponseEnvelopeAutoHeal = (response: AiChatResponse, runtime: Planne
             recordHeal(`Stamped timestamp for ${canonicalType}`);
         }
 
+        ensureActionMetaDefaults(nextAction);
+        if (nextAction.responseType === 'plan_state_update' && !hasPlanStatePayload(nextAction)) {
+            const existingPlan = runtime.get().plannerSession.planState;
+            const hydrated = buildMinimalPlanStateSnapshot(runtime, nextAction.planState ?? existingPlan ?? undefined);
+            nextAction.planState = hydrated;
+            runtime.get().updatePlannerPlanState(hydrated);
+            recordHeal('Auto-filled plan_state_update payload.');
+        }
+
         healed.push(nextAction);
     }
     if (healed.length === 0) {
@@ -387,17 +417,19 @@ const applyResponseEnvelopeAutoHeal = (response: AiChatResponse, runtime: Planne
             reason: 'Auto-generated greeting reply so the assistant can acknowledge the user.',
             text: '嗨 hi～很高興見到你！告訴我想分析什麼資料吧。',
             timestamp: new Date().toISOString(),
+            meta: { awaitUser: false, haltAfter: false, resumePlanner: false, promptId: '' },
         });
         recordHeal('Inserted greeting text_response for low-intent turn');
     }
     if (isLowIntent) {
         const textAction = clipped.find(action => action.responseType === 'text_response');
         if (textAction) {
-            const meta = textAction.meta ?? (textAction.meta = {});
+            const meta = ensureActionMetaDefaults(textAction);
             if (!awaitingMetaApplied) {
                 meta.awaitUser = true;
                 meta.haltAfter = true;
                 meta.promptId = meta.promptId ?? createPromptInteractionId();
+                setAwaitingClarificationTag(clipped);
             }
         }
     }
@@ -432,12 +464,15 @@ const extractPlannerMetaSignal = (actions?: AiAction[] | null): PlannerMetaSigna
         return { ...BLANK_META_SIGNAL };
     }
     return actions.reduce<PlannerMetaSignal>((acc, action) => {
-        if (!action?.meta) return acc;
+        if (!action) return acc;
+        const meta = ensureActionMetaDefaults(action);
+        const awaitUser = Boolean(meta.awaitUser);
         return {
-            awaitUser: acc.awaitUser || !!action.meta.awaitUser,
-            haltAfter: acc.haltAfter || !!action.meta.haltAfter,
-            resumePlanner: acc.resumePlanner || !!action.meta.resumePlanner,
-            promptId: action.meta.promptId ?? acc.promptId,
+            awaitUser: acc.awaitUser || awaitUser,
+            haltAfter: acc.haltAfter || Boolean(meta.haltAfter),
+            resumePlanner: acc.resumePlanner || Boolean(meta.resumePlanner),
+            promptId: meta.promptId || acc.promptId,
+            stateTagOverride: awaitUser ? (acc.stateTagOverride ?? 'awaiting_clarification') : acc.stateTagOverride,
         };
     }, { ...BLANK_META_SIGNAL });
 };

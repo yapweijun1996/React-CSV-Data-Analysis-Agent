@@ -72,6 +72,8 @@ import {
     getRememberedDatasetId,
     LAST_DATASET_STORAGE_KEY,
 } from '../utils/datasetCache';
+import { getErrorMessage } from '../services/errorMessages';
+import type { ErrorCode } from '../services/errorCodes';
 
 const createClarificationId = () =>
     typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -102,6 +104,9 @@ const seedAutoSaveCreatedAt = (createdAt: Date | null) => {
 const triggerAutoSaveImmediately = () => {
     autoSaveManager?.triggerImmediateSave(true);
 };
+
+const describeToolFailure = (code?: ErrorCode, reason?: string): string =>
+    getErrorMessage(code, reason).detail;
 
 const getNextAwaitingClarificationId = (clarifications: ClarificationRequest[]): string | null =>
     clarifications.find(c => c.status === 'pending')?.id ?? null;
@@ -365,6 +370,7 @@ const convertViewToCard = (view: ViewStoreRecord<CardDataRef>): AnalysisCardData
             lastRunAt: view.createdAt ?? new Date().toISOString(),
             requestedMode: view.dataRef.sampled ? 'sample' : 'full',
         },
+        valueSchema: view.dataRef.schema,
     };
 };
 
@@ -974,9 +980,10 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             }
             const response = await dataTools.aggregate(payload);
             if (!response.ok) {
-                addProgress(`Aggregation worker failed for "${plan.title}": ${response.reason}`, 'error');
-                if (response.reason?.includes('IndexedDB')) {
-                    addProgress('Your browser blocked IndexedDB inside workers; falling back to main thread.', 'error');
+                const failureDetail = describeToolFailure(response.code, response.reason);
+                addProgress(`Aggregation worker failed for "${plan.title}": ${failureDetail}`, 'error');
+                if (response.hint) {
+                    addProgress(response.hint, 'error');
                 }
                 return null;
             }
@@ -1123,6 +1130,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                     queryHash,
                     isSampledResult: aggregationMeta?.sampled ?? isSampledResult,
                     aggregationMeta,
+                    valueSchema: aggregateResult?.schema,
                 };
 
                 set(prev => ({ analysisCards: [...prev.analysisCards, newCard] }));
@@ -1615,9 +1623,10 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         });
         const response = await dataTools.aggregate(payload);
         if (!response.ok) {
-            get().addProgress(`Aggregation refresh failed for "${card.plan.title}": ${response.reason}`, 'error');
-            get().addToast(`Full scan failed: ${response.reason}`, 'error');
-            get().updateAgentActionTrace(traceId, 'failed', response.reason ?? 'Aggregation failed.', {
+            const failureDetail = describeToolFailure(response.code, response.reason);
+            get().addProgress(`Aggregation refresh failed for "${card.plan.title}": ${failureDetail}`, 'error');
+            get().addToast(failureDetail, 'error');
+            get().updateAgentActionTrace(traceId, 'failed', failureDetail ?? 'Aggregation failed.', {
                 metadata: {
                     cardId,
                     requestedMode: payload.mode,
@@ -1648,6 +1657,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                           aggregatedData: aggregateResult.rows,
                           isSampledResult: aggregationMeta.sampled,
                           aggregationMeta,
+                          valueSchema: aggregateResult.schema,
                       }
                     : existing,
             ),

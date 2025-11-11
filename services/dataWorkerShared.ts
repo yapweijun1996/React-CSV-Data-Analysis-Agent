@@ -1,6 +1,7 @@
 import { profileData, robustParseFloat } from '../utils/dataProcessor';
 import type { CsvRow, ColumnProfile } from '../types';
 import type { ColumnStoreRecord } from './csvAgentDb';
+import { ERROR_CODES, type ErrorCode } from './errorCodes';
 import type {
     AggregatePayload,
     AggregateResult,
@@ -23,7 +24,7 @@ export const DEFAULT_AGG_SAMPLE = 3000;
 export const DEFAULT_TIMEOUT_MS = 3000;
 
 const columnMetadataError = (): never => {
-    throw Object.assign(new Error(COLUMN_METADATA_ERROR), { code: COLUMN_METADATA_ERROR });
+    throw Object.assign(new Error(ERROR_CODES.COLUMN_METADATA_MISSING), { code: ERROR_CODES.COLUMN_METADATA_MISSING as ErrorCode });
 };
 
 const simpleHash = (input: string): string => {
@@ -140,6 +141,7 @@ const aggregateRows = (
     rows: CsvRow[],
     payload: AggregatePayload,
     totalRows: number,
+    columnProfiles?: ColumnProfile[],
 ): AggregateResult => {
     const mode: AggregateMode = payload.mode ?? 'sample';
     if (!Array.isArray(payload.metrics) || payload.metrics.length === 0) {
@@ -147,7 +149,7 @@ const aggregateRows = (
     }
 
     if (mode === 'full' && !payload.allowFullScan) {
-        throw new Error('FULL_SCAN_BLOCKED');
+        throw Object.assign(new Error(ERROR_CODES.FULL_SCAN_BLOCKED), { code: ERROR_CODES.FULL_SCAN_BLOCKED as ErrorCode });
     }
 
     const by = payload.by ?? [];
@@ -215,11 +217,22 @@ const aggregateRows = (
         });
     }
 
+    const resolveColumnType = (columnName?: string): string => {
+        if (!columnName || !columnProfiles) return 'number';
+        const profile = columnProfiles.find(col => col.name === columnName);
+        if (!profile) return 'number';
+        if (profile.type === 'numerical') return 'number';
+        return profile.type;
+    };
+
     const schema: Array<{ name: string; type: string }> = [
-        ...by.map(column => ({ name: column, type: 'string' })),
+        ...by.map(column => ({
+            name: column,
+            type: columnProfiles?.find(col => col.name === column)?.type ?? 'string',
+        })),
         ...payload.metrics.map(metric => ({
             name: metric.as ?? `${metric.fn}_${metric.column ?? 'rows'}`,
-            type: 'number',
+            type: metric.fn === 'count' ? 'number' : resolveColumnType(metric.column),
         })),
     ];
 
@@ -326,23 +339,27 @@ export const runAggregate = async (
         if (rows.length === 0) {
             throw new Error('No rows available for aggregation.');
         }
-        const result = aggregateRows(rows, payload, columnRecord.rowCount);
+        const result = aggregateRows(rows, payload, columnRecord.rowCount, columnRecord.columns);
         result.provenance.requestedMode = requestedMode;
         return result;
     } catch (error) {
-        if (error instanceof Error && (error as any).message === 'FULL_SCAN_BLOCKED') {
+        if (error instanceof Error && ((error as any).code === ERROR_CODES.FULL_SCAN_BLOCKED || error.message === ERROR_CODES.FULL_SCAN_BLOCKED)) {
             throw Object.assign(new Error('Full scan requires confirmation.'), {
-                code: 'FULL_SCAN_BLOCKED',
+                code: ERROR_CODES.FULL_SCAN_BLOCKED as ErrorCode,
             });
         }
         if (error instanceof Error && error.message === 'AGG_TIMEOUT' && mode === 'full') {
             const fallbackRows = await deps.readSampledRows(payload.datasetId, sampleSize);
-            const fallback = aggregateRows(fallbackRows, { ...payload, mode: 'sample' }, columnRecord.rowCount);
+            const fallback = aggregateRows(fallbackRows, { ...payload, mode: 'sample' }, columnRecord.rowCount, columnRecord.columns);
             fallback.provenance.warnings.push('Full scan timed out. Showing sampled results.');
             fallback.provenance.requestedMode = requestedMode;
             fallback.provenance.downgradedFrom = requestedMode;
             fallback.provenance.downgradeReason = 'timeout';
+            fallback.provenance.warnings.push('AGG_TIMEOUT');
             return fallback;
+        }
+        if (error instanceof Error && error.message === 'AGG_TIMEOUT') {
+            throw Object.assign(error, { code: ERROR_CODES.AGG_TIMEOUT as ErrorCode });
         }
         throw error;
     }

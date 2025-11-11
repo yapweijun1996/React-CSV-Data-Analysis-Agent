@@ -6,6 +6,7 @@ import {
     runAggregate,
     type DataWorkerDeps,
 } from '../services/dataWorkerShared';
+import { ERROR_CODES, type ErrorCode } from '../services/errorCodes';
 import type { AggregatePayload, ProfileResult, SampleResult, AggregateResult } from '../services/dataToolTypes';
 
 declare const self: DedicatedWorkerGlobalScope;
@@ -55,6 +56,7 @@ interface WorkerFailure {
     reason: string;
     hint?: string;
     durationMs: number;
+    code?: ErrorCode;
 }
 
 type WorkerResponse<T = any> = WorkerSuccess<T> | WorkerFailure;
@@ -95,10 +97,12 @@ const handleRequest = async (request: WorkerRequest): Promise<WorkerResponse> =>
     } catch (error) {
         const reason = error instanceof Error ? error.message : 'Unknown worker error';
         let hint: string | undefined;
+        let code = (error as any)?.code as ErrorCode | undefined;
         if (error instanceof Error && (error as any).code === 'FULL_SCAN_BLOCKED') {
             hint = 'Please confirm full scan with the user, then retry with allowFullScan=true.';
         } else if (reason.includes('IndexedDB')) {
             hint = 'Browser blocked IndexedDB in this worker; falling back to main thread.';
+            code = code ?? ERROR_CODES.INDEXEDDB_UNAVAILABLE;
         } else {
             hint = 'Retry with a smaller sample or adjust your query.';
         }
@@ -107,6 +111,7 @@ const handleRequest = async (request: WorkerRequest): Promise<WorkerResponse> =>
             ok: false,
             reason,
             hint,
+            code,
             durationMs: performance.now() - startedAt,
         };
     }

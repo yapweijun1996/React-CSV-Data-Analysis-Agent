@@ -158,48 +158,60 @@ export const persistCleanDataset = async (options: {
         const columnStore = tx.objectStore(COLUMNS_STORE);
         const provenanceStore = tx.objectStore(PROVENANCE_STORE);
 
-        const index = cleanStore.index('by_dataset');
-        let existingCursor = await index.openCursor(datasetId);
-        while (existingCursor) {
-            await existingCursor.delete();
-            existingCursor = await existingCursor.continue();
-        }
         const rowsChunks = chunkRows(rows, chunkSize);
         const now = new Date().toISOString();
-        for (let index = 0; index < rowsChunks.length; index += 1) {
-            const chunk = rowsChunks[index];
-            const record: CleanRowChunkRecord = {
-                chunkId: `${datasetId}-chunk-${index}`,
+
+        try {
+            const index = cleanStore.index('by_dataset');
+            let existingCursor = await index.openCursor(datasetId);
+            while (existingCursor) {
+                await existingCursor.delete();
+                existingCursor = await existingCursor.continue();
+            }
+
+            for (let index = 0; index < rowsChunks.length; index += 1) {
+                const chunk = rowsChunks[index];
+                const record: CleanRowChunkRecord = {
+                    chunkId: `${datasetId}-chunk-${index}`,
+                    datasetId,
+                    rowCount: chunk.length,
+                    startRow: index * chunkSize,
+                    endRow: index * chunkSize + chunk.length - 1,
+                    rows: chunk,
+                    createdAt: now,
+                };
+                await cleanStore.put(record);
+            }
+
+            const columnPayload: ColumnStoreRecord = {
                 datasetId,
-                rowCount: chunk.length,
-                startRow: index * chunkSize,
-                endRow: index * chunkSize + chunk.length - 1,
-                rows: chunk,
-                createdAt: now,
+                columnCount: columns.length,
+                columns,
+                rowCount: rows.length,
+                updatedAt: now,
             };
-            await cleanStore.put(record);
+            await columnStore.put(columnPayload);
+
+            const provenancePayload: DatasetProvenanceRecord = {
+                datasetId,
+                fileName: provOverrides.fileName,
+                bytes: provOverrides.bytes,
+                checksum: provOverrides.checksum,
+                cleanedAt: provOverrides.cleanedAt,
+            };
+            await provenanceStore.put(provenancePayload);
+
+            await tx.done;
+            return { chunkCount: rowsChunks.length, rowCount: rows.length };
+        } catch (error) {
+            try {
+                tx.abort();
+            } catch {
+                // ignore abort errors
+            }
+            await tx.done.catch(() => undefined);
+            throw error;
         }
-
-        const columnPayload: ColumnStoreRecord = {
-            datasetId,
-            columnCount: columns.length,
-            columns,
-            rowCount: rows.length,
-            updatedAt: now,
-        };
-        await columnStore.put(columnPayload);
-
-        const provenancePayload: DatasetProvenanceRecord = {
-            datasetId,
-            fileName: provOverrides.fileName,
-            bytes: provOverrides.bytes,
-            checksum: provOverrides.checksum,
-            cleanedAt: provOverrides.cleanedAt,
-        };
-        await provenanceStore.put(provenancePayload);
-
-        await tx.done;
-        return { chunkCount: rowsChunks.length, rowCount: rows.length };
     };
 
     try {
