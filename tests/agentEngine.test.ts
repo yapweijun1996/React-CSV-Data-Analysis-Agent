@@ -87,7 +87,7 @@ await run('dom_action without target downgrades to text response', () => {
     assert.ok(downgraded?.stateTag, 'downgraded action must include stateTag');
 });
 
-await run('plan-only responses remain a single plan_state_update', () => {
+await run('plan-only responses emit plan_state_update plus text confirmation', () => {
     const context = buildContext({
         planState: null,
         pendingSteps: [],
@@ -120,11 +120,13 @@ await run('plan-only responses remain a single plan_state_update', () => {
         },
     };
     const result = engine.run({ actions: [planAction] }, context);
-    assert.strictEqual(result.actions.length, 1);
-    const [singleAction] = result.actions;
-    assert.strictEqual(singleAction.responseType, 'plan_state_update');
-    assert.ok(singleAction.stateTag, 'plan-only action should include a stateTag');
-    assert.ok(singleAction.planState?.updatedAt, 'plan-only plan_state_update should retain updatedAt after stamping');
+    assert.strictEqual(result.actions.length, 2);
+    const [planActionResult, textAction] = result.actions;
+    assert.strictEqual(planActionResult.responseType, 'plan_state_update');
+    assert.ok(planActionResult.stateTag, 'plan-only action should include a stateTag');
+    assert.ok(planActionResult.planState?.updatedAt, 'plan-only plan_state_update should retain updatedAt after stamping');
+    assert.strictEqual(textAction.responseType, 'text_response');
+    assert.match(textAction.text ?? '', /计划/i);
 });
 
 await run('auto-heal injects fallback reason when missing', () => {
@@ -156,7 +158,7 @@ await run('greeting playbook response carries numbered quick choices', () => {
     assert.ok((textAction?.text ?? '').includes('1)'), 'greeting text should include numbered prefixes');
 });
 
-await run('plan-only turns trim stray text responses down to a single plan_state_update', () => {
+await run('plan-only turns trim AI text but still append confirmation message', () => {
     const context = buildContext({
         planState: null,
         pendingSteps: [],
@@ -191,6 +193,8 @@ await run('plan-only turns trim stray text responses down to a single plan_state
         text: 'Hi there!',
     };
     const result = engine.run({ actions: [planAction, textAction] }, context);
-    assert.strictEqual(result.actions.length, 1, 'plan-only turns should emit a single action');
+    assert.strictEqual(result.actions.length, 2);
     assert.strictEqual(result.actions[0].responseType, 'plan_state_update');
+    assert.strictEqual(result.actions[1].responseType, 'text_response');
+    assert.match(result.actions[1].text ?? '', /计划已更新/);
 });

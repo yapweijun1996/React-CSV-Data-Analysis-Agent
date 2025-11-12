@@ -46,7 +46,7 @@ import {
     ConversationMemoryChunk,
 } from '../types';
 import type { GraphObservation } from '@/src/graph/schema';
-import { executePlan, applyTopNWithOthers, PlanExecutionError } from '../utils/dataProcessor';
+import { executePlan, applyTopNWithOthers, PlanExecutionError, executeJavaScriptDataTransform, profileData } from '../utils/dataProcessor';
 import {
     generateAnalysisPlans,
     generateSummary,
@@ -61,7 +61,7 @@ import { getReportsList, getReport, deleteReport, getSettings, saveSettings, CUR
 import { vectorStore } from '../services/vectorStore';
 import { runWithBusyState } from '../utils/runWithBusy';
 import { preparePlanForExecution } from '../utils/planValidation';
-import { buildColumnAliasMap } from '../utils/columnAliases';
+import { buildColumnAliasMap, cloneRowsWithAliases, normalizeRowsFromAliases } from '../utils/columnAliases';
 import { exportToPng, exportToCsv, exportToHtml } from '../utils/exportUtils';
 import type { AppStore, StoreActions, StoreState } from './appStoreTypes';
 import { createChatSlice } from './slices/chatSlice';
@@ -75,8 +75,6 @@ import type { GraphClientEvent, GraphWorkerEvent } from '../src/graph/contracts'
 import { buildAggregatePayloadForPlan } from '@/utils/aggregatePayload';
 import { graphDataTools, GraphToolExecutionError, type GraphToolResponse } from '@/tools/data';
 import { isGraphToolOption } from '@/src/graph/toolSpecs';
-import { toLangChainPlanGraphPayload } from '@/services/langchain/types';
-import type { LangChainPlanEnvelope, LangChainPlanTelemetry } from '@/services/langchain/types';
 import type { PlanGenerationUsageEntry } from '@/services/ai/planGenerator';
 import { normalizeIntentContract } from '@/services/ai/intentContract';
 import type { IntentContract } from '@/services/ai/intentContract';
@@ -307,7 +305,6 @@ const buildConversationTranscript = (messages: ChatMessage[], startIndex = 0): s
         .join('\n');
 
 const graphObservationKindLabel: Record<string, string> = {
-    langchain_plan: 'LangChain Plan',
     aggregate_plan: 'Plan Preview',
     profile_dataset: 'Dataset Profile',
     normalize_invoice_month: 'Invoice Month Cleanup',
@@ -485,61 +482,6 @@ const formatGraphObservationForLog = (observation: GraphObservation): string => 
         parts.push(`${Math.round(meta.durationMs)} ms`);
     }
     return parts.join(' · ');
-};
-
-const formatLangChainTelemetry = (telemetry?: LangChainPlanTelemetry): string => {
-    if (!telemetry) {
-        return 'latency n/a, tokens n/a, cost n/a';
-    }
-    const latencyText = `${Math.round(telemetry.latencyMs)} ms`;
-    const usage = telemetry.tokenUsage;
-    let tokenText = 'tokens n/a';
-    if (usage) {
-        const prompt = usage.promptTokens;
-        const completion = usage.completionTokens;
-        const total =
-            usage.totalTokens ??
-            (prompt != null || completion != null
-                ? (prompt ?? 0) + (completion ?? 0)
-                : undefined);
-        if (prompt != null || completion != null) {
-            tokenText = `tokens ${prompt ?? '?'} in / ${completion ?? '?'} out${
-                total != null ? ` (${total} total)` : ''
-            }`;
-        } else if (total != null) {
-            tokenText = `tokens ${total}`;
-        }
-    }
-    const costText =
-        telemetry.estimatedCostUsd != null ? `$${telemetry.estimatedCostUsd.toFixed(4)}` : 'cost n/a';
-    return `${latencyText}, ${tokenText}, cost ${costText}`;
-};
-
-const shouldUseLangChainPlannerForReply = (
-    state: AppStore,
-    optionId?: string | null,
-    freeText?: string | null,
-): boolean => {
-    if (!state.langChainPlannerEnabled || !state.isApiKeySet) return false;
-    if (isGraphToolOption(optionId)) return false;
-    if (!state.datasetHash || !state.csvData || state.csvData.data.length === 0) return false;
-    if (!state.columnProfiles.length) return false;
-    // Allow free-text requests or non-tool options.
-    return Boolean(optionId || (freeText && freeText.length > 0));
-};
-
-const runLangChainPlannerEnvelope = async (state: AppStore): Promise<LangChainPlanEnvelope> => {
-    if (!state.datasetHash || !state.csvData) {
-        throw new Error('Dataset unavailable for LangChain planner.');
-    }
-    const { generateLangChainPlanEnvelope } = await import('@/services/langchain/planBridge');
-    return generateLangChainPlanEnvelope({
-        datasetId: state.datasetHash,
-        columns: state.columnProfiles,
-        rows: state.csvData.data,
-        settings: state.settings,
-        addProgress: state.addProgress,
-    });
 };
 
 const QUICK_ACTION_LABELS: Record<QuickActionId, { label: string; helper: string }> = {
@@ -776,8 +718,6 @@ const buildSerializableAppState = (state: AppStore): AppState => ({
     agentAwaitingPromptId: state.agentAwaitingPromptId,
     graphToolInFlight: state.graphToolInFlight,
     analysisTimeline: state.analysisTimeline,
-    langChainLastPlan: state.langChainLastPlan,
-    langChainPlannerEnabled: state.langChainPlannerEnabled,
     useLangGraphRuntime: state.useLangGraphRuntime,
     llmUsageLog: state.llmUsageLog,
     graphObservations: state.graphObservations,
@@ -984,8 +924,6 @@ const initialAppState: AppState = {
     graphSessionId: null,
     graphLastToolSummary: null,
     graphToolInFlight: null,
-    langChainLastPlan: null,
-    langChainPlannerEnabled: true,
     useLangGraphRuntime: true,
     llmUsageLog: [],
     graphObservations: [],
@@ -1351,6 +1289,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         ...fileUploadSlice,
         ...aiFilterSlice,
         busyRunId: null,
+        graphActiveRunId: null,
         isCancellationRequested: false,
         aiFilterRunId: null,
         abortControllers: {},
@@ -1751,7 +1690,8 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                     get().addProgress(`Graph error: ${event.message}`, 'error');
                     return;
                 case 'graph/pipeline': {
-                    const prevObservations = get().graphObservations ?? [];
+                    const current = get();
+                    const prevObservations = current.graphObservations ?? [];
                     const prevIds = new Set(prevObservations.map(obs => obs.id));
                     const incomingObservations = event.state.observations ?? [];
                     const newObservations = incomingObservations.filter(obs => !prevIds.has(obs.id));
@@ -1763,7 +1703,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                             : null;
                     const nextPhase = event.phase ?? current.graphPhase ?? 'idle';
                     const nextLoopBudget = event.loopBudget ?? current.graphLoopBudget;
-                    set(current => ({
+                    set(state => ({
                         graphStatus: 'ready',
                         graphStatusMessage: `Pipeline node ${event.node} emitted ${event.actions.length} action(s).`,
                         graphLastReadyAt: heartbeat,
@@ -1771,19 +1711,23 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                         graphLoopBudget: nextLoopBudget,
                         graphAwaitPrompt: awaitingPrompt,
                         graphAwaitPromptId: awaitingPrompt?.promptId ?? null,
-                        graphAwaitReason: awaitingPrompt ? awaitActionReason ?? current.graphAwaitReason ?? null : null,
+                        graphAwaitReason: awaitingPrompt ? awaitActionReason ?? state.graphAwaitReason ?? null : null,
                         agentAwaitingUserInput: Boolean(awaitingPrompt),
-                        graphSessionId: event.state.sessionId ?? current.graphSessionId ?? null,
+                        graphSessionId: event.state.sessionId ?? state.graphSessionId ?? null,
                         graphAwaitHistory: awaitingPrompt
-                            ? appendAwaitHistoryEntry(current.graphAwaitHistory, awaitingPrompt, heartbeat)
-                            : current.graphAwaitHistory,
-                        graphObservations: event.state.observations ?? current.graphObservations,
+                            ? appendAwaitHistoryEntry(state.graphAwaitHistory, awaitingPrompt, heartbeat)
+                            : state.graphAwaitHistory,
+                        graphObservations: event.state.observations ?? state.graphObservations,
                     }));
                     newObservations.forEach(obs => {
                         get().addProgress(formatGraphObservationForLog(obs));
                     });
                     if (awaitingPrompt) {
                         get().addProgress(`Graph awaiting your choice: ${awaitingPrompt.question}`);
+                        if (current.graphActiveRunId) {
+                            get().endBusy(current.graphActiveRunId);
+                            set({ graphActiveRunId: null });
+                        }
                     } else {
                         const loopText = nextLoopBudget
                             ? `Loop ${nextLoopBudget.actsUsed}/${nextLoopBudget.maxActs}${
@@ -1802,6 +1746,10 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                         set({
                             agentAwaitingUserInput: false,
                         });
+                        if (current.graphActiveRunId) {
+                            get().endBusy(current.graphActiveRunId);
+                            set({ graphActiveRunId: null });
+                        }
                     }
                     get().processGraphActions(event.actions ?? []);
                     return;
@@ -1839,14 +1787,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         const prefixedText = promptSnapshot
             ? `【${promptSnapshot.question}】\n${responseLine}`
             : responseLine;
-        const userMessage: ChatMessage = {
-            sender: 'user',
-            text: prefixedText,
-            timestamp: new Date(),
-            type: 'user_message',
-        };
         set(state => ({
-            chatHistory: [...state.chatHistory, userMessage],
             graphAwaitHistory: promptSnapshot
                 ? markAwaitHistoryAnswered(state.graphAwaitHistory, promptSnapshot.promptId ?? null, respondedAt, {
                       label: optionLabel ?? trimmedFreeText ?? null,
@@ -1856,40 +1797,124 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 : state.graphAwaitHistory,
         }));
         activeBus.post({ type: 'graph/userReply', optionId, freeText: trimmedFreeText, timestamp: Date.now() });
-        const state = get();
-        const useLangChain = shouldUseLangChainPlannerForReply(state, optionId, trimmedFreeText);
-        if (!useLangChain) {
-            activeBus.post({ type: 'graph/runPipeline', payload: { reason: 'user_reply' }, timestamp: Date.now() });
-            return;
-        }
-        try {
-            const envelope = await runLangChainPlannerEnvelope(state);
-            get().setLangChainLastPlan(envelope.plan);
-            get().appendPlannerObservation(envelope.observation);
-            get().updatePlannerPlanState(envelope.planState);
-            recordPlanTelemetryBatch('langchain_plan', envelope.usageLog);
-            const telemetryText = formatLangChainTelemetry(envelope.telemetry);
-            get().addProgress(`↺ LangChain plan ready (${telemetryText}) — ${envelope.summary}`);
-            activeBus.post({
-                type: 'graph/runPipeline',
-                payload: {
-                    reason: 'langchain_plan',
-                    langChainPlan: toLangChainPlanGraphPayload(envelope),
-                },
-                timestamp: Date.now(),
-            });
-        } catch (error) {
-            const reason = error instanceof Error ? error.message : String(error);
-            get().addProgress(`LangChain planner failed: ${reason}，改用本地 planner。`, 'error');
-            activeBus.post({
-                type: 'graph/runPipeline',
-                payload: { reason: 'langchain_plan_fallback' },
-                timestamp: Date.now(),
-            });
-        }
+        get().addProgress(`📝 你回应了 Graph 提问：${responseLine}`);
+        await get().handleChatMessage(prefixedText);
     },
         processGraphActions: async (actions: AiAction[]) => {
             if (!Array.isArray(actions) || actions.length === 0) return;
+            const applyExecuteJsCodeAction = async (action: AiAction) => {
+                const dataset = get().csvData;
+                if (!dataset) {
+                    get().addProgress('Graph 数据转换失败：暂无 CSV 数据。', 'error');
+                    return;
+                }
+                const jsBody =
+                    typeof action.code?.jsFunctionBody === 'string' ? action.code.jsFunctionBody.trim() : '';
+                if (!jsBody) {
+                    get().addProgress('Graph 数据转换失败：缺少 jsFunctionBody。', 'error');
+                    return;
+                }
+                if (get().pendingDataTransform) {
+                    get().addProgress('已有待确认的数据转换，请先在界面上确认或放弃该变更。', 'error');
+                    return;
+                }
+
+                const aliasMap = get().columnAliasMap ?? {};
+                const extractColumnNames = (profiles: ColumnProfile[], rows: CsvRow[]): string[] => {
+                    if (profiles.length > 0) {
+                        return profiles.map(profile => profile.name);
+                    }
+                    const sampleRow = rows.find(row => row && typeof row === 'object');
+                    return sampleRow ? Object.keys(sampleRow) : [];
+                };
+                const formatColumnPreview = (columns: string[]): string => {
+                    if (!columns.length) return '(none)';
+                    const preview = columns.slice(0, 8).join(', ');
+                    return columns.length > 8 ? `${preview}, …` : preview;
+                };
+
+                const dataWithAliases = cloneRowsWithAliases(dataset.data, aliasMap);
+                const transformResult = executeJavaScriptDataTransform(dataWithAliases, jsBody);
+                if (transformResult.meta?.noOp) {
+                    get().addProgress('数据转换未检测到变化。', 'error');
+                    return;
+                }
+                const normalizedRows = normalizeRowsFromAliases(transformResult.data, aliasMap);
+                const newData: CsvData = { ...dataset, data: normalizedRows };
+                const updatedProfiles = profileData(newData.data);
+                const updatedAliasMap = buildColumnAliasMap(updatedProfiles.map(p => p.name));
+                const beforeColumns = extractColumnNames(get().columnProfiles ?? [], dataset.data);
+                const afterColumns = extractColumnNames(updatedProfiles, normalizedRows);
+                const removedColumns = beforeColumns.filter(name => !afterColumns.includes(name));
+                const addedColumns = afterColumns.filter(name => !beforeColumns.includes(name));
+                const columnDiffSummary = [
+                    `Before (${beforeColumns.length}): ${formatColumnPreview(beforeColumns)}`,
+                    `After (${afterColumns.length}): ${formatColumnPreview(afterColumns)}`,
+                    removedColumns.length ? `Removed: ${formatColumnPreview(removedColumns)}` : null,
+                    addedColumns.length ? `Added: ${formatColumnPreview(addedColumns)}` : null,
+                ]
+                    .filter(Boolean)
+                    .join('\n');
+
+                const rowsBefore = transformResult.meta?.rowsBefore ?? dataset.data.length;
+                const rowsAfter = transformResult.meta?.rowsAfter ?? normalizedRows.length;
+                const removedRows = transformResult.meta?.removedRows ?? 0;
+                const addedRows = transformResult.meta?.addedRows ?? 0;
+                const modifiedRows = transformResult.meta?.modifiedRows ?? 0;
+                const summaryParts = [
+                    `${rowsBefore} → ${rowsAfter} rows`,
+                    removedRows ? `${removedRows} removed` : null,
+                    addedRows ? `${addedRows} added` : null,
+                    modifiedRows ? `${modifiedRows} modified` : null,
+                ].filter(Boolean);
+                const summaryDescription = summaryParts.length > 0 ? summaryParts.join(', ') : 'dataset updated';
+                const pendingTransformId = `transform-${Date.now()}`;
+                get().queuePendingDataTransform({
+                    id: pendingTransformId,
+                    summary: summaryDescription,
+                    explanation: action.code?.explanation ?? 'AI-generated data transform',
+                    meta: transformResult.meta,
+                    previewRows: normalizedRows.slice(0, 5),
+                    nextData: newData,
+                    nextColumnProfiles: updatedProfiles,
+                    nextAliasMap: updatedAliasMap,
+                    sourceCode: jsBody,
+                    createdAt: new Date().toISOString(),
+                    beforeColumns,
+                    afterColumns,
+                });
+
+                const aiMessage: ChatMessage = {
+                    sender: 'ai',
+                    text: `我已草拟一项数据转换（${summaryDescription}），请在仪表板上方的横幅中确认或取消。\n\n${columnDiffSummary}`,
+                    timestamp: new Date(),
+                    type: 'ai_message',
+                };
+                set(prev => ({ chatHistory: [...prev.chatHistory, aiMessage] }));
+                dispatchGraphToolResult({
+                    description: action.reason ?? '数据转换',
+                    summary: `数据转换：${summaryDescription}`,
+                    meta: {
+                        source: 'full',
+                        rows: rowsAfter,
+                        processedRows: rowsBefore,
+                        totalRows: rowsAfter,
+                        durationMs: 0,
+                        warnings: [],
+                        summary: summaryDescription,
+                    } as GraphToolMeta & { summary?: string },
+                    payload: {
+                        kind: 'execute_js_code',
+                        rowsBefore,
+                        rowsAfter,
+                        removedRows,
+                        addedRows,
+                        modifiedRows,
+                        column: (action.meta as any)?.removalContext?.column ?? null,
+                        values: (action.meta as any)?.removalContext?.values ?? null,
+                    },
+                });
+            };
             for (const action of actions) {
                 const intentContract = resolveIntentContract(action.intentContract);
                 switch (action.responseType) {
@@ -1954,11 +1979,15 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                         }
                         if (action.toolCall || action.meta?.toolCall) {
                             await executeGraphToolCall(action.toolCall ?? action.meta?.toolCall);
+                        } else if (action.code?.jsFunctionBody) {
+                            await applyExecuteJsCodeAction(action);
                         } else if (intentContract) {
                             get().addProgress(
                                 `Intent ${intentContract.intent} 尚未实现对应的执行器（tool=${intentContract.tool ?? 'n/a'}）。`,
                                 'error',
                             );
+                        } else {
+                            get().addProgress('execute_js_code 缺少可执行的 payload。', 'error');
                         }
                         break;
                 case 'text_response':
@@ -3144,12 +3173,6 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             graphVersion: null,
             graphLastReadyAt: null,
         });
-    },
-    setLangChainLastPlan: plan => {
-        set({ langChainLastPlan: plan });
-    },
-    setLangChainPlannerEnabled: enabled => {
-        set({ langChainPlannerEnabled: enabled });
     },
     rerunAggregationForCard: async (cardId, options = {}) => {
         const card = get().analysisCards.find(c => c.id === cardId);

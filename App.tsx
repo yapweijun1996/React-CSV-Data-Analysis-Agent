@@ -12,7 +12,6 @@ import { BusyStatusBar } from './components/BusyStatusBar';
 import { ToastStack } from './components/ToastStack';
 import { DataTransformGuard } from './components/DataTransformGuard';
 import { useAppStore } from './store/useAppStore';
-import { LangChainDebugPanel } from './components/LangChainDebugPanel';
 import { LlmUsagePanel } from './components/LlmUsagePanel';
 import { ExternalCsvPayload } from './types';
 
@@ -135,7 +134,6 @@ const App: React.FC = () => {
                     </div>
                 )}
                 <div className="mt-8 space-y-8">
-                    <LangChainDebugPanel />
                     <LlmUsagePanel />
                 </div>
                 <div className="mt-8">

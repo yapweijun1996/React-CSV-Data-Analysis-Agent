@@ -1299,7 +1299,6 @@ const graphObservationKindMeta: Record<
         label: string;
     }
 > = {
-    langchain_plan: { icon: '🧠', label: 'LangChain Plan' },
     aggregate_plan: { icon: '📈', label: 'Plan Preview' },
     profile_dataset: { icon: '📋', label: 'Dataset Profile' },
     normalize_invoice_month: { icon: '🧼', label: 'Invoice Month Clean' },

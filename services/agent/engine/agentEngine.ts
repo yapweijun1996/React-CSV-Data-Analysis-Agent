@@ -349,6 +349,27 @@ export class AgentEngine {
 
         let actions = limitAtomicActions(candidates, context, isPlanOnly);
 
+        if (isPlanOnly) {
+            const hasTextResponse = actions.some(action => action.responseType === 'text_response');
+            if (!hasTextResponse) {
+                const primaryStepId =
+                    actions[0]?.stepId ??
+                    context.planState?.currentStepId ??
+                    context.pendingSteps[0]?.id ??
+                    'plan_ack';
+                actions = [
+                    ...actions,
+                    {
+                        type: 'text_response',
+                        responseType: 'text_response',
+                        stepId: primaryStepId,
+                        reason: 'Confirm the updated plan with the user before continuing.',
+                        text: '计划已更新，请确认是否要继续执行下一步。',
+                    },
+                ];
+            }
+        }
+
         const isGreetingIntent = GREETING_INTENTS.has(context.detectedIntent?.intent ?? '');
         const shouldEnforceGreeting = isGreetingIntent && !isPlanOnly;
         if (shouldEnforceGreeting) {
@@ -360,7 +381,7 @@ export class AgentEngine {
 
         const healed = runAutoHealPipeline(actions, context, hint => this.stateTagFactory.mint(context.now, hint), {
             stampOnly: isPlanOnly,
-            maxActions: isPlanOnly ? 1 : undefined,
+            maxActions: isPlanOnly ? 2 : undefined,
         });
         return {
             ...rawResponse,

@@ -19,17 +19,17 @@ This advanced tool allows users to have a conversation with their data, asking f
     *   **Resizable Columns & Pagination**: Easily navigate large datasets with resizable columns and a paginated view.
     *   **Verify Transformations**: See the direct results of any data cleaning or transformation the AI performs on your data.
 
-*   **Planner + ReAct Framework（即將換成 LangChain/LangGraph）**: 目前的 ReAct/Planner 邏輯已開始用 LangChain prompt + LangGraph pipeline 逐步取代。短期內仍有自研 orchestrator，接下來的版本會由 LangChain/LangGraph 接管工具調用與 state machine，讓規則和可視化更容易維護。
+*   **Planner + LangGraph Runtime**: 所有 Observe→Plan→Act→Verify 階段都由瀏覽器內建的 LangGraph worker 處理。UI 只負責把最新上下文序列化成 LLM 請求並播放 worker 的回傳動作，不再有第二套 `AgentWorker` 流程。
     *   **Explicit Planning**: Before starting a multi-step task, the AI will state its plan inside the `reason` field (e.g., "Plan: 1. Filter the data. 2. Create a chart. 3. Summarize the results."). This makes its strategy clear from the outset.
     *   **Sequential Execution**: The agent executes the plan by chaining multiple tools together in a sequence. It can perform a data transformation, then create several analysis cards from the new data, and finally provide a text summary that synthesizes the results, all in response to a single prompt.
     *   **Full Self-Explanation**: The agent remembers every action it takes, including the initial data preparation script. You can ask it, "Where did the 'Software Product 10' value come from?", and it will consult its logs to explain exactly how it cleaned and standardized the raw data, building trust and ensuring reproducibility.
-    *   **Strict Schema Validation**: Every AI action is validated against a Gemini-compatible JSON schema that requires a full plan payload. If the AI omits required fields, the planner automatically requests a corrected response before anything touches your data.
+    *   **Textual Guardrails (No JSON Schema)**: 我們改用 `phaseConventions` 文字指令與 LangGraph 守門程式檢查，避免嵌入脆弱的 JSON schema。LLM 若漏欄位會被 worker 擋下並回覆錯誤訊息。
     *   **Automation Safeguards**: The DOM action handler inspects the current card state before applying changes. Redundant requests (e.g., switching to a chart type that is already active or re-showing data that is visible) are skipped with a friendly explanation so the UI never “thrashes”.
     *   **Visible Execution Phases**: The UI surfaces each planner phase (Observing → Planning → Acting → Verifying → Reporting, plus Clarifying/Retrying states) so you always know what the assistant is doing, why it might pause, and when it needs your input.
 
 ### 🧩 Agent Architecture Notes
 
-Curious how the planner loop, action registry, and middleware stack interact? See [`docs/agent-worker.md`](docs/agent-worker.md) for a deeper dive into the `AgentWorker` orchestration layer, how it validates AI responses, and where to hook in new tools.
+想了解 LangGraph worker 如何統一規劃/動作流程？詳見 [`docs/langgraph-runtime.md`](docs/langgraph-runtime.md)。
 
 *   **AI-Powered Data Preparation**: The assistant acts as a data engineer. It intelligently analyzes your raw CSV for complex structures, summary rows, or other anomalies. It then writes and executes a custom JavaScript function on-the-fly to clean and reshape your data into a tidy, analysis-ready format.
 *   **Traceable Prep Log & Learning Cache**: Every AI cleanup now emits a structured *Preparation Log* stored in IndexedDB. It captures which columns were touched, what rule ran, and the exact row deltas so you can answer “how was this column cleaned?” with evidence. In parallel, each high-signal chart is saved as a *Memory Snapshot* (summary, schema, sample rows, quality score). The planner reuses these snapshots to bias future plan generation and quality gates toward proven views—no backend required.

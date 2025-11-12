@@ -58,6 +58,19 @@ export const verifyNode = ({ state }: PipelineContext): NodeResult => {
                 const threshold = payload.threshold as number | undefined;
                 return `异常检测 ${column}：找到 ${count ?? 0} 条（阈值 ${threshold ?? '?'}）`;
             }
+            case 'execute_js_code': {
+                const column = typeof payload.column === 'string' ? payload.column : null;
+                const removedRows = payload.removedRows as number | undefined;
+                const addedRows = payload.addedRows as number | undefined;
+                const modifiedRows = payload.modifiedRows as number | undefined;
+                const parts = [
+                    removedRows ? `移除 ${removedRows}` : null,
+                    addedRows ? `新增 ${addedRows}` : null,
+                    modifiedRows ? `更新 ${modifiedRows}` : null,
+                ].filter(Boolean);
+                const detail = parts.length ? parts.join(' / ') : '转换完成';
+                return column ? `数据转换 ${column}：${detail}` : `数据转换：${detail}`;
+            }
             case 'aggregate_plan': {
                 const planTitle = (payload.planTitle as string) ?? pendingVerification.description;
                 const rowCount = payload.rows as number | undefined;

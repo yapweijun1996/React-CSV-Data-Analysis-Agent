@@ -58,6 +58,7 @@ export interface StoreState extends AppState {
     interactiveSelectionFilter: SelectionDrilldownFilter | null;
     agentPromptMetrics: AgentPromptMetric[];
     aggregationModePreference: 'sample' | 'full';
+    graphActiveRunId: string | null;
 }
 
 export interface StoreActions {
@@ -165,8 +166,6 @@ export interface StoreActions {
     runGraphPipeline: (payload?: Record<string, unknown>) => void;
     sendGraphUserReply: (optionId?: string, freeText?: string) => Promise<void>;
     processGraphActions: (actions: AiAction[]) => Promise<void> | void;
-    setLangChainLastPlan: (plan: AnalysisPlan | null) => void;
-    setLangChainPlannerEnabled: (enabled: boolean) => void;
     resetConversationMemory: () => void;
     maybeCompactConversationMemory: () => Promise<void>;
     setActiveSchemaPhase: (phase: AgentSchemaPhase) => void;

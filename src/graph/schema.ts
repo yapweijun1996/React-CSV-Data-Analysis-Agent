@@ -5,6 +5,7 @@ import type {
     AwaitUserOption,
     AnalysisPlan,
     GraphToolMeta,
+    PendingPlanIntent,
 } from '@/types';
 
 export type StepStatus = 'ready' | 'in_progress' | 'done';
@@ -30,6 +31,8 @@ export interface PendingPlanSummary {
     id: string;
     summary: string;
     plan: AnalysisPlan | null;
+    intent: PendingPlanIntent;
+    metadata: Record<string, unknown> | null;
     lastUpdatedAt: string;
     createdAt: string;
 }

@@ -457,6 +457,8 @@ export type GraphToolKind = 'profile_dataset' | 'normalize_invoice_month' | 'det
 
 export type GraphToolSource = 'sample' | 'full';
 
+export type PendingPlanIntent = 'analysis' | 'remove_rows';
+
 export interface GraphToolTelemetry {
     latencyMs?: number;
     estimatedCostUsd?: number | null;
@@ -555,8 +557,6 @@ export interface AppState {
     graphSessionId: string | null;
     graphLastToolSummary: string | null;
     graphToolInFlight: GraphToolInFlightSnapshot | null;
-    langChainLastPlan: AnalysisPlan | null;
-    langChainPlannerEnabled: boolean;
     useLangGraphRuntime: boolean;
     llmUsageLog: LlmUsageEntry[];
     graphObservations: GraphObservation[];
@@ -594,6 +594,10 @@ export interface AgentActionMeta {
     resumePlanner?: boolean;
     promptId?: string;
     toolCall?: GraphToolCall;
+    removalContext?: {
+        column?: string;
+        values?: string[];
+    };
 }
 
 export interface AiAction {

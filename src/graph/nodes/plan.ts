@@ -1,186 +1,92 @@
-import type { PipelineContext, NodeResult } from './types';
-import type { AiAction, GraphToolCall } from '@/types';
-import type { GraphObservation, StepStatus } from '../schema';
-import { getGraphToolSpec } from '../toolSpecs';
-import type { LangChainPlanGraphPayload } from '@/services/langchain/types';
-import { isLangChainPlanGraphPayload } from '@/services/langchain/types';
-import type { IntentContract } from '@/services/ai/intentContract';
+import type { GraphNode } from './types';
+import type { AiAction, AgentSchemaPhase } from '@/types';
+import type { GraphPhase } from '../schema';
+import { enforceTurnGuards } from '../guards';
+import { generateChatResponse } from '@/services/aiService';
+import { isGraphLlmTurnPayload } from '../payloads';
 
-const createPlanId = () => `plan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-const MAX_OBSERVATIONS = 20;
+const mapPhaseToSchema = (phase: GraphPhase): AgentSchemaPhase => {
+    switch (phase) {
+        case 'act':
+            return 'act';
+        case 'plan':
+        case 'observe':
+            return 'plan';
+        default:
+            return 'talk';
+    }
+};
 
-const createToolAction = (spec: {
-    toolCall: GraphToolCall;
-    stepId: string;
-    reason: string;
-    text: string;
-    intentContract?: IntentContract;
-}): AiAction => ({
-    type: 'execute_js_code',
-    responseType: 'execute_js_code',
-    stepId: spec.stepId,
-    stateTag: `ts${Date.now().toString(36)}-tool`,
+const buildTextResponse = (text: string): AiAction => ({
+    type: 'text_response',
+    responseType: 'text_response',
+    reason: 'Notify user about the planner status.',
+    stepId: 'graph-plan',
+    stateTag: `ts${Date.now().toString(36)}-plan`,
     timestamp: new Date().toISOString(),
-    reason: spec.reason,
-    text: spec.text,
-    meta: {
-        toolCall: spec.toolCall,
-    },
-    toolCall: spec.toolCall,
-    intentContract: spec.intentContract ?? null,
+    text,
 });
 
-const trimObservations = (existing: GraphObservation[], next: GraphObservation): GraphObservation[] => {
-    const updated = [...existing, next];
-    return updated.length > MAX_OBSERVATIONS ? updated.slice(updated.length - MAX_OBSERVATIONS) : updated;
-};
-
-const extractLangChainPlan = (payload?: Record<string, unknown>): LangChainPlanGraphPayload | null => {
-    if (!payload) return null;
-    const candidate = (payload as { langChainPlan?: unknown }).langChainPlan;
-    return isLangChainPlanGraphPayload(candidate) ? candidate : null;
-};
-
-const handleLangChainPlan = (state: PipelineContext['state'], plan: LangChainPlanGraphPayload): NodeResult => {
-    const planAction: AiAction = {
-        type: 'plan_state_update',
-        responseType: 'plan_state_update',
-        stepId: plan.stepId,
-        stateTag: `ts${Date.now().toString(36)}-plan`,
-        timestamp: new Date().toISOString(),
-        reason: `LangChain 计划完成：${plan.summary}`,
-        planState: plan.planState,
-        meta: {
-            source: 'langchain',
-            telemetry: plan.telemetry,
-        },
-    };
-
-const pendingPlanEntry = {
-    id: plan.stepId,
-    summary: plan.summary,
-    plan: plan.plan,
-    lastUpdatedAt: new Date().toISOString(),
-    createdAt: new Date().toISOString(),
-};
-
-    const observation: GraphObservation = {
-        id: `langchain-plan-${Date.now().toString(36)}`,
-        kind: 'langchain_plan',
-        payload: {
-            summary: plan.summary,
-            telemetry: plan.telemetry,
-        },
-        at: new Date().toISOString(),
-    };
-
-    return {
-        state: {
-            ...state,
-            planId: plan.planId,
-            steps: plan.planState.steps ?? state.steps,
-            currentStepId: plan.planState.currentStepId ?? plan.stepId,
-            pendingPlan: pendingPlanEntry,
-            pendingUserReply: null,
-            phase: 'plan',
-            observations: trimObservations(state.observations, observation),
-        },
-        actions: [planAction],
-        label: 'plan',
-    };
-};
-
-export const planNode = ({ state, payload }: PipelineContext): NodeResult => {
+export const planNode: GraphNode = async ({ state, payload }) => {
     const baseState = {
         ...state,
         phase: 'plan',
         updatedAt: new Date().toISOString(),
     };
-    const langChainPlan = extractLangChainPlan(payload);
-    if (langChainPlan) {
-        return handleLangChainPlan(baseState, langChainPlan);
+
+    if (!payload || !isGraphLlmTurnPayload(payload)) {
+        return {
+            state: baseState,
+            actions: [],
+            label: 'plan',
+        };
     }
 
-    const pendingReply = state.pendingUserReply;
-    if (!pendingReply) {
-        return { state: baseState, actions: [], label: 'plan' };
+    try {
+        const response = await generateChatResponse(
+            payload.columns,
+            payload.chatHistory,
+            payload.userMessage,
+            payload.cardContext,
+            payload.settings,
+            payload.aiCoreAnalysisSummary,
+            payload.currentView,
+            payload.longTermMemory,
+            payload.recentObservations,
+            payload.activePlanState,
+            payload.dataPreparationPlan,
+            payload.recentActionTraces,
+            payload.rawDataFilterSummary,
+            {
+                phase: mapPhaseToSchema(baseState.phase),
+            },
+        );
+
+        const actions = Array.isArray(response.actions) ? response.actions : [];
+        const guardResult = enforceTurnGuards(baseState, actions);
+        if (!guardResult.ok || !guardResult.nextState) {
+            const reason = guardResult.violations?.[0]?.message ?? 'LLM response failed validation.';
+            return {
+                state: baseState,
+                actions: [buildTextResponse(reason)],
+                label: 'plan',
+            };
+        }
+
+        return {
+            state: guardResult.nextState,
+            actions: guardResult.acceptedActions ?? actions,
+            label: 'plan',
+        };
+    } catch (error) {
+        return {
+            state: baseState,
+            actions: [
+                buildTextResponse(
+                    `LLM 出错：${error instanceof Error ? error.message : String(error)}。請稍後重試。`,
+                ),
+            ],
+            label: 'plan',
+        };
     }
-
-    const toolSpec = pendingReply.optionId ? getGraphToolSpec(pendingReply.optionId) : undefined;
-
-    if (!toolSpec) {
-        throw new Error('LangChain plan payload missing; cannot construct plan node actions.');
-    }
-
-    const readableSummary =
-        pendingReply.freeText ||
-        pendingReply.options.find(option => option.id === pendingReply.optionId)?.label ||
-        pendingReply.optionId ||
-        pendingReply.question;
-    const planId = state.planId ?? createPlanId();
-    const currentStepId = toolSpec.stepId;
-    const step: { id: string; intent: string; label: string; status: StepStatus } = {
-        id: currentStepId,
-        intent: toolSpec.stepIntent,
-        label: toolSpec.stepLabel,
-        status: 'in_progress',
-    };
-    const planAction: AiAction = {
-        type: 'plan_state_update',
-        responseType: 'plan_state_update',
-        stepId: currentStepId,
-        stateTag: `ts${Date.now().toString(36)}-plan`,
-        timestamp: new Date().toISOString(),
-        reason: `根据你的选择更新计划：${readableSummary}`,
-        planState: {
-            planId,
-            goal: toolSpec?.planGoal ?? '完成你刚刚点选的分析任务',
-            contextSummary: pendingReply.question,
-            progress:
-                toolSpec?.planProgress ?? `收到你的选择「${readableSummary}」，准备执行。`,
-            nextSteps: [step],
-            steps: [step],
-            currentStepId,
-            blockedBy: null,
-            observationIds: [],
-            confidence: 0.62,
-            updatedAt: new Date().toISOString(),
-            stateTag: `ts${Date.now().toString(36)}-planstate`,
-        },
-    };
-
-    const actions: AiAction[] = [planAction];
-    actions.push(
-        createToolAction({
-            toolCall: toolSpec.toolCall,
-            stepId: toolSpec.stepId,
-            reason: toolSpec.reason,
-            text: toolSpec.text,
-            intentContract: toolSpec.intentContract,
-        }),
-    );
-
-    const manualPendingPlan =
-        pendingReply.plan != null
-            ? {
-                  id: currentStepId,
-                  summary: readableSummary,
-                  plan: pendingReply.plan,
-                  createdAt: pendingReply.at,
-                  lastUpdatedAt: new Date().toISOString(),
-              }
-            : null;
-
-    return {
-        state: {
-            ...baseState,
-            planId,
-            steps: [step],
-            currentStepId,
-            pendingPlan: manualPendingPlan,
-            pendingUserReply: null,
-        },
-        actions,
-        label: 'plan',
-    };
 };

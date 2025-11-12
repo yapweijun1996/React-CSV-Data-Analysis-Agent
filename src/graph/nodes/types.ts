@@ -13,4 +13,4 @@ export interface PipelineContext {
     payload?: Record<string, unknown>;
 }
 
-export type GraphNode = (context: PipelineContext) => NodeResult;
+export type GraphNode = (context: PipelineContext) => NodeResult | Promise<NodeResult>;
