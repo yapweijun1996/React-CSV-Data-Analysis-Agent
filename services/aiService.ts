@@ -7,7 +7,8 @@ export {
     type PlanGenerationWarning,
 } from './ai/planGenerator';
 export { generateChatResponse } from './ai/chatResponder';
-export type { ChatResponseOptions, PromptProfile } from './ai/chatResponder';
+export type { ChatResponseOptions } from './ai/chatResponder';
+export type { PromptProfile } from '@/types';
 export { generateFilterFunction } from './ai/filterGenerator';
 export { 
     generateSummary, 

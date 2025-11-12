@@ -8,6 +8,7 @@ interface InvocationResult {
     actions: AiAction[];
     halted: boolean;
     label: string;
+    telemetry?: Record<string, unknown> | null;
 }
 
 export class LangGraphBuilder {
@@ -51,6 +52,7 @@ export class LangGraphMachine {
         const aggregatedActions: AiAction[] = [];
         let halted = false;
         let lastLabel = currentNodeName;
+        let lastTelemetry: Record<string, unknown> | null = null;
 
         while (currentNodeName) {
             const handler = this.nodes.get(currentNodeName);
@@ -63,6 +65,9 @@ export class LangGraphMachine {
                 aggregatedActions.push(...result.actions);
             }
             lastLabel = result.label ?? currentNodeName;
+            if (result.telemetry) {
+                lastTelemetry = result.telemetry;
+            }
             if (result.halted) {
                 halted = true;
                 break;
@@ -75,6 +80,7 @@ export class LangGraphMachine {
             actions: aggregatedActions,
             halted,
             label: lastLabel ?? 'complete',
+            telemetry: lastTelemetry,
         };
     }
 }

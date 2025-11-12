@@ -11,6 +11,7 @@ import {
     AgentObservation,
     AgentPlanState,
     AiAction,
+    PromptProfile,
 } from '../../types';
 import { callGemini, callOpenAI, type LlmUsageMetrics } from './apiClient';
 import { createChatPrompt, createChatPromptForStage, createPlanPrimerPrompt } from '../promptTemplates';
@@ -19,13 +20,6 @@ import { StateTagFactory } from '../agent/stateTagFactory';
 import type { AgentSchemaPhase } from '@/types';
 import { coerceChatResponseJson } from './chatResponseParser';
 import { describePhaseConvention } from './phaseConventions';
-
-export interface PromptProfile {
-    mode: 'plan_only' | 'full';
-    charCount: number;
-    estimatedTokens: number;
-    promptLabel: string;
-}
 
 export interface ChatResponseOptions {
     signal?: AbortSignal;

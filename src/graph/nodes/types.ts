@@ -6,6 +6,7 @@ export interface NodeResult {
     actions: AiAction[];
     halted?: boolean;
     label: string;
+    telemetry?: Record<string, unknown> | null;
 }
 
 export interface PipelineContext {

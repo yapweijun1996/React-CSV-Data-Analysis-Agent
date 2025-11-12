@@ -1,4 +1,4 @@
-import type { AiAction, GraphToolMeta } from '@/types';
+import type { AiAction, GraphToolMeta, LlmTurnTelemetry } from '@/types';
 import type { GraphPhase, GraphState, LoopBudget } from './schema';
 
 export type GraphClientEvent =
@@ -85,7 +85,8 @@ export type GraphWorkerEvent =
           state: GraphState;
           phase: GraphPhase;
           loopBudget: LoopBudget;
-          telemetry?: Record<string, unknown> | null;
+          telemetry?: LlmTurnTelemetry | null;
+          requestId?: string | null;
           timestamp: number;
       };
 

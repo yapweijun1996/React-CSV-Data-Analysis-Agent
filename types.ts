@@ -229,6 +229,39 @@ export interface AgentPromptMetric {
     runId?: string | null;
 }
 
+export interface PromptProfile {
+    mode: 'plan_only' | 'full';
+    charCount: number;
+    estimatedTokens: number;
+    promptLabel: string;
+}
+
+export interface LlmTurnSampleTierInfo {
+    value: number | null;
+    label: string;
+    userConfirmedFullScan: boolean;
+}
+
+export interface LlmTurnTokenUsage {
+    provider: 'openai' | 'gemini';
+    model: string;
+    promptTokens?: number;
+    completionTokens?: number;
+    totalTokens?: number;
+    operation?: string;
+    estimatedCostUsd?: number | null;
+}
+
+export interface LlmTurnTelemetry {
+    requestId: string | null;
+    promptProfile?: PromptProfile;
+    tokenUsage?: LlmTurnTokenUsage;
+    sampleTier?: LlmTurnSampleTierInfo;
+    userMessageChars?: number;
+    promptCharCountHint?: number;
+    latencyMs?: number;
+}
+
 export interface LlmUsageEntry {
     id: string;
     timestamp: string;
@@ -429,6 +462,7 @@ export type GraphRuntimeStatus = 'idle' | 'connecting' | 'ready' | 'error';
 export interface AwaitUserOption {
     id: string;
     label: string;
+    metadata?: Record<string, unknown> | null;
 }
 
 export interface AwaitUserPayload {

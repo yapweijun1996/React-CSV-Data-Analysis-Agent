@@ -2,9 +2,20 @@ import type { GraphLlmTurnPayload } from '@/src/graph/payloads';
 import { GRAPH_PAYLOAD_KIND_LLM_TURN } from '@/src/graph/payloads';
 import type { AppStore } from '@/store/appStoreTypes';
 import type { AnalysisCardData, CardContext } from '@/types';
+import { buildAskUserPrompt } from './askUserPrompt';
 
 const MAX_CARD_CONTEXT = 5;
 const MAX_AGG_ROWS = 50;
+
+const clampSampleTierIndex = (length: number, index: number): number => {
+    if (length === 0) return 0;
+    if (index < 0) return 0;
+    if (index >= length) return length - 1;
+    return index;
+};
+
+const describeSampleTierValue = (value: number | null): string =>
+    value === null ? 'Full dataset' : `${value.toLocaleString()} rows`;
 
 const buildCardContext = (cards: AnalysisCardData[]): CardContext[] =>
     cards
@@ -39,20 +50,31 @@ export const buildGraphLlmTurnPayload = (
     message: string,
     store: AppStore,
     requestId: string,
-): GraphLlmTurnPayload => ({
-    kind: GRAPH_PAYLOAD_KIND_LLM_TURN,
-    requestId,
-    userMessage: message,
-    columns: store.columnProfiles ?? [],
-    chatHistory: store.chatHistory ?? [],
-    cardContext: buildCardContext(store.analysisCards ?? []),
-    settings: store.settings,
-    aiCoreAnalysisSummary: store.aiCoreAnalysisSummary ?? null,
-    currentView: store.currentView,
-    longTermMemory: collectLongTermMemory(store),
-    recentObservations: store.graphObservations ?? [],
-    activePlanState: store.plannerSession?.planState ?? null,
-    dataPreparationPlan: store.dataPreparationPlan ?? null,
-    recentActionTraces: store.agentActionTraces.slice(-10),
-    rawDataFilterSummary: describeRawDataFilter(store),
-});
+): GraphLlmTurnPayload => {
+    const samplePolicy = store.samplePolicy;
+    const tierIndex = clampSampleTierIndex(samplePolicy.tiers.length, samplePolicy.currentIndex);
+    const activeSampleTier = samplePolicy.tiers[tierIndex] ?? null;
+    const sampleTierLabel = describeSampleTierValue(activeSampleTier);
+    return {
+        kind: GRAPH_PAYLOAD_KIND_LLM_TURN,
+        requestId,
+        userMessage: message,
+        promptCharCountHint: message.length,
+        columns: store.columnProfiles ?? [],
+        chatHistory: store.chatHistory ?? [],
+        cardContext: buildCardContext(store.analysisCards ?? []),
+        settings: store.settings,
+        aiCoreAnalysisSummary: store.aiCoreAnalysisSummary ?? null,
+        currentView: store.currentView,
+        longTermMemory: collectLongTermMemory(store),
+        recentObservations: store.graphObservations ?? [],
+        activePlanState: store.plannerSession?.planState ?? null,
+        dataPreparationPlan: store.dataPreparationPlan ?? null,
+        recentActionTraces: store.agentActionTraces.slice(-10),
+        rawDataFilterSummary: describeRawDataFilter(store),
+        activeSampleTier,
+        sampleTierLabel,
+        sampleTierConfirmed: samplePolicy.userConfirmedFullScan,
+        askUserPrompt: buildAskUserPrompt(store),
+    };
+};

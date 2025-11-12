@@ -1,7 +1,13 @@
 import type { GetState, SetState } from 'zustand';
 import type { AppState, ColumnProfile, DataPreparationPlan, DataTransformMeta, Report } from '../../types';
 import type { AppStore } from '../appStoreTypes';
-import { processCsv, profileData, executeJavaScriptDataTransform } from '../../utils/dataProcessor';
+import {
+    processCsv,
+    profileData,
+    executeJavaScriptDataTransform,
+    autoUnpivotWideDataset,
+    type AutoUnpivotResult,
+} from '../../utils/dataProcessor';
 import { buildColumnAliasMap } from '../../utils/columnAliases';
 import { generateDataPreparationPlan } from '../../services/aiService';
 import { vectorStore } from '../../services/vectorStore';

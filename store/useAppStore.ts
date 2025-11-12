@@ -31,6 +31,7 @@ import {
     AgentPhaseState,
     AgentPhase,
     AgentPromptMetric,
+    PromptProfile,
     CsvRow,
     QuickActionId,
     DatasetRuntimeConfig,
@@ -44,6 +45,7 @@ import {
     GraphToolMeta,
     ConversationMemoryState,
     ConversationMemoryChunk,
+    LlmTurnTelemetry,
 } from '../types';
 import type { GraphObservation } from '@/src/graph/schema';
 import { executePlan, applyTopNWithOthers, PlanExecutionError, executeJavaScriptDataTransform, profileData } from '../utils/dataProcessor';
@@ -95,10 +97,12 @@ import {
     ensureDatasetRuntimeConfig,
     updateDatasetRuntimeConfig,
     saveCardResult,
+    appendAuditLogEntry,
     type CardDataRef,
     type ViewStoreRecord,
     type CardKind,
     type MemorySnapshotInput,
+    type AuditLogSeverity,
 } from '../services/csvAgentDb';
 import {
     rememberDatasetId,
@@ -112,6 +116,12 @@ import { getGroupableColumnCandidates } from '../utils/groupByInference';
 import { AUTO_FULL_SCAN_ROW_THRESHOLD, mergeRuntimeConfig } from '../services/runtimeConfig';
 import { estimateLlmCostUsd } from '../services/ai/llmPricing';
 import type { LlmUsageMetrics } from '@/services/ai/apiClient';
+import {
+    reportAwaitBusyInvariant,
+    type AwaitBusyInvariantViolation,
+    type AwaitBusyInvariantViolationCode,
+    type AwaitBusySnapshot,
+} from '@/utils/awaitBusyInvariant';
 
 const createClarificationId = () =>
     typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -340,139 +350,6 @@ const formatGraphObservationForLog = (observation: GraphObservation): string => 
                 parts.push(`Tok ${tokenParts.join(' / ')}`);
             }
         }
-
-        const resolveIntentContract = (raw: unknown): IntentContract | null => {
-            if (!raw) return null;
-            try {
-                return normalizeIntentContract(raw as IntentContract);
-            } catch (error) {
-                console.warn('[IntentContract] Unable to normalize contract.', error);
-                get().addProgress('Intent contract validation failed，已忽略该工具提示。', 'error');
-                return null;
-            }
-        };
-
-        const buildToolCallFromIntent = (contract: IntentContract): GraphToolCall | null => {
-            switch (contract.tool) {
-                case 'csv.profile':
-                    return {
-                        kind: 'profile_dataset',
-                        params: contract.args.limit ? { sampleSize: contract.args.limit } : undefined,
-                    };
-                case 'csv.clean_invoice_month':
-                    return {
-                        kind: 'normalize_invoice_month',
-                        params: { column: contract.args.column ?? 'InvoiceMonth' },
-                    };
-                case 'csv.detect_outliers':
-                    return {
-                        kind: 'detect_outliers',
-                        params: {
-                            valueColumn: contract.args.valueColumn ?? contract.args.column ?? 'Amount',
-                            multiplier: contract.args.thresholdMultiplier ?? 2,
-                        },
-                    };
-                default:
-                    return null;
-            }
-        };
-
-        const executeIntentSideEffects = async (contract: IntentContract): Promise<boolean> => {
-            switch (contract.tool) {
-                case 'csv.aggregate': {
-                    const dataset = get().csvData;
-                    if (!dataset) {
-                        get().addProgress('无法执行聚合：尚未载入数据集。', 'error');
-                        return false;
-                    }
-                    const plan = planFromAggregateIntent(contract);
-                    if (!plan) {
-                        get().addProgress('聚合指令缺少必要的列信息（需要 valueColumn 或 column）。', 'error');
-                        return false;
-                    }
-                    const runId = createRunId();
-                    const cards = await runPlanWithChatLifecycle(plan, dataset, runId);
-                    if (!cards || cards.length === 0) {
-                        get().addProgress(`聚合 "${plan.title}" 未产生可用图表。`, 'error');
-                        return false;
-                    }
-                    get().addProgress(`已根据指令完成 "${plan.title}" 图表。`);
-                    return true;
-                }
-                case 'ui.remove_card': {
-                    const cardId = contract.args.cardId ?? null;
-                    if (!cardId) {
-                        get().addProgress('无法删除卡片：contract 缺少 cardId。', 'error');
-                        return false;
-                    }
-                    const domAction: DomAction = {
-                        toolName: 'removeCard',
-                        target: { byId: cardId },
-                        args: { cardId },
-                    };
-                    get().executeDomAction(domAction);
-                    return true;
-                }
-                case 'idb.save_view': {
-                    const datasetId = get().datasetHash;
-                    if (!datasetId) {
-                        get().addProgress('无法保存视图：尚未载入数据集。', 'error');
-                        return false;
-                    }
-                    const cardId = contract.args.cardId ?? null;
-                    if (!cardId) {
-                        get().addProgress('无法保存视图：contract 缺少 cardId。', 'error');
-                        return false;
-                    }
-                    const card = get().analysisCards.find(c => c.id === cardId);
-                    if (!card) {
-                        get().addProgress(`无法保存视图：找不到卡片 ${cardId}。`, 'error');
-                        return false;
-                    }
-                    if (!card.aggregatedData || card.aggregatedData.length === 0) {
-                        get().addProgress(`无法保存视图 "${card.plan.title}"：卡片没有数据。`, 'error');
-                        return false;
-                    }
-                    if (card.dataRefId) {
-                        get().addProgress(`视图 "${card.plan.title}" 已保存，无需重复操作。`);
-                        return true;
-                    }
-                    const schema = card.valueSchema ?? deriveSchemaFromRows(card.aggregatedData);
-                    const dataRef: CardDataRef = {
-                        schema,
-                        rows: card.aggregatedData,
-                        sampled: card.isSampledResult ?? card.aggregationMeta?.sampled ?? false,
-                        source: 'aggregate',
-                        planSnapshot: card.plan,
-                    };
-                    const viewTitle = contract.args.viewTitle ?? card.plan.title ?? 'Saved view';
-                    const queryHash = card.queryHash ?? `manual-${Date.now().toString(36)}`;
-                    try {
-                        const savedId = await saveCardResult({
-                            datasetId,
-                            title: viewTitle,
-                            kind: inferCardKind(card.plan),
-                            queryHash,
-                            explainer: card.summary,
-                            dataRef,
-                        });
-                        set(state => ({
-                            analysisCards: state.analysisCards.map(existing =>
-                                existing.id === cardId ? { ...existing, dataRefId: savedId, queryHash } : existing,
-                            ),
-                        }));
-                        get().addProgress(`视图 "${viewTitle}" 已保存，可在“保存的视图”中复用。`);
-                        return true;
-                    } catch (error) {
-                        const reason = error instanceof Error ? error.message : String(error);
-                        get().addProgress(`保存视图失败：${reason}`, 'error');
-                        return false;
-                    }
-                }
-                default:
-                    return false;
-            }
-        };
         if (telemetry.estimatedCostUsd != null) {
             parts.push(`$${telemetry.estimatedCostUsd.toFixed(4)}`);
         } else if (telemetry.latencyMs != null) {
@@ -991,6 +868,88 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         });
     };
 
+    const formatPromptProfileSummary = (profile?: PromptProfile | null): string | null => {
+        if (!profile) return null;
+        return `Prompt ${profile.charCount} chars (~${profile.estimatedTokens} tok, ${profile.promptLabel})`;
+    };
+
+    const describeSampleTierTelemetry = (sample?: LlmTurnTelemetry['sampleTier']): string | null => {
+        if (!sample) return null;
+        const label = sample.value === null ? 'Full dataset' : `${sample.value.toLocaleString()} rows`;
+        return `Tier ${label}${sample.userConfirmedFullScan ? ' (user-approved full scan)' : ''}`;
+    };
+
+    const handleGraphTurnTelemetry = (telemetry?: LlmTurnTelemetry | null) => {
+        if (!telemetry) return;
+        const summaryParts: string[] = [];
+        if (telemetry.requestId) {
+            summaryParts.push(`req ${telemetry.requestId}`);
+        }
+        const promptSummary = formatPromptProfileSummary(telemetry.promptProfile);
+        if (promptSummary) {
+            summaryParts.push(promptSummary);
+        } else if (typeof telemetry.promptCharCountHint === 'number') {
+            summaryParts.push(`Prompt ≈${telemetry.promptCharCountHint} chars`);
+        }
+        const tierSummary = describeSampleTierTelemetry(telemetry.sampleTier);
+        if (tierSummary) {
+            summaryParts.push(tierSummary);
+        }
+        if (typeof telemetry.latencyMs === 'number') {
+            summaryParts.push(`${Math.round(telemetry.latencyMs)} ms`);
+        }
+        get().addProgress(`Graph LLM turn: ${summaryParts.join(' · ')}`);
+        const usage = telemetry.tokenUsage;
+        if (usage?.provider && usage?.model) {
+            const contextLabel = telemetry.promptProfile?.promptLabel ?? 'graph.turn';
+            get().recordLlmUsage({
+                provider: usage.provider,
+                model: usage.model,
+                promptTokens: usage.promptTokens,
+                completionTokens: usage.completionTokens,
+                totalTokens: usage.totalTokens,
+                estimatedCostUsd: usage.estimatedCostUsd ?? undefined,
+                context: `${contextLabel}.${telemetry.sampleTier?.label ?? 'tier_unknown'}`,
+            });
+        }
+    };
+
+    const resolveIntentContract = (raw: unknown): IntentContract | null => {
+        if (!raw) return null;
+        try {
+            return normalizeIntentContract(raw as IntentContract);
+        } catch (error) {
+            console.warn('[IntentContract] Unable to normalize contract.', error);
+            get().addProgress('Intent contract validation failed，已忽略该工具提示。', 'error');
+            return null;
+        }
+    };
+
+    const buildToolCallFromIntent = (contract: IntentContract): GraphToolCall | null => {
+        switch (contract.tool) {
+            case 'csv.profile':
+                return {
+                    kind: 'profile_dataset',
+                    params: contract.args.limit ? { sampleSize: contract.args.limit } : undefined,
+                };
+            case 'csv.clean_invoice_month':
+                return {
+                    kind: 'normalize_invoice_month',
+                    params: { column: contract.args.column ?? 'InvoiceMonth' },
+                };
+            case 'csv.detect_outliers':
+                return {
+                    kind: 'detect_outliers',
+                    params: {
+                        valueColumn: contract.args.valueColumn ?? contract.args.column ?? 'Amount',
+                        multiplier: contract.args.thresholdMultiplier ?? 2,
+                    },
+                };
+            default:
+                return null;
+        }
+    };
+
     const beginGraphTool = (toolCall: GraphToolCall) => {
         const snapshot: GraphToolInFlightSnapshot = {
             kind: toolCall.kind,
@@ -1044,6 +1003,280 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         get().addProgress(summary, 'error');
         get().appendPlannerObservation(buildToolErrorObservation(kind, friendly, payload, code));
         return summary;
+    };
+
+    const executeIntentSideEffects = async (contract: IntentContract): Promise<boolean> => {
+        switch (contract.tool) {
+            case 'csv.aggregate': {
+                const dataset = get().csvData;
+                if (!dataset) {
+                    get().addProgress('无法执行聚合：尚未载入数据集。', 'error');
+                    return false;
+                }
+                const plan = planFromAggregateIntent(contract);
+                if (!plan) {
+                    get().addProgress('聚合指令缺少必要的列信息（需要 valueColumn 或 column）。', 'error');
+                    return false;
+                }
+                const datasetId = get().datasetHash;
+                const rowCountHint = get().datasetProfile?.rowCount ?? dataset.data.length;
+                const aggregateCall: GraphToolCall = {
+                    kind: 'aggregate_plan',
+                    params: { planTitle: plan.title ?? 'analysis' },
+                };
+                beginGraphTool(aggregateCall);
+                try {
+                    const preview = await graphDataTools.aggregatePlan({
+                        plan,
+                        datasetId,
+                        csvData: dataset,
+                        rowCountHint,
+                        options: {
+                            preferredMode: get().aggregationModePreference,
+                            runtimeConfig: get().datasetRuntimeConfig,
+                        },
+                    });
+                    recordGraphToolSuccess(preview, { description: plan.title ?? 'analysis' });
+                    const card = await ingestAggregatePlanResult(plan, preview);
+                    if (!card) {
+                        get().addProgress(`聚合 "${plan.title}" 未产生可用图表。`, 'error');
+                        return false;
+                    }
+                    get().addProgress(`已根据指令完成 "${plan.title}" 图表。`);
+                    return true;
+                } catch (error) {
+                    const graphError = error instanceof GraphToolExecutionError ? error : null;
+                    recordGraphToolFailure(
+                        'aggregate_plan',
+                        graphError?.code,
+                        graphError?.message ?? (error instanceof Error ? error.message : String(error)),
+                        graphError?.suggestion,
+                    );
+                    return false;
+                } finally {
+                    endGraphTool();
+                }
+            }
+            case 'ui.remove_card': {
+                const cardId = contract.args.cardId ?? null;
+                if (!cardId) {
+                    get().addProgress('无法删除卡片：contract 缺少 cardId。', 'error');
+                    return false;
+                }
+                const domAction: DomAction = {
+                    toolName: 'removeCard',
+                    target: { byId: cardId },
+                    args: { cardId },
+                };
+                get().executeDomAction(domAction);
+                return true;
+            }
+            case 'idb.save_view': {
+                const datasetId = get().datasetHash;
+                if (!datasetId) {
+                    get().addProgress('无法保存视图：尚未载入数据集。', 'error');
+                    return false;
+                }
+                const cardId = contract.args.cardId ?? null;
+                if (!cardId) {
+                    get().addProgress('无法保存视图：contract 缺少 cardId。', 'error');
+                    return false;
+                }
+                const card = get().analysisCards.find(c => c.id === cardId);
+                if (!card) {
+                    get().addProgress(`无法保存视图：找不到卡片 ${cardId}。`, 'error');
+                    return false;
+                }
+                if (!card.aggregatedData || card.aggregatedData.length === 0) {
+                    get().addProgress(`无法保存视图 "${card.plan.title}"：卡片没有数据。`, 'error');
+                    return false;
+                }
+                if (card.dataRefId) {
+                    get().addProgress(`视图 "${card.plan.title}" 已保存，无需重复操作。`);
+                    return true;
+                }
+                const schema = card.valueSchema ?? deriveSchemaFromRows(card.aggregatedData);
+                const dataRef: CardDataRef = {
+                    schema,
+                    rows: card.aggregatedData,
+                    sampled: card.isSampledResult ?? card.aggregationMeta?.sampled ?? false,
+                    source: 'aggregate',
+                    planSnapshot: card.plan,
+                };
+                const viewTitle = contract.args.viewTitle ?? card.plan.title ?? 'Saved view';
+                const queryHash = card.queryHash ?? `manual-${Date.now().toString(36)}`;
+                try {
+                    const savedId = await saveCardResult({
+                        datasetId,
+                        title: viewTitle,
+                        kind: inferCardKind(card.plan),
+                        queryHash,
+                        explainer: card.summary,
+                        dataRef,
+                    });
+                    set(state => ({
+                        analysisCards: state.analysisCards.map(existing =>
+                            existing.id === cardId ? { ...existing, dataRefId: savedId, queryHash } : existing,
+                        ),
+                    }));
+                    get().addProgress(`视图 "${viewTitle}" 已保存，可在“保存的视图”中复用。`);
+                    return true;
+                } catch (error) {
+                    const reason = error instanceof Error ? error.message : String(error);
+                    get().addProgress(`保存视图失败：${reason}`, 'error');
+                    return false;
+                }
+            }
+            default:
+                return false;
+        }
+    };
+
+    const isAggregateResultPayload = (value: unknown): value is AggregateResult => {
+        if (!value || typeof value !== 'object') return false;
+        const maybe = value as { provenance?: unknown };
+        return typeof maybe.provenance === 'object' && maybe.provenance !== null;
+    };
+
+    const buildAggregationMetaFromResponse = (
+        response: GraphToolResponse<'aggregate_plan'>,
+        aggregateResult: AggregateResult | null,
+    ): AggregationMeta => {
+        const provenance = aggregateResult?.provenance;
+        const nowIso = new Date().toISOString();
+        return {
+            mode: provenance?.mode ?? (response.meta.source === 'full' ? 'full' : 'sample'),
+            sampled: provenance?.sampled ?? response.meta.source !== 'full',
+            processedRows: provenance?.processedRows ?? response.meta.processedRows ?? response.meta.rows,
+            totalRows: provenance?.totalRows ?? response.meta.totalRows ?? response.meta.rows,
+            warnings: provenance?.warnings ?? response.meta.warnings ?? [],
+            durationMs: response.meta.durationMs,
+            lastRunAt: nowIso,
+            filterCount: provenance?.filterCount,
+            requestedMode: provenance?.requestedMode,
+            downgradedFrom: provenance?.downgradedFrom,
+            downgradeReason: provenance?.downgradeReason,
+            normalization: provenance?.normalization,
+        };
+    };
+
+    const ingestAggregatePlanResult = async (
+        plan: AnalysisPlan,
+        response: GraphToolResponse<'aggregate_plan'>,
+    ): Promise<AnalysisCardData | null> => {
+        const aggregatedData = Array.isArray(response.rows) ? response.rows : [];
+        if (aggregatedData.length === 0) {
+            get().addProgress(`Graph plan "${plan.title ?? 'analysis'}" 返回空结果，已跳过。`, 'error');
+            return null;
+        }
+        const settings = get().settings;
+        let summary = `已完成 "${plan.title ?? 'analysis'}"。`;
+        try {
+            summary = await generateSummary(plan.title ?? 'analysis', aggregatedData, settings, {
+                onUsage: usage => {
+                    get().recordLlmUsage(mapUsageMetricsToEntry(usage, 'summary.generate'));
+                },
+            });
+        } catch (error) {
+            console.warn('Graph aggregate summary failed:', error);
+        }
+
+        const aggregateResult = isAggregateResultPayload(response.context) ? (response.context as AggregateResult) : null;
+        const aggregationMeta = buildAggregationMetaFromResponse(response, aggregateResult);
+        const datasetId = get().datasetHash;
+        let dataRefId: string | null = null;
+        let queryHash = aggregateResult?.provenance.queryHash ?? response.viewId ?? response.payload.viewId ?? null;
+        if (aggregateResult && datasetId) {
+            try {
+                const persistResult = await dataTools.createCardFromResult({
+                    datasetId,
+                    title: plan.title,
+                    kind: inferCardKind(plan),
+                    explainer: summary,
+                    result: aggregateResult,
+                    plan,
+                });
+                if (persistResult.ok) {
+                    dataRefId = persistResult.data.cardId;
+                } else {
+                    get().addProgress(
+                        `View cache save failed for "${plan.title}": ${persistResult.reason}`,
+                        'error',
+                    );
+                }
+            } catch (error) {
+                console.warn('Failed to persist aggregate plan result:', error);
+            }
+        }
+
+        const categoryCount = aggregatedData.length;
+        const shouldApplyDefaultTop8 = plan.chartType !== 'scatter' && categoryCount > 15;
+        const newCard: AnalysisCardData = {
+            id: `card-${Date.now()}-${Math.random()}`,
+            plan,
+            aggregatedData,
+            summary,
+            displayChartType: plan.chartType,
+            isDataVisible: false,
+            topN: shouldApplyDefaultTop8 ? 8 : plan.defaultTopN ?? null,
+            hideOthers: shouldApplyDefaultTop8 ? true : plan.defaultHideOthers ?? false,
+            disableAnimation: get().analysisCards.length > 0,
+            hiddenLabels: [],
+            dataRefId,
+            queryHash,
+            isSampledResult: aggregationMeta.sampled,
+            aggregationMeta,
+            valueSchema: response.schema ?? aggregateResult?.schema,
+        };
+
+        set(prev => ({ analysisCards: [...prev.analysisCards, newCard] }));
+
+        const cardMemoryText = `[Chart: ${plan.title}] Description: ${plan.description}. AI Summary: ${summary.split('---')[0]}`;
+        try {
+            await vectorStore.addDocument({
+                id: newCard.id,
+                text: cardMemoryText,
+                metadata: {
+                    kind: 'card',
+                    summaryLevel: 'summary',
+                    cardId: newCard.id,
+                    createdAt: new Date().toISOString(),
+                },
+            });
+            get().addProgress(`View #${newCard.id.slice(-6)} indexed for long-term memory.`);
+        } catch (error) {
+            console.warn('Failed to index view in vector store:', error);
+        }
+
+        if (datasetId && dataRefId) {
+            const warningsCount = aggregationMeta.warnings?.length ?? 0;
+            const snapshotPayload: MemorySnapshotInput = {
+                datasetId,
+                viewId: dataRefId,
+                cardId: newCard.id,
+                title: plan.title,
+                summary,
+                plan,
+                chartType: plan.chartType,
+                schema: response.schema ?? aggregateResult?.schema ?? [],
+                sampleRows: aggregatedData.slice(0, SNAPSHOT_PREVIEW_LIMIT),
+                rowCount: aggregatedData.length,
+                sampled: aggregationMeta.sampled,
+                queryHash,
+                qualityScore: computeSnapshotQualityScore(
+                    aggregatedData.length,
+                    warningsCount,
+                    aggregationMeta.sampled,
+                ),
+                tags: buildSnapshotTags(plan),
+            };
+            saveMemorySnapshot(snapshotPayload).catch(error =>
+                console.warn('Failed to persist memory snapshot for dataset cache:', error),
+            );
+        }
+
+        get().addProgress(`Graph 已完成 "${plan.title}"（${aggregatedData.length} 行）。`);
+        return newCard;
     };
 
     const executeGraphToolCall = async (toolCall?: GraphToolCall): Promise<boolean> => {
@@ -1141,34 +1374,6 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
 
     const getRunSignal = (runId?: string) => (runId ? get().createAbortController(runId)?.signal : undefined);
 
-    const runPlanWithChatLifecycle = async (plan: AnalysisPlan, data: CsvData, runId?: string): Promise<AnalysisCardData[]> => {
-        if (runId && get().isRunCancellationRequested(runId)) return [];
-        const planTitle = plan.title ?? 'your requested chart';
-        const planStartMessage: ChatMessage = {
-            sender: 'ai',
-            text: `Okay, creating a chart for "${planTitle}".`,
-            timestamp: new Date(),
-            type: 'ai_plan_start',
-        };
-        set(prev => ({ chatHistory: [...prev.chatHistory, planStartMessage] }));
-
-        const createdCards = await get().runAnalysisPipeline([plan], data, { isChatRequest: true, runId });
-
-        if (createdCards.length > 0) {
-            const cardSummary = createdCards[0].summary.split('---')[0].trim();
-            const completionMessage: ChatMessage = {
-                sender: 'ai',
-                text: `Created the chart for "${planTitle}". Here's what I observed:\n${cardSummary}`,
-                timestamp: new Date(),
-                type: 'ai_message',
-                cardId: createdCards[0].id,
-            };
-            set(prev => ({ chatHistory: [...prev.chatHistory, completionMessage] }));
-        }
-
-        return createdCards;
-    };
-
     const hydrateRuntimeConfig = async (datasetId: string | null, rowCountHint?: number) => {
         if (!datasetId) return null;
         try {
@@ -1225,7 +1430,6 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         registerClarification,
         updateClarificationStatus,
         getRunSignal,
-        runPlanWithChatLifecycle,
     });
 
     const restoreDatasetFromCache = async (datasetId: string): Promise<boolean> => {
@@ -1703,6 +1907,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                             : null;
                     const nextPhase = event.phase ?? current.graphPhase ?? 'idle';
                     const nextLoopBudget = event.loopBudget ?? current.graphLoopBudget;
+                    handleGraphTurnTelemetry(event.telemetry);
                     set(state => ({
                         graphStatus: 'ready',
                         graphStatusMessage: `Pipeline node ${event.node} emitted ${event.actions.length} action(s).`,
@@ -1949,6 +2154,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                                 },
                             });
                             recordGraphToolSuccess(preview, { description: action.plan.title ?? 'analysis' });
+                            await ingestAggregatePlanResult(action.plan, preview);
                         } catch (error) {
                             const graphError = error instanceof GraphToolExecutionError ? error : null;
                             recordGraphToolFailure(
@@ -1960,9 +2166,6 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                         } finally {
                             endGraphTool();
                         }
-                        get().addProgress(`Graph executing plan "${action.plan.title ?? 'analysis'}" via data pipeline.`);
-                        const runId = createRunId();
-                        await runPlanWithChatLifecycle(action.plan, dataset, runId);
                     }
                     break;
                     case 'execute_js_code':
@@ -3526,6 +3729,92 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
     },
 };
 });
+
+const awaitBusyInvariantContext = 'useAppStore.awaitBusy';
+const activeAwaitBusyViolationCodes = new Set<AwaitBusyInvariantViolationCode>();
+
+const logAwaitBusyViolation = (violation: AwaitBusyInvariantViolation) => {
+    console.warn(`[${awaitBusyInvariantContext}] ${violation.message}`);
+};
+
+const recordAwaitBusyAuditLog = async (payload: {
+    severity: AuditLogSeverity;
+    message: string;
+    status: 'violation' | 'recovered';
+    code?: AwaitBusyInvariantViolationCode;
+    snapshot: AwaitBusySnapshot;
+}) => {
+    try {
+        const tags = ['await_busy', payload.status];
+        if (payload.code) {
+            tags.push(payload.code);
+        }
+        await appendAuditLogEntry({
+            kind: 'await_busy_invariant',
+            severity: payload.severity,
+            message: payload.message,
+            tags,
+            details: {
+                code: payload.code ?? null,
+                snapshot: payload.snapshot,
+            },
+        });
+    } catch (error) {
+        console.warn('Failed to persist await/busy audit log entry.', error);
+    }
+};
+
+const notifyAwaitBusyViolation = (violation: AwaitBusyInvariantViolation, snapshot: AwaitBusySnapshot) => {
+    const { addProgress, addToast } = useAppStore.getState();
+    const headline = `Busy/Await state mismatch (${violation.code})`;
+    addProgress(`${headline} — ${violation.message}`, 'error');
+    addToast(`${headline}。已暫停自動化，請檢查 Await 卡片或回報。`, 'error', 6000);
+    void recordAwaitBusyAuditLog({
+        severity: 'error',
+        status: 'violation',
+        message: violation.message,
+        code: violation.code,
+        snapshot,
+    });
+};
+
+const notifyAwaitBusyRecovered = (snapshot: AwaitBusySnapshot) => {
+    const { addProgress } = useAppStore.getState();
+    addProgress('Busy/Await state back in sync ✅', 'system');
+    void recordAwaitBusyAuditLog({
+        severity: 'info',
+        status: 'recovered',
+        message: 'Busy/Await invariant recovered',
+        snapshot,
+    });
+};
+
+useAppStore.subscribe(
+    state => ({
+        isBusy: state.isBusy,
+        busyRunId: state.busyRunId,
+        agentAwaitingUserInput: state.agentAwaitingUserInput,
+        graphActiveRunId: state.graphActiveRunId,
+    }),
+    snapshot => {
+        const result = reportAwaitBusyInvariant(snapshot, {
+            context: awaitBusyInvariantContext,
+            reporter: logAwaitBusyViolation,
+        });
+        const nextCodes = new Set(result.violations.map(violation => violation.code));
+        result.violations.forEach(violation => {
+            if (!activeAwaitBusyViolationCodes.has(violation.code)) {
+                notifyAwaitBusyViolation(violation, snapshot);
+            }
+        });
+        const hadPrevious = activeAwaitBusyViolationCodes.size > 0;
+        activeAwaitBusyViolationCodes.clear();
+        nextCodes.forEach(code => activeAwaitBusyViolationCodes.add(code));
+        if (nextCodes.size === 0 && hadPrevious) {
+            notifyAwaitBusyRecovered(snapshot);
+        }
+    },
+);
 
 useAppStore.subscribe(
     state => state.chatHistory.length,

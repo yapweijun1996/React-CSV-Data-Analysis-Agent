@@ -8,6 +8,7 @@ import { actNode } from '../graph/nodes/act';
 import { verifyNode } from '../graph/nodes/verify';
 import type { AiAction } from '@/types';
 import type { GraphObservation } from '../graph/schema';
+import { isGraphLlmTurnPayload } from '../graph/payloads';
 
 declare const self: DedicatedWorkerGlobalScope;
 const ctx: DedicatedWorkerGlobalScope = self;
@@ -66,7 +67,11 @@ const extractTelemetry = (actions: AiAction[]): Record<string, unknown> | null =
 const handleRunPipeline = async (payload: Record<string, unknown>) => {
     const result = await langGraphMachine.invoke({ state: graphState, payload });
     graphState = result.state;
-    const telemetry = extractTelemetry(result.actions);
+    const telemetry = result.telemetry ?? extractTelemetry(result.actions);
+    const requestId =
+        payload && isGraphLlmTurnPayload(payload) && typeof payload.requestId === 'string'
+            ? payload.requestId
+            : undefined;
     send({
         type: 'graph/pipeline',
         node: result.label,
@@ -75,6 +80,7 @@ const handleRunPipeline = async (payload: Record<string, unknown>) => {
         phase: graphState.phase,
         loopBudget: graphState.loopBudget,
         telemetry,
+        requestId: requestId ?? null,
         timestamp: now(),
     });
 };

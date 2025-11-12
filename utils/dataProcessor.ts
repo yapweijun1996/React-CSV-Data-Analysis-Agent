@@ -655,6 +655,233 @@ export const executeJavaScriptFilter = (data: CsvRow[], jsFunctionBody: string):
     }
 };
 
+const MONTH_NAME_SET = new Set([
+    'jan',
+    'feb',
+    'mar',
+    'apr',
+    'may',
+    'jun',
+    'jul',
+    'aug',
+    'sep',
+    'sept',
+    'oct',
+    'nov',
+    'dec',
+    'january',
+    'february',
+    'march',
+    'april',
+    'june',
+    'july',
+    'august',
+    'september',
+    'october',
+    'november',
+    'december',
+]);
+
+const QUARTER_REGEX = /^q[1-4]$/i;
+const MIN_ROWS_FOR_AUTO_UNPIVOT = 5;
+const MIN_PIVOT_COLUMNS = 3;
+const MAX_PIVOT_COLUMNS = 12;
+const MIN_NUMERIC_RATIO = 0.7;
+const MAX_ROWS_AFTER_UNPIVOT = 250000;
+
+type DimensionType = 'month' | 'quarter' | 'year' | 'label' | 'value';
+
+interface ColumnPatternInfo {
+    name: string;
+    baseKey: string;
+    dimensionValue: string;
+    dimensionType: DimensionType;
+    numericRatio: number;
+}
+
+const normalizeColumnTokens = (columnName: string): string[] => {
+    const normalized = columnName
+        .replace(/([a-zA-Z])([0-9])/g, '$1 $2')
+        .replace(/([0-9])([a-zA-Z])/g, '$1 $2');
+    return normalized.split(/[^a-zA-Z0-9]+/).filter(Boolean);
+};
+
+const categorizeDimensionTokens = (tokens: string[]): DimensionType => {
+    if (tokens.some(token => MONTH_NAME_SET.has(token.toLowerCase()))) return 'month';
+    if (tokens.some(token => QUARTER_REGEX.test(token))) return 'quarter';
+    if (tokens.some(token => /^\d{4}$/.test(token))) return 'year';
+    if (tokens.some(token => /^\d+$/.test(token))) return 'label';
+    return 'value';
+};
+
+const ensureUniqueColumnName = (candidate: string, existing: Set<string>): string => {
+    let name = candidate;
+    let counter = 1;
+    while (existing.has(name)) {
+        name = `${candidate}_${counter}`;
+        counter++;
+    }
+    existing.add(name);
+    return name;
+};
+
+const computeNumericRatio = (rows: CsvRow[], column: string): number => {
+    let total = 0;
+    let numeric = 0;
+    for (const row of rows) {
+        const value = row[column];
+        if (value === null || value === undefined) continue;
+        const text = String(value).trim();
+        if (text === '') continue;
+        total++;
+        if (typeof value === 'number') {
+            numeric++;
+            continue;
+        }
+        if (robustParseFloat(value) !== null) {
+            numeric++;
+        }
+    }
+    return total === 0 ? 0 : numeric / total;
+};
+
+export interface AutoUnpivotResult {
+    rows: CsvRow[];
+    meta: DataTransformMeta;
+    explanation: string;
+    dimensionColumnName: string;
+    valueColumnName: string;
+    transformedColumns: string[];
+}
+
+export const autoUnpivotWideDataset = (rows: CsvRow[]): AutoUnpivotResult | null => {
+    if (!Array.isArray(rows) || rows.length < MIN_ROWS_FOR_AUTO_UNPIVOT) return null;
+    const headers = Object.keys(rows[0] ?? {});
+    if (headers.length < 3) return null;
+
+    const columnInfos: ColumnPatternInfo[] = headers.map(name => {
+        const tokens = normalizeColumnTokens(name);
+        const dimensionTokens: string[] = [];
+        const baseTokens: string[] = [];
+        tokens.forEach(token => {
+            if (
+                MONTH_NAME_SET.has(token.toLowerCase()) ||
+                QUARTER_REGEX.test(token) ||
+                /^\d+$/.test(token)
+            ) {
+                dimensionTokens.push(token);
+            } else {
+                baseTokens.push(token);
+            }
+        });
+        const baseKey = baseTokens.join(' ').trim().toLowerCase() || 'value';
+        const dimensionType = categorizeDimensionTokens(dimensionTokens);
+        const dimensionValue = dimensionTokens.join(' ').trim() || name;
+        const numericRatio = computeNumericRatio(rows, name);
+        return {
+            name,
+            baseKey,
+            dimensionValue,
+            dimensionType,
+            numericRatio,
+        };
+    });
+
+    const groups = new Map<string, ColumnPatternInfo[]>();
+    columnInfos
+        .filter(info => info.dimensionValue.trim().length > 0)
+        .forEach(info => {
+            const groupKey = `${info.baseKey}||${info.dimensionType}`;
+            const bucket = groups.get(groupKey) ?? [];
+            bucket.push(info);
+            groups.set(groupKey, bucket);
+        });
+
+    let bestGroup: ColumnPatternInfo[] | null = null;
+    let bestScore = 0;
+
+    for (const group of groups.values()) {
+        if (group.length < MIN_PIVOT_COLUMNS || group.length > MAX_PIVOT_COLUMNS) continue;
+        const numericColumns = group.filter(info => info.numericRatio >= MIN_NUMERIC_RATIO);
+        if (numericColumns.length < Math.max(3, Math.ceil(group.length * 0.75))) continue;
+        const projectedRows = rows.length * group.length;
+        if (projectedRows > MAX_ROWS_AFTER_UNPIVOT) continue;
+        const score = numericColumns.length * 10 + group.length;
+        if (score > bestScore) {
+            bestScore = score;
+            bestGroup = group;
+        }
+    }
+
+    if (!bestGroup) return null;
+
+    const baseColumns = Array.from(
+        new Set(headers.filter(header => !bestGroup!.some(col => col.name === header))),
+    );
+    const groupColumnNames = bestGroup.map(col => col.name);
+    const dimensionType = bestGroup[0].dimensionType;
+    const dimensionSeed = bestGroup[0].baseKey;
+    const existingColumns = new Set(headers);
+    const dimensionColumnCandidates: Record<DimensionType, string> = {
+        month: 'month',
+        quarter: 'quarter',
+        year: 'year',
+        label: 'dimension',
+        value: 'dimension',
+    };
+    const dimensionColumnName = ensureUniqueColumnName(
+        dimensionColumnCandidates[dimensionType] ?? 'dimension',
+        existingColumns,
+    );
+    const valueColumnName = ensureUniqueColumnName(
+        dimensionSeed !== 'value' ? dimensionSeed : 'value',
+        existingColumns,
+    );
+
+    const dimensionValueMap = new Map<string, string>();
+    bestGroup.forEach(info => {
+        dimensionValueMap.set(info.name, info.dimensionValue);
+    });
+
+    const transformedRows: CsvRow[] = [];
+    for (const row of rows) {
+        const baseRow: CsvRow = {};
+        baseColumns.forEach(col => {
+            baseRow[col] = row[col];
+        });
+        for (const columnName of groupColumnNames) {
+            const newRow: CsvRow = { ...baseRow };
+            newRow[dimensionColumnName] = dimensionValueMap.get(columnName) ?? columnName;
+            newRow[valueColumnName] = row[columnName];
+            transformedRows.push(newRow);
+        }
+    }
+
+    const rowsBefore = rows.length;
+    const rowsAfter = transformedRows.length;
+    const meta: DataTransformMeta = {
+        rowsBefore,
+        rowsAfter,
+        addedRows: rowsAfter - rowsBefore,
+        removedRows: rowsBefore,
+        modifiedRows: rowsBefore,
+        noOp: false,
+    };
+
+    const explanation = `Auto-detected ${groupColumnNames.length} pivot columns (${groupColumnNames.join(
+        ', ',
+    )}) and unpivoted them into "${dimensionColumnName}" + "${valueColumnName}".`;
+
+    return {
+        rows: transformedRows,
+        meta,
+        explanation,
+        dimensionColumnName,
+        valueColumnName,
+        transformedColumns: groupColumnNames,
+    };
+};
+
 const normalizeFilterValue = (value: unknown): string | null => {
     if (value === null || value === undefined) return null;
     const text = String(value).trim();

@@ -1,4 +1,4 @@
-import { openDB, type IDBPDatabase, type IDBPTransaction } from 'idb';
+import { openDB, type IDBPDatabase, type IDBPTransaction, type IDBPObjectStore } from 'idb';
 import type {
     CsvRow,
     ColumnProfile,
@@ -113,6 +113,23 @@ export type MemorySnapshotInput = Omit<MemorySnapshotRecord, 'id' | 'createdAt'>
     createdAt?: string;
 };
 
+export type AuditLogSeverity = 'info' | 'warn' | 'error';
+
+export interface AuditLogRecord {
+    id: string;
+    kind: string;
+    severity: AuditLogSeverity;
+    message: string;
+    details?: Record<string, any> | null;
+    tags?: string[];
+    createdAt: string;
+}
+
+export type AuditLogEntryInput = Omit<AuditLogRecord, 'id' | 'createdAt'> & {
+    id?: string;
+    createdAt?: string;
+};
+
 interface SystemMetaRecord {
     id: string;
     type: 'migration';
@@ -134,7 +151,7 @@ interface OpenDatabaseOptions {
 }
 
 const DB_NAME = 'csv_agent_db';
-const DB_VERSION = 5;
+const DB_VERSION = 6;
 const PROVENANCE_STORE = 'provenance';
 const CLEAN_ROWS_STORE = 'clean_rows';
 const COLUMNS_STORE = 'columns';
@@ -143,6 +160,8 @@ const PREPARATION_LOG_STORE = 'preparation_log';
 const MEMORY_SNAPSHOT_STORE = 'memory_snapshots';
 const DATASET_RUNTIME_CONFIG_STORE = 'dataset_runtime_config';
 const SYSTEM_META_STORE = 'system_meta';
+const AUDIT_LOG_STORE = 'audit_logs';
+const MAX_AUDIT_LOG_ENTRIES = 400;
 
 const READ_ONLY_FALLBACK_MESSAGE =
     'csv_agent_db is in read-only fallback because the last migration failed. Close other tabs or clear site data, then reload.';
@@ -200,6 +219,13 @@ const MIGRATIONS: Migration[] = [
         description: 'Add system meta store for migration logging.',
         up: db => {
             createStore(db, SYSTEM_META_STORE);
+        },
+    },
+    {
+        version: 6,
+        description: 'Add audit log store for runtime events.',
+        up: db => {
+            createStore(db, AUDIT_LOG_STORE);
         },
     },
 ];
@@ -337,6 +363,12 @@ const createStore = (db: IDBPDatabase, storeName: string) => {
         store.createIndex('by_version', 'version', { unique: false });
         return;
     }
+    if (storeName === AUDIT_LOG_STORE) {
+        const store = db.createObjectStore(storeName, { keyPath: 'id' });
+        store.createIndex('by_kind', 'kind', { unique: false });
+        store.createIndex('by_created_at', 'createdAt', { unique: false });
+        return;
+    }
     throw new Error(`Unsupported store name: ${storeName}`);
 };
 
@@ -362,6 +394,7 @@ const DEFAULT_STORE_SET = [
     MEMORY_SNAPSHOT_STORE,
     DATASET_RUNTIME_CONFIG_STORE,
     SYSTEM_META_STORE,
+    AUDIT_LOG_STORE,
 ];
 
 const openDatabase = async (
@@ -865,4 +898,67 @@ export const clearCardResults = async (datasetId: string): Promise<void> => {
         cursor = await cursor.continue();
     }
     await tx.done;
+};
+
+const buildAuditLogRecord = (entry: AuditLogEntryInput): AuditLogRecord => ({
+    id: entry.id ?? `audit-${Date.now()}-${createRandomSuffix()}`,
+    kind: entry.kind,
+    severity: entry.severity,
+    message: entry.message,
+    details: entry.details ?? null,
+    tags: entry.tags ?? [],
+    createdAt: entry.createdAt ?? new Date().toISOString(),
+});
+
+const pruneAuditLogs = async (store: IDBPObjectStore, maxEntries: number) => {
+    if (maxEntries <= 0) return;
+    const index = store.index('by_created_at');
+    const total = await index.count();
+    if (total <= maxEntries) return;
+    let cursor = await index.openCursor(undefined, 'next');
+    let remaining = total - maxEntries;
+    while (cursor && remaining > 0) {
+        await cursor.delete();
+        remaining -= 1;
+        cursor = await cursor.continue();
+    }
+};
+
+export const appendAuditLogEntry = async (
+    entry: AuditLogEntryInput,
+    options?: { maxEntries?: number },
+): Promise<AuditLogRecord> => {
+    const record = buildAuditLogRecord(entry);
+    const db = await openDatabase([AUDIT_LOG_STORE], { mode: 'readwrite' });
+    const tx = db.transaction(AUDIT_LOG_STORE, 'readwrite');
+    const store = tx.objectStore(AUDIT_LOG_STORE);
+    await store.put(record);
+    const limit = options?.maxEntries ?? MAX_AUDIT_LOG_ENTRIES;
+    await pruneAuditLogs(store, limit);
+    await tx.done;
+    return record;
+};
+
+export const readAuditLogEntries = async (options?: {
+    limit?: number;
+    kind?: string;
+}): Promise<AuditLogRecord[]> => {
+    const db = await openDatabase([AUDIT_LOG_STORE], { mode: 'readonly' });
+    const tx = db.transaction(AUDIT_LOG_STORE, 'readonly');
+    const store = tx.objectStore(AUDIT_LOG_STORE);
+    const index = store.index('by_created_at');
+    const limit = options?.limit ?? MAX_AUDIT_LOG_ENTRIES;
+    const result: AuditLogRecord[] = [];
+    for (
+        let cursor = await index.openCursor(undefined, 'prev');
+        cursor && result.length < limit;
+        cursor = await cursor.continue()
+    ) {
+        const value = cursor.value as AuditLogRecord;
+        if (!options?.kind || value.kind === options.kind) {
+            result.push(value);
+        }
+    }
+    await tx.done;
+    return result;
 };

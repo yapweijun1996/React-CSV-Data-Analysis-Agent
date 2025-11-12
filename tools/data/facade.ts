@@ -118,6 +118,7 @@ export const runAggregateToolForPlan = async (
         rows: result.rows,
         schema: result.schema,
         viewId: result.provenance.queryHash,
+        context: result,
     };
 };
 
