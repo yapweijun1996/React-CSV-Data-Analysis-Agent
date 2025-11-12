@@ -23,12 +23,14 @@ export interface PendingUserReplySnapshot {
     question: string;
     options: AwaitUserOption[];
     at: string;
+    plan: AnalysisPlan | null;
 }
 
 export interface PendingPlanSummary {
     id: string;
     summary: string;
     plan: AnalysisPlan | null;
+    lastUpdatedAt: string;
     createdAt: string;
 }
 

@@ -27,6 +27,7 @@ const describeRowImpact = (meta: DataTransformMeta | null): string => {
     if (meta.removedRows > 0) parts.push(`${meta.removedRows.toLocaleString()} removed`);
     if (meta.addedRows > 0) parts.push(`${meta.addedRows.toLocaleString()} added`);
     if (meta.modifiedRows > 0) parts.push(`${meta.modifiedRows.toLocaleString()} modified`);
+    if (meta.noOp) parts.push('no row changes detected');
     return parts.join(', ');
 };
 
@@ -266,7 +267,9 @@ export const createFileUploadSlice = (
                     return;
                 }
 
-                if (prepPlan && prepPlan.jsFunctionBody) {
+                const jsTransformBody =
+                    typeof prepPlan?.jsFunctionBody === 'string' ? prepPlan.jsFunctionBody.trim() : null;
+                if (prepPlan && jsTransformBody) {
                     get().addProgress(`AI Plan: ${prepPlan.explanation}`);
                     get().addProgress('Executing AI data transformation...');
                     try {
@@ -293,6 +296,9 @@ export const createFileUploadSlice = (
                         throw transformError;
                     }
                 } else {
+                    if (prepPlan) {
+                        get().addProgress(`AI Plan: ${prepPlan.explanation}`);
+                    }
                     get().addProgress('AI found no necessary data transformations.');
                 }
                 profiles = prepPlan.outputColumns;

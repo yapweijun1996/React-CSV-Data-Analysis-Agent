@@ -1,4 +1,5 @@
 import type { GraphObservation, GraphPhase, LoopBudget } from '@/src/graph/schema';
+import type { IntentContract } from './services/ai/intentContract';
 
 export type CsvRow = { [key: string]: string | number };
 
@@ -73,6 +74,7 @@ export interface DataTransformMeta {
     addedRows: number;
     removedRows: number;
     modifiedRows: number;
+    noOp?: boolean;
 }
 
 export interface SelectionDrilldownFilter {
@@ -364,6 +366,7 @@ export interface ClarificationRequestPayload {
         toolName: DomAction['toolName'];
         args?: Record<string, any>;
     };
+    reasonHint?: string | null;
 }
 
 export interface ClarificationRequest extends ClarificationRequestPayload {
@@ -485,6 +488,22 @@ export interface GraphToolInFlightSnapshot {
     startedAt: string;
 }
 
+export type AgentSchemaPhase = 'plan' | 'talk' | 'act';
+
+export interface SamplePolicyState {
+    tiers: Array<number | null>;
+    currentIndex: number;
+    userConfirmedFullScan: boolean;
+    lastUpgradeReason: string | null;
+}
+
+export interface PlanValidationNotice {
+    id: string;
+    planTitle: string;
+    message: string;
+    at: string;
+}
+
 export interface AppState {
     currentView: AppView;
     isBusy: boolean;
@@ -531,6 +550,7 @@ export interface AppState {
     graphLastReadyAt: string | null;
     graphAwaitPrompt: AwaitUserPayload | null;
     graphAwaitPromptId: string | null;
+    graphAwaitReason: string | null;
     graphAwaitHistory: AwaitInteractionRecord[];
     graphSessionId: string | null;
     graphLastToolSummary: string | null;
@@ -542,6 +562,9 @@ export interface AppState {
     graphObservations: GraphObservation[];
     graphPhase: GraphPhase;
     graphLoopBudget: LoopBudget;
+    samplePolicy: SamplePolicyState;
+    planValidationNotices: PlanValidationNotice[];
+    activeSchemaPhase: AgentSchemaPhase;
 }
 
 export interface DomActionTarget {
@@ -596,6 +619,7 @@ export interface AiAction {
   timestamp?: string;
   awaitUserPayload?: AwaitUserPayload;
   toolCall?: GraphToolCall;
+  intentContract?: IntentContract | null;
 }
 
 export interface AiChatResponse {

@@ -3,6 +3,7 @@ import { CsvData, ColumnProfile, Settings, AnalysisCardData, CardContext, CsvRow
 import { callGemini, callOpenAI, type LlmUsageMetrics } from './apiClient';
 import { proactiveInsightSchema, proactiveInsightJsonSchema } from './schemas';
 import { createSummaryPrompt, createCoreAnalysisPrompt, createProactiveInsightPrompt, createFinalSummaryPrompt } from '../promptTemplates';
+import { coerceJsonObject } from './jsonRepair';
 
 interface SummaryOptions {
     signal?: AbortSignal;
@@ -110,7 +111,7 @@ export const generateProactiveInsights = async (cardContext: CardContext[], sett
                 onUsage: usage => options?.onUsage?.({ ...usage, operation }),
             });
         }
-        return JSON.parse(jsonStr);
+        return coerceJsonObject<{ insight: string; cardId: string }>(jsonStr);
 
     } catch (error) {
         console.error("Error generating proactive insight:", error);

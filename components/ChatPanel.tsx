@@ -64,6 +64,20 @@ const extractCardIdsFromText = (text?: string | null): string[] => {
 const MAX_CHAT_INPUT_HEIGHT = 240;
 const uiFlags = getUiVisibilityConfig();
 const AWAIT_HINT_DELAY_MS = 10_000;
+const DEFAULT_NEXT_STEP_CHOICES: ReadonlyArray<AgentPlanStep> = [
+    {
+        id: 'upload_csv',
+        label: '上传新的 CSV · Upload a CSV',
+        intent: 'conversation',
+        status: 'waiting_user',
+    },
+    {
+        id: 'describe_goal',
+        label: '描述想分析的指标 · Describe your KPI',
+        intent: 'conversation',
+        status: 'waiting_user',
+    },
+];
 
 const useChatCore = () =>
     useAppStore(
@@ -96,13 +110,20 @@ const useChatCore = () =>
         executeQuickAction: state.executeQuickAction,
         graphAwaitPrompt: state.graphAwaitPrompt,
         graphAwaitPromptId: state.graphAwaitPromptId,
+        graphAwaitReason: state.graphAwaitReason,
         graphAwaitHistory: state.graphAwaitHistory,
-        graphToolInFlight: state.graphToolInFlight,
-        sendGraphUserReply: state.sendGraphUserReply,
-        runGraphPipeline: state.runGraphPipeline,
-        addProgress: state.addProgress,
-        graphObservations: state.graphObservations,
-    }),
+            graphToolInFlight: state.graphToolInFlight,
+            sendGraphUserReply: state.sendGraphUserReply,
+            runGraphPipeline: state.runGraphPipeline,
+            addProgress: state.addProgress,
+            graphObservations: state.graphObservations,
+            planState: state.plannerSession?.planState ?? null,
+            samplePolicy: state.samplePolicy,
+            requestSampleUpgrade: state.requestSampleUpgrade,
+            planValidationNotices: state.planValidationNotices,
+            dismissPlanValidationNotice: state.dismissPlanValidationNotice,
+            activeSchemaPhase: state.activeSchemaPhase,
+        }),
         shallow,
     );
 
@@ -138,12 +159,19 @@ export const ChatPanel: React.FC = () => {
         executeQuickAction,
         graphAwaitPrompt,
         graphAwaitPromptId,
+        graphAwaitReason,
         graphAwaitHistory,
         graphToolInFlight,
         sendGraphUserReply,
         runGraphPipeline,
         addProgress,
         graphObservations,
+        planState,
+        samplePolicy,
+        requestSampleUpgrade,
+        planValidationNotices,
+        dismissPlanValidationNotice,
+        activeSchemaPhase,
     } = core;
 
     const [input, setInput] = useState('');
@@ -183,6 +211,26 @@ export const ChatPanel: React.FC = () => {
     const awaitingHintToUse = graphToolInFlight
         ? `🔄 ${graphToolInFlight.label} 执行中，请稍候…`
         : awaitHint;
+
+    const planStepOptions = useMemo(() => planState?.nextSteps ?? [], [planState]);
+    const planWaitingStatus = useMemo(
+        () => (planState?.steps ?? []).some(step => step.status === 'waiting_user'),
+        [planState],
+    );
+    const isGreetingStep = useMemo(() => {
+        if (!planState?.currentStepId) return false;
+        return planState.currentStepId.startsWith('acknowledge_user');
+    }, [planState]);
+    const planBlockedAwait = useMemo(
+        () => typeof planState?.blockedBy === 'string' && planState.blockedBy.includes('await'),
+        [planState],
+    );
+    const shouldShowPlanStepChoices = Boolean(
+        planState && (agentAwaitingUserInput || planWaitingStatus || isGreetingStep || planBlockedAwait),
+    );
+    const planStepChoiceList =
+        planStepOptions.length > 0 ? planStepOptions : DEFAULT_NEXT_STEP_CHOICES;
+    const usingFallbackPlanChoices = shouldShowPlanStepChoices && planState != null && planStepOptions.length === 0;
 
     const latestGraphObservationSummary = useMemo(() => {
         if (!graphObservations || graphObservations.length === 0) return null;
@@ -267,6 +315,39 @@ export const ChatPanel: React.FC = () => {
             sendGraphUserReply(undefined, trimmed);
         },
         [sendGraphUserReply, addProgress, graphAwaitPrompt],
+    );
+
+    const planChoiceDisabled = !isApiKeySet || isBusy;
+    const schemaPhaseLabel = useMemo(() => {
+        switch (activeSchemaPhase) {
+            case 'plan':
+                return 'Step 1 · Planner Schema';
+            case 'act':
+                return 'Step 3 · Act Schema';
+            default:
+                return 'Step 2 · Talk Schema';
+        }
+    }, [activeSchemaPhase]);
+    const currentSampleTierValue = samplePolicy.tiers[samplePolicy.currentIndex] ?? null;
+    const sampleTierLabel =
+        currentSampleTierValue === null
+            ? '全量数据（Full dataset）'
+            : `${currentSampleTierValue.toLocaleString()} 行采样`;
+    const canUpgradeSample =
+        samplePolicy.currentIndex < samplePolicy.tiers.length - 1 && !isBusy && isApiKeySet;
+    const latestPlanNotices = useMemo(
+        () => [...planValidationNotices].slice(-3).reverse(),
+        [planValidationNotices],
+    );
+
+    const handlePlanStepSelection = useCallback(
+        (step: AgentPlanStep) => {
+            if (planChoiceDisabled) return;
+            const payload = `[plan_step:${step.id}] ${step.label}`;
+            addProgress(`📝 你选择了「${step.label}」 (stepId=${step.id})`);
+            handleUserMessage(payload);
+        },
+        [planChoiceDisabled, addProgress, handleUserMessage],
     );
 
     const handlePromptResponse = useCallback(
@@ -398,6 +479,9 @@ export const ChatPanel: React.FC = () => {
                             </span>
                         </div>
                         <p className="text-sm text-slate-700 mb-1">{msg.clarificationRequest.question}</p>
+                        {msg.clarificationRequest.reasonHint && (
+                            <p className="text-xs text-slate-500 mb-2">{msg.clarificationRequest.reasonHint}</p>
+                        )}
                         {msg.clarificationRequest.columnHints && msg.clarificationRequest.columnHints.length > 0 && (
                             <p className="text-xs text-slate-500 mb-2">
                                 Column context: {msg.clarificationRequest.columnHints.join(', ')}
@@ -653,7 +737,80 @@ export const ChatPanel: React.FC = () => {
                 </div>
             </div>
             <div className="flex-1 p-4 overflow-y-auto space-y-4">
+                <div className="space-y-2">
+                    <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
+                        <div className="font-semibold">{schemaPhaseLabel}</div>
+                        {planState?.goal && (
+                            <p className="text-xs text-blue-600 mt-1">当前目标：{planState.goal}</p>
+                        )}
+                    </div>
+                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+                        <div>
+                            <div className="font-semibold text-slate-900">采样级别</div>
+                            <div className="text-xs text-slate-500">{sampleTierLabel}</div>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => requestSampleUpgrade('user_confirm')}
+                            disabled={!canUpgradeSample}
+                            className="rounded-md bg-blue-600 px-3 py-1 text-xs font-semibold text-white shadow-sm transition disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                            升级采样
+                        </button>
+                    </div>
+                    {latestPlanNotices.length > 0 && (
+                        <div className="space-y-2">
+                            {latestPlanNotices.map(notice => (
+                                <div
+                                    key={notice.id}
+                                    className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+                                >
+                                    <div>
+                                        <span className="font-semibold">{notice.planTitle}：</span>
+                                        {notice.message}
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => dismissPlanValidationNotice(notice.id)}
+                                        className="text-xs text-amber-500 hover:text-amber-800"
+                                    >
+                                        关闭
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
                 <PlannerGoalTracker />
+                {shouldShowPlanStepChoices && (
+                    <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 shadow-sm" aria-live="polite">
+                        <p className="text-xs font-semibold text-amber-700 uppercase tracking-wide">
+                            Awaiting your choice · 等你选择
+                        </p>
+                        <p className="text-sm text-amber-900 mt-1">
+                            请选择下一步（Pick the next agent step to continue）
+                        </p>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                            {planStepChoiceList.map(step => (
+                                <button
+                                    key={step.id}
+                                    type="button"
+                                    onClick={() => handlePlanStepSelection(step)}
+                                    disabled={planChoiceDisabled}
+                                    className="px-3 py-2 rounded-lg border border-amber-300 bg-white text-amber-900 text-sm font-semibold hover:bg-amber-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    <span>{step.label}</span>
+                                    <span className="block text-[11px] text-amber-500">
+                                        {step.intent ?? 'conversation'}
+                                    </span>
+                                </button>
+                            ))}
+                        </div>
+                        {usingFallbackPlanChoices && (
+                            <p className="text-[11px] text-amber-600 mt-2">暂无计划 nextSteps，展示默认选项提示用户给方向。</p>
+                        )}
+                    </div>
+                )}
                 <GraphObservationTimeline />
                 {timeline.map(renderMessage)}
                 <div ref={messagesEndRef} />
@@ -694,6 +851,7 @@ export const ChatPanel: React.FC = () => {
                             onSelect={handleAwaitOption}
                             onSubmitFreeText={handleAwaitFreeText}
                             disabled={awaitInteractionDisabled}
+                            reasonText={graphAwaitReason}
                             waitingHint={awaitingHintToUse}
                             latestObservation={latestObservationForAwait}
                         />
@@ -1070,6 +1228,9 @@ const PlannerGoalTracker = React.memo(() => {
                                                 <span className="text-base">🧩</span>
                                                 {activeClarification.question}
                                             </p>
+                                            {activeClarification.reasonHint && (
+                                                <p className="text-xs text-blue-700 mb-2">{activeClarification.reasonHint}</p>
+                                            )}
                                             <div className="flex flex-wrap gap-2 mb-3">
                                                 {activeClarification.options.map(option => (
                                                     <button

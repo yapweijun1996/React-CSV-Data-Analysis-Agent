@@ -3,6 +3,8 @@ import { executeJavaScriptDataTransform, executeJavaScriptFilter, profileData } 
 import { extractQuickChoices } from '../../utils/questionChoices';
 import { generateChatResponse } from '../aiService';
 import type { ChatResponseOptions } from '../aiService';
+import { normalizeIntentContract } from '../ai/intentContract';
+import type { IntentContract } from '../ai/intentContract';
 import { vectorStore } from '../vectorStore';
 import { filterClarificationOptions, COLUMN_TARGET_PROPERTIES } from '../../utils/clarification';
 import { buildColumnAliasMap, cloneRowsWithAliases, normalizeRowsFromAliases } from '../../utils/columnAliases';
@@ -44,6 +46,10 @@ import { createAgentEngine } from './engine';
 import type { EngineContext } from './engine';
 import { StateTagFactory } from './stateTagFactory';
 import type { PromptStage } from '../../utils/promptBudget';
+import { saveCardResult, type CardDataRef } from '../csvAgentDb';
+import { planFromAggregateIntent, deriveSchemaFromRows } from './intentTransforms';
+import { createLangChainTools } from '@/tools/data/langchainTools';
+import type { AgentSchemaPhase } from '@/types';
 
 /**
  * Core runtime that keeps the agent flow sandboxed outside the chat slice.
@@ -812,6 +818,7 @@ const ACTION_ERROR_CODES = {
     PLAN_STATE_PAYLOAD_MISSING: 'PLAN_STATE_PAYLOAD_MISSING',
     VALIDATION_FAILED: 'VALIDATION_FAILED',
     PLAN_STEP_OUT_OF_ORDER: 'PLAN_STEP_OUT_OF_ORDER',
+    INTENT_CONTRACT_FAILED: 'INTENT_CONTRACT_FAILED',
 } as const;
 
 type ActionErrorCode = (typeof ACTION_ERROR_CODES)[keyof typeof ACTION_ERROR_CODES];
@@ -829,6 +836,368 @@ const SELF_HEAL_ELIGIBLE_ACTIONS = new Set<AgentActionType>([
     'filter_spreadsheet',
     'proceed_to_analysis',
 ]);
+
+const inferCardKindFromPlan = (plan: AnalysisPlan): 'kpi' | 'topn' | 'trend' => {
+    switch (plan.chartType) {
+        case 'line':
+            return 'trend';
+        case 'bar':
+        case 'pie':
+        case 'doughnut':
+        case 'combo':
+            return 'topn';
+        default:
+            return 'kpi';
+    }
+};
+
+const resolveIntentContractPayload = (raw?: IntentContract | null): IntentContract | null => {
+    if (!raw) return null;
+    try {
+        return normalizeIntentContract(raw);
+    } catch (error) {
+        console.warn('[AgentWorker] Failed to normalize intent contract.', error);
+        return null;
+    }
+};
+
+const executeIntentContractAction = async ({
+    contract,
+    runtime,
+    markTrace,
+}: {
+    contract: IntentContract;
+    runtime: PlannerRuntime;
+    markTrace: TraceRecorder;
+}): Promise<ActionStepResult | null> => {
+    const store = runtime.get();
+    let toolRegistry: ReturnType<typeof createLangChainTools> | null = null;
+    const getToolRegistry = () =>
+        (toolRegistry ??= createLangChainTools({
+            getDatasetId: () => runtime.get().datasetHash ?? null,
+            getCsvData: () => runtime.get().csvData,
+            getCurrentPlan: () => runtime.get().langChainLastPlan,
+        }));
+
+    switch (contract.tool) {
+        case 'csv.profile': {
+            try {
+                const response = await getToolRegistry().profileDatasetTool.invoke({
+                    sampleSize: contract.args.limit,
+                });
+                store.addProgress(response.summary);
+                markTrace('succeeded', 'Profiled dataset via LangChain tool.');
+                return {
+                    type: 'continue',
+                    observation: {
+                        status: 'success',
+                        outputs: {
+                            intent: contract.intent,
+                            tool: contract.tool,
+                            payload: response.payload,
+                            meta: response.meta,
+                        },
+                    },
+                };
+            } catch (error) {
+                const reason = error instanceof Error ? error.message : String(error);
+                store.addProgress(`列画像失败：${reason}`, 'error');
+                markTrace('failed', reason, { errorCode: ACTION_ERROR_CODES.INTENT_CONTRACT_FAILED });
+                return {
+                    type: 'continue',
+                    observation: {
+                        status: 'error',
+                        errorCode: ACTION_ERROR_CODES.INTENT_CONTRACT_FAILED,
+                        outputs: { message: reason },
+                    },
+                };
+            }
+        }
+        case 'csv.clean_invoice_month': {
+            const column = contract.args.column ?? 'InvoiceMonth';
+            try {
+                const response = await getToolRegistry().normalizeInvoiceMonthTool.invoke({ column });
+                store.addProgress(response.summary);
+                markTrace('succeeded', `Normalized ${column} via LangChain tool.`);
+                return {
+                    type: 'continue',
+                    observation: {
+                        status: 'success',
+                        outputs: {
+                            intent: contract.intent,
+                            tool: contract.tool,
+                            payload: response.payload,
+                            meta: response.meta,
+                        },
+                    },
+                };
+            } catch (error) {
+                const reason = error instanceof Error ? error.message : String(error);
+                store.addProgress(`标准化 ${column} 失败：${reason}`, 'error');
+                markTrace('failed', reason, { errorCode: ACTION_ERROR_CODES.INTENT_CONTRACT_FAILED });
+                return {
+                    type: 'continue',
+                    observation: {
+                        status: 'error',
+                        errorCode: ACTION_ERROR_CODES.INTENT_CONTRACT_FAILED,
+                        outputs: { message: reason },
+                    },
+                };
+            }
+        }
+        case 'csv.detect_outliers': {
+            const valueColumn = contract.args.valueColumn ?? contract.args.column ?? null;
+            if (!valueColumn) {
+                store.addProgress('异常检测需要 valueColumn。', 'error');
+                markTrace('failed', 'Detect outliers intent missing valueColumn.', {
+                    errorCode: ACTION_ERROR_CODES.INTENT_CONTRACT_FAILED,
+                });
+                return {
+                    type: 'continue',
+                    observation: {
+                        status: 'error',
+                        errorCode: ACTION_ERROR_CODES.INTENT_CONTRACT_FAILED,
+                    },
+                };
+            }
+            const thresholdMultiplier = contract.args.thresholdMultiplier ?? 2;
+            try {
+                const response = await getToolRegistry().detectOutliersTool.invoke({
+                    valueColumn,
+                    thresholdMultiplier,
+                });
+                store.addProgress(response.summary);
+                markTrace('succeeded', `Detected outliers for ${valueColumn}.`);
+                return {
+                    type: 'continue',
+                    observation: {
+                        status: 'success',
+                        outputs: {
+                            intent: contract.intent,
+                            tool: contract.tool,
+                            payload: response.payload,
+                            meta: response.meta,
+                        },
+                    },
+                };
+            } catch (error) {
+                const reason = error instanceof Error ? error.message : String(error);
+                store.addProgress(`异常检测失败：${reason}`, 'error');
+                markTrace('failed', reason, { errorCode: ACTION_ERROR_CODES.INTENT_CONTRACT_FAILED });
+                return {
+                    type: 'continue',
+                    observation: {
+                        status: 'error',
+                        errorCode: ACTION_ERROR_CODES.INTENT_CONTRACT_FAILED,
+                        outputs: { message: reason },
+                    },
+                };
+            }
+        }
+        case 'csv.aggregate': {
+            const dataset = store.csvData;
+            if (!dataset) {
+                store.addProgress('无法执行聚合：尚未载入数据集。', 'error');
+                markTrace('failed', 'Dataset unavailable for aggregate intent.', {
+                    errorCode: ACTION_ERROR_CODES.DATASET_UNAVAILABLE,
+                });
+                return {
+                    type: 'continue',
+                    observation: {
+                        status: 'error',
+                        errorCode: ACTION_ERROR_CODES.DATASET_UNAVAILABLE,
+                    },
+                };
+            }
+            const plan = planFromAggregateIntent(contract);
+            if (!plan) {
+                store.addProgress('聚合指令缺少必要的列信息。', 'error');
+                markTrace('failed', 'Aggregate intent missing required columns.', {
+                    errorCode: ACTION_ERROR_CODES.INTENT_CONTRACT_FAILED,
+                });
+                return {
+                    type: 'continue',
+                    observation: {
+                        status: 'error',
+                        errorCode: ACTION_ERROR_CODES.INTENT_CONTRACT_FAILED,
+                    },
+                };
+            }
+            const cards = await runtime.deps.runPlanWithChatLifecycle(plan, dataset, runtime.runId);
+            if (!cards || cards.length === 0) {
+                store.addProgress(`聚合 "${plan.title}" 未产生可用结果。`, 'error');
+                markTrace('failed', 'Aggregate intent returned no cards.', {
+                    errorCode: ACTION_ERROR_CODES.INTENT_CONTRACT_FAILED,
+                });
+                return {
+                    type: 'continue',
+                    observation: {
+                        status: 'error',
+                        errorCode: ACTION_ERROR_CODES.INTENT_CONTRACT_FAILED,
+                    },
+                };
+            }
+            store.addProgress(`已根据指令完成 "${plan.title}" 图表。`);
+            markTrace('succeeded', `Executed aggregate intent for "${plan.title}".`);
+            runtime.intentRequirementSatisfied = true;
+            return {
+                type: 'continue',
+                observation: {
+                    status: 'success',
+                    outputs: { intent: contract.intent, tool: contract.tool, planTitle: plan.title },
+                },
+            };
+        }
+        case 'ui.remove_card': {
+            const cardId = contract.args.cardId ?? null;
+            if (!cardId) {
+                store.addProgress('无法删除卡片：contract 缺少 cardId。', 'error');
+                markTrace('failed', 'Remove card intent missing cardId.', {
+                    errorCode: ACTION_ERROR_CODES.DOM_PAYLOAD_MISSING,
+                });
+                return {
+                    type: 'continue',
+                    observation: {
+                        status: 'error',
+                        errorCode: ACTION_ERROR_CODES.DOM_PAYLOAD_MISSING,
+                    },
+                };
+            }
+            const domAction: DomAction = {
+                toolName: 'removeCard',
+                target: { byId: cardId },
+                args: { cardId },
+            };
+            store.executeDomAction(domAction);
+            store.addProgress(`已移除卡片 ${cardId}。`);
+            markTrace('succeeded', `Removed card ${cardId} via intentContract.`);
+            return {
+                type: 'continue',
+                observation: {
+                    status: 'success',
+                    outputs: { intent: contract.intent, tool: contract.tool, cardId },
+                    uiDelta: 'removeCard',
+                },
+            };
+        }
+        case 'idb.save_view': {
+            const datasetId = store.datasetHash;
+            const cardId = contract.args.cardId ?? null;
+            if (!datasetId) {
+                store.addProgress('无法保存视图：尚未载入数据集。', 'error');
+                markTrace('failed', 'Save view intent missing dataset.', {
+                    errorCode: ACTION_ERROR_CODES.DATASET_UNAVAILABLE,
+                });
+                return {
+                    type: 'continue',
+                    observation: {
+                        status: 'error',
+                        errorCode: ACTION_ERROR_CODES.DATASET_UNAVAILABLE,
+                    },
+                };
+            }
+            if (!cardId) {
+                store.addProgress('无法保存视图：contract 缺少 cardId。', 'error');
+                markTrace('failed', 'Save view intent missing cardId.', {
+                    errorCode: ACTION_ERROR_CODES.INTENT_CONTRACT_FAILED,
+                });
+                return {
+                    type: 'continue',
+                    observation: {
+                        status: 'error',
+                        errorCode: ACTION_ERROR_CODES.INTENT_CONTRACT_FAILED,
+                    },
+                };
+            }
+            const card = store.analysisCards?.find(existing => existing.id === cardId);
+            if (!card) {
+                store.addProgress(`无法保存视图：找不到卡片 ${cardId}。`, 'error');
+                markTrace('failed', 'Save view intent card not found.', {
+                    errorCode: ACTION_ERROR_CODES.INTENT_CONTRACT_FAILED,
+                });
+                return {
+                    type: 'continue',
+                    observation: {
+                        status: 'error',
+                        errorCode: ACTION_ERROR_CODES.INTENT_CONTRACT_FAILED,
+                    },
+                };
+            }
+            if (!card.aggregatedData || card.aggregatedData.length === 0) {
+                store.addProgress(`无法保存视图 "${card.plan.title}"：卡片没有数据。`, 'error');
+                markTrace('failed', 'Save view intent missing card data.', {
+                    errorCode: ACTION_ERROR_CODES.INTENT_CONTRACT_FAILED,
+                });
+                return {
+                    type: 'continue',
+                    observation: {
+                        status: 'error',
+                        errorCode: ACTION_ERROR_CODES.INTENT_CONTRACT_FAILED,
+                    },
+                };
+            }
+            if (card.dataRefId) {
+                store.addProgress(`视图 "${card.plan.title}" 已保存，无需重复操作。`);
+                markTrace('succeeded', `View "${card.plan.title}" already saved (id=${card.dataRefId}).`);
+                return {
+                    type: 'continue',
+                    observation: {
+                        status: 'success',
+                        outputs: { intent: contract.intent, tool: contract.tool, viewId: card.dataRefId },
+                    },
+                };
+            }
+            const schema = card.valueSchema ?? deriveSchemaFromRows(card.aggregatedData);
+            const dataRef: CardDataRef = {
+                schema,
+                rows: card.aggregatedData,
+                sampled: card.isSampledResult ?? card.aggregationMeta?.sampled ?? false,
+                source: 'aggregate',
+                planSnapshot: card.plan,
+            };
+            const viewTitle = contract.args.viewTitle ?? card.plan.title ?? 'Saved view';
+            const queryHash = card.queryHash ?? `manual-${Date.now().toString(36)}`;
+            try {
+                const savedId = await saveCardResult({
+                    datasetId,
+                    title: viewTitle,
+                    kind: inferCardKindFromPlan(card.plan),
+                    queryHash,
+                    explainer: card.summary,
+                    dataRef,
+                });
+                runtime.set(state => ({
+                    analysisCards: state.analysisCards.map(existing =>
+                        existing.id === cardId ? { ...existing, dataRefId: savedId, queryHash } : existing,
+                    ),
+                }));
+                store.addProgress(`视图 "${viewTitle}" 已保存，可在“保存的视图”中复用。`);
+                markTrace('succeeded', `Saved view "${viewTitle}" (id=${savedId}).`);
+                return {
+                    type: 'continue',
+                    observation: {
+                        status: 'success',
+                        outputs: { intent: contract.intent, tool: contract.tool, viewId: savedId },
+                    },
+                };
+            } catch (error) {
+                const reason = error instanceof Error ? error.message : String(error);
+                store.addProgress(`保存视图失败：${reason}`, 'error');
+                markTrace('failed', reason, { errorCode: ACTION_ERROR_CODES.INTENT_CONTRACT_FAILED });
+                return {
+                    type: 'continue',
+                    observation: {
+                        status: 'error',
+                        errorCode: ACTION_ERROR_CODES.INTENT_CONTRACT_FAILED,
+                        outputs: { message: reason },
+                    },
+                };
+            }
+        }
+        default:
+            return null;
+    }
+};
 
 interface RawDataExplorerSnapshot {
     summary: string;
@@ -1596,7 +1965,6 @@ const buildChatPlannerContext = async (
             get().settings,
             get().aiCoreAnalysisSummary,
             get().currentView,
-            (get().csvData?.data || []).slice(0, 20),
             memoryPayload,
             get().plannerSession.observations,
             get().plannerSession.planState,
@@ -1606,6 +1974,7 @@ const buildChatPlannerContext = async (
             {
                 signal: options?.signal ?? deps.getRunSignal(runId),
                 mode: options?.mode,
+                phase: options?.phase,
                 onPromptProfile: profile => {
                     const recordPromptMetric = get().recordPromptMetric;
                     if (typeof recordPromptMetric === 'function') {
@@ -1655,6 +2024,7 @@ const buildEngineContext = (runtime: PlannerRuntime): EngineContext => {
         runId: runtime.runId,
         now: Date.now(),
         lastStateTag: store.plannerSession.planState?.stateTag ?? null,
+        promptMode: resolvePromptModeForRuntime(runtime),
     };
 };
 
@@ -2572,11 +2942,39 @@ const planAgentActions = async (
 ): Promise<AiChatResponse> => {
     runtime.get().updateBusyStatus(statusMessage);
     const rawResponse = await plannerContext.requestAiResponse(prompt, options);
-    return agentEngine.run(rawResponse, buildEngineContext(runtime));
+    const healedResponse = agentEngine.run(rawResponse, buildEngineContext(runtime));
+    const rawCount = Array.isArray(rawResponse.actions) ? rawResponse.actions.length : 0;
+    const healedCount = Array.isArray(healedResponse.actions) ? healedResponse.actions.length : 0;
+    if (rawCount > 0 && healedCount < rawCount) {
+        runtime
+            .get()
+            .addProgress(
+                `Telemetry: trimmed ${rawCount - healedCount} extra action(s) before validation to enforce turn policy.`,
+                'system',
+            );
+    }
+    return healedResponse;
 };
 
 const resolvePromptModeForRuntime = (runtime: PlannerRuntime): 'plan_only' | 'full' => {
     return runtime.get().plannerSession.planState ? 'full' : 'plan_only';
+};
+
+const resolvePhaseSchemaKey = (runtime: PlannerRuntime): AgentSchemaPhase => {
+    const promptMode = resolvePromptModeForRuntime(runtime);
+    if (promptMode === 'plan_only') {
+        return 'plan';
+    }
+    const phase = (runtime.get().graphPhase ?? 'plan') as GraphPhaseLabel;
+    switch (phase) {
+        case 'act':
+            return 'act';
+        case 'plan':
+        case 'observe':
+            return 'plan';
+        default:
+            return 'talk';
+    }
 };
 
 const runPlannerWorkflow = async (
@@ -2604,7 +3002,13 @@ const runPlannerWorkflow = async (
         statusMessage: string,
         options?: ChatResponseOptions,
     ): Promise<{ response: AiChatResponse; meta: PlannerMetaSignal }> => {
-        const aiResponse = await planAgentActions(prompt, plannerContext, runtime, statusMessage, options);
+        const schemaPhase = resolvePhaseSchemaKey(runtime);
+        runtime.get().setActiveSchemaPhase(schemaPhase);
+        const mergedOptions: ChatResponseOptions = {
+            ...(options ?? {}),
+            phase: schemaPhase,
+        };
+        const aiResponse = await planAgentActions(prompt, plannerContext, runtime, statusMessage, mergedOptions);
         applyResponseEnvelopeAutoHeal(aiResponse, runtime);
         const metaSignal = extractPlannerMetaSignal(aiResponse.actions);
         if (metaSignal.resumePlanner) {
@@ -3311,6 +3715,14 @@ const handleDomAction: AgentActionExecutor = async ({ action, runtime, markTrace
 };
 
 const handleExecuteCodeAction: AgentActionExecutor = async ({ action, runtime, remainingAutoRetries, markTrace }) => {
+    const intentContract = resolveIntentContractPayload(action.intentContract ?? null);
+    if (intentContract) {
+        const contractResult = await executeIntentContractAction({ contract: intentContract, runtime, markTrace });
+        if (contractResult) {
+            return contractResult;
+        }
+    }
+
     const dataset = runtime.get().csvData;
 
     if (!dataset) {
@@ -3395,6 +3807,20 @@ const handleExecuteCodeAction: AgentActionExecutor = async ({ action, runtime, r
         const aliasMap = runtime.get().columnAliasMap;
         const dataForTransform = cloneRowsWithAliases(dataset.data, aliasMap);
         const transformResult = executeJavaScriptDataTransform(dataForTransform, action.code.jsFunctionBody.trim());
+        if (transformResult.meta?.noOp) {
+            const noOpMessage = 'AI data transformation produced no observable changes.';
+            runtime.get().addProgress(noOpMessage, 'error');
+            markTrace('failed', noOpMessage, { errorCode: ACTION_ERROR_CODES.TRANSFORM_FAILED });
+            const observation = {
+                status: 'error',
+                errorCode: ACTION_ERROR_CODES.TRANSFORM_FAILED,
+                outputs: { message: noOpMessage },
+            };
+            if (remainingAutoRetries > 0) {
+                return { type: 'retry', reason: noOpMessage, observation };
+            }
+            return { type: 'halt', observation };
+        }
         const normalizedRows = normalizeRowsFromAliases(transformResult.data, aliasMap);
         const newData: CsvData = { ...dataset, data: normalizedRows };
         const updatedProfiles = profileData(newData.data);
@@ -3592,7 +4018,12 @@ const handleClarificationRequestAction: AgentActionExecutor = async ({ action, r
         };
     }
 
-    const enrichedClarification = runtime.deps.registerClarification(filteredClarification);
+    const clarificationReason =
+        action.reason?.trim() || 'Need your preference before I can finalize this step.';
+    const enrichedClarification = runtime.deps.registerClarification({
+        ...filteredClarification,
+        reasonHint: clarificationReason,
+    });
 
     if (enrichedClarification.options.length === 1) {
         const autoOption = enrichedClarification.options[0];

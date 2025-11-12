@@ -19,6 +19,7 @@ export interface EngineContext {
     now: number;
     planBudgetExhausted?: boolean;
     lastStateTag?: AgentStateTag | null;
+    promptMode?: 'plan_only' | 'full';
 }
 
 export interface EnginePlaybookQuickActionRule {
@@ -53,6 +54,7 @@ export interface ToolRegistryEntry {
     name: string;
     description: string;
     tags: string[];
+    quickActionLabel?: string;
     costEstimate: number;
     latencyClass: ToolLatencyClass;
     risk: ToolRiskClass;

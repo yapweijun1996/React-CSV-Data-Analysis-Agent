@@ -1,4 +1,48 @@
-import { Type } from "@google/genai";
+import { Type } from '@google/genai';
+import {
+    intentContractSchema,
+    normalizeIntentContract,
+    INTENT_CONTRACT_INTENTS,
+    INTENT_CONTRACT_TOOLS,
+} from './intentContract';
+
+export { intentContractSchema, normalizeIntentContract } from './intentContract';
+export type { IntentContract, IntentContractInput } from './intentContract';
+
+const makeNullableObject = (schema: Record<string, any>) => {
+    const next = { ...schema };
+    if (Array.isArray(next.enum)) {
+        if (!next.enum.includes(null)) {
+            next.enum = [...next.enum, null];
+        }
+        return next;
+    }
+    const schemaType = next.type;
+    if (Array.isArray(schemaType)) {
+        if (!schemaType.includes('null')) {
+            next.type = [...schemaType, 'null'];
+        }
+    } else if (schemaType) {
+        next.type = [schemaType, 'null'];
+    } else {
+        next.type = ['null'];
+    }
+    return next;
+};
+
+const withNullableProperties = (
+    properties: Record<string, any>,
+    keys: string[],
+) => {
+    const next = { ...properties };
+    keys.forEach(key => {
+        if (!next[key]) {
+            throw new Error(`Attempted to mark missing property "${key}" as nullable.`);
+        }
+        next[key] = makeNullableObject(next[key]);
+    });
+    return next;
+};
 
 const analysisPlanItemSchema = {
     type: Type.OBJECT,
@@ -45,7 +89,23 @@ const analysisPlanItemSchema = {
             additionalProperties: false,
         },
     },
-    required: ['chartType', 'title', 'description'],
+    required: [
+        'chartType',
+        'title',
+        'description',
+        'aggregation',
+        'groupByColumn',
+        'valueColumn',
+        'xValueColumn',
+        'yValueColumn',
+        'secondaryValueColumn',
+        'secondaryAggregation',
+        'defaultTopN',
+        'defaultHideOthers',
+        'orderBy',
+        'limit',
+        'rowFilter',
+    ],
     additionalProperties: false,
 };
 
@@ -76,10 +136,11 @@ export const dataPreparationSchema = {
     type: Type.OBJECT,
     properties: {
         explanation: { type: Type.STRING, description: "A brief, user-facing explanation of the transformations that will be applied to the data (e.g., 'Removed 3 summary rows and reshaped the data from a cross-tab format')." },
-        jsFunctionBody: {
+        jsFunctionBody: makeNullableObject({
             type: Type.STRING,
-            description: "The body of a JavaScript function that takes two arguments `data` (an array of objects) and `_util` (a helper object) and returns the transformed array of objects. This code will be executed to clean and reshape the data. If no transformation is needed, this should be null."
-        },
+            description:
+                "The body of a JavaScript function that takes two arguments `data` (an array of objects) and `_util` (a helper object) and returns the transformed array of objects. This code will be executed to clean and reshape the data.",
+        }),
         outputColumns: {
             type: Type.ARRAY,
             description: "A list of column profiles describing the structure of the data AFTER the transformation. If no transformation is performed, this should be the same as the input column profiles.",
@@ -115,6 +176,48 @@ export const proactiveInsightSchema = {
 
 export const singlePlanSchema = analysisPlanItemSchema;
 
+const clarificationPendingPlanProperties = {
+    chartType: { type: Type.STRING, enum: ['bar', 'line', 'pie', 'doughnut', 'scatter', 'combo'] },
+    title: { type: Type.STRING },
+    description: { type: Type.STRING },
+    aggregation: { type: Type.STRING, enum: ['sum', 'count', 'avg'] },
+    groupByColumn: { type: Type.STRING },
+    valueColumn: { type: Type.STRING },
+    xValueColumn: { type: Type.STRING },
+    yValueColumn: { type: Type.STRING },
+    secondaryValueColumn: { type: Type.STRING },
+    secondaryAggregation: { type: Type.STRING, enum: ['sum', 'count', 'avg'] },
+    defaultTopN: { type: Type.INTEGER },
+    defaultHideOthers: { type: Type.BOOLEAN },
+    orderBy: {
+        type: Type.ARRAY,
+        items: {
+            type: Type.OBJECT,
+            properties: {
+                column: { type: Type.STRING },
+                direction: { type: Type.STRING, enum: ['asc', 'desc'] },
+            },
+            required: ['column', 'direction'],
+            additionalProperties: false,
+        },
+    },
+    limit: { type: Type.INTEGER },
+    rowFilter: {
+        type: Type.OBJECT,
+        properties: {
+            column: { type: Type.STRING },
+            values: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING },
+            },
+        },
+        additionalProperties: false,
+        required: ['column', 'values'],
+    },
+};
+
+const clarificationPendingPlanKeys = Object.keys(clarificationPendingPlanProperties);
+
 const clarificationRequestSchema = {
     type: Type.OBJECT,
     properties: {
@@ -127,60 +230,31 @@ const clarificationRequestSchema = {
                     label: { type: Type.STRING, description: "The user-friendly text for the option button." },
                     value: { type: Type.STRING, description: "The exact column name (case-sensitive) or literal value that should be assigned to the plan when this option is selected. Do not invent new names." }
                 },
-                required: ['label', 'value']
+                required: ['label', 'value'],
+                additionalProperties: false,
             }
         },
         pendingPlan: {
             type: Type.OBJECT,
             description: "The partial analysis plan that is waiting for the user's input. It should contain all known parameters.",
-            // FIX: Gemini requires OBJECT types to have a non-empty `properties` field.
-            // A pending plan is a partial plan, so we list all possible properties but make none of them required.
-            properties: {
-              chartType: { type: Type.STRING, enum: ['bar', 'line', 'pie', 'doughnut', 'scatter', 'combo'] },
-              title: { type: Type.STRING },
-              description: { type: Type.STRING },
-              aggregation: { type: Type.STRING, enum: ['sum', 'count', 'avg'] },
-              groupByColumn: { type: Type.STRING },
-              valueColumn: { type: Type.STRING },
-              xValueColumn: { type: Type.STRING },
-              yValueColumn: { type: Type.STRING },
-              secondaryValueColumn: { type: Type.STRING },
-              secondaryAggregation: { type: Type.STRING, enum: ['sum', 'count', 'avg'] },
-              defaultTopN: { type: Type.INTEGER },
-              defaultHideOthers: { type: Type.BOOLEAN },
-              orderBy: {
-                  type: Type.ARRAY,
-                  items: {
-                      type: Type.OBJECT,
-                      properties: {
-                          column: { type: Type.STRING },
-                          direction: { type: Type.STRING, enum: ['asc', 'desc'] },
-                      },
-                      required: ['column', 'direction'],
-                      additionalProperties: false,
-                  },
-              },
-              limit: { type: Type.INTEGER },
-              rowFilter: {
-                  type: Type.OBJECT,
-                  properties: {
-                      column: { type: Type.STRING },
-                      values: {
-                          type: Type.ARRAY,
-                          items: { type: Type.STRING },
-                      },
-                  },
-                  additionalProperties: false,
-                  required: ['column', 'values'],
-              },
-            },
+            properties: withNullableProperties(
+                clarificationPendingPlanProperties,
+                clarificationPendingPlanKeys,
+            ),
+            required: clarificationPendingPlanKeys,
+            additionalProperties: false,
         },
         targetProperty: {
             type: Type.STRING,
             description: "The name of the property in the 'pendingPlan' that the user's selected value should be assigned to."
-        }
+        },
+        reasonHint: makeNullableObject({
+            type: Type.STRING,
+            description: 'Optional short explanation describing why the clarification is required.',
+        }),
     },
-    required: ['question', 'options', 'pendingPlan', 'targetProperty']
+    required: ['question', 'options', 'pendingPlan', 'targetProperty'],
+    additionalProperties: false,
 };
 
 const planStepSchema = {
@@ -194,67 +268,282 @@ const planStepSchema = {
     additionalProperties: false,
 };
 
-const planStateSnapshotSchema = {
-    type: Type.OBJECT,
-    description: "Structured summary of the agent's current goal, progress, and blockers.",
-    properties: {
-        goal: { type: Type.STRING, minLength: 6, description: 'Overarching objective the agent is pursuing.' },
-        contextSummary: { type: Type.STRING, description: 'Optional short reminder of the context or constraint shaping the plan.' },
-        progress: { type: Type.STRING, minLength: 6, description: 'What was just learned or completed from the latest observations.' },
-        nextSteps: {
-            type: Type.ARRAY,
-            description: 'Concrete upcoming actions, ordered by priority.',
-            minItems: 1,
-            items: planStepSchema,
-        },
-        planId: { type: Type.STRING, description: 'Stable identifier for the active plan (e.g., plan-<timestamp>).'},
-        blockedBy: { type: Type.STRING, description: 'Describe any blockers or open questions. Omit if none.' },
-        observationIds: {
-            type: Type.ARRAY,
-            description: 'IDs of the observations that informed this update.',
-            items: { type: Type.STRING },
-        },
-        confidence: {
-            type: Type.NUMBER,
-            description: 'Optional confidence score between 0 and 1.',
-            minimum: 0,
-            maximum: 1,
-        },
-        updatedAt: { type: Type.STRING, description: 'ISO timestamp describing when this snapshot was generated.' },
-        currentStepId: {
-            type: Type.STRING,
-            description: 'The id of the step currently being executed. Must reference one of the declared steps.',
-        },
-        steps: {
-            type: Type.ARRAY,
-            description: 'Full list of steps with their intent + status.',
-            minItems: 1,
-            items: {
-                type: Type.OBJECT,
-                properties: {
-                    id: { type: Type.STRING, description: 'Stable identifier for the step.' },
-                    label: { type: Type.STRING, description: 'Human-readable summary.' },
-                    intent: { type: Type.STRING, description: 'High-level intent (e.g., conversation, remove_card).' },
-                    status: {
-                        type: Type.STRING,
-                        enum: ['ready', 'in_progress', 'done', 'waiting_user'],
-                        description: 'Current status for the step.',
-                    },
+const planStateSnapshotProperties = {
+    goal: { type: Type.STRING, minLength: 6 },
+    contextSummary: { type: Type.STRING },
+    progress: { type: Type.STRING, minLength: 6 },
+    nextSteps: {
+        type: Type.ARRAY,
+        minItems: 1,
+        items: planStepSchema,
+    },
+    planId: { type: Type.STRING },
+    blockedBy: { type: Type.STRING },
+    observationIds: {
+        type: Type.ARRAY,
+        items: { type: Type.STRING },
+    },
+    confidence: {
+        type: Type.NUMBER,
+        minimum: 0,
+        maximum: 1,
+    },
+    updatedAt: { type: Type.STRING },
+    currentStepId: { type: Type.STRING },
+    steps: {
+        type: Type.ARRAY,
+        minItems: 1,
+        items: {
+            type: Type.OBJECT,
+            properties: {
+                id: { type: Type.STRING },
+                label: { type: Type.STRING },
+                intent: { type: Type.STRING },
+                status: {
+                    type: Type.STRING,
+                    enum: ['ready', 'in_progress', 'done', 'waiting_user'],
                 },
-                required: ['id', 'label', 'intent', 'status'],
-                additionalProperties: false,
             },
-        },
-        stateTag: {
-            type: Type.STRING,
-            description:
-                'Monotonic tag minted as "<epochMs>-<seq>" or one of the known labels (context_ready, awaiting_clarification, etc.).',
+            required: ['id', 'label', 'intent', 'status'],
+            additionalProperties: false,
         },
     },
-    required: ['goal', 'contextSummary', 'progress', 'nextSteps', 'blockedBy', 'observationIds', 'confidence', 'updatedAt', 'planId', 'currentStepId'],
+    stateTag: { type: Type.STRING },
+};
+
+const planStateSnapshotSchema = {
+    type: Type.OBJECT,
+    properties: withNullableProperties(planStateSnapshotProperties, ['contextSummary', 'planId', 'blockedBy', 'confidence']),
+    required: [
+        'goal',
+        'contextSummary',
+        'progress',
+        'nextSteps',
+        'planId',
+        'blockedBy',
+        'observationIds',
+        'confidence',
+        'updatedAt',
+        'currentStepId',
+        'steps',
+        'stateTag',
+    ],
     additionalProperties: false,
 };
 
+const actionMetaSchema = {
+    type: Type.OBJECT,
+    properties: {
+        awaitUser: { type: Type.BOOLEAN },
+        haltAfter: { type: Type.BOOLEAN },
+        resumePlanner: { type: Type.BOOLEAN },
+        promptId: { type: Type.STRING },
+    },
+    required: ['awaitUser', 'haltAfter', 'resumePlanner', 'promptId'],
+    additionalProperties: false,
+};
+
+const awaitUserOptionSchema = {
+    type: Type.OBJECT,
+    properties: {
+        id: { type: Type.STRING },
+        label: { type: Type.STRING },
+    },
+    required: ['id', 'label'],
+    additionalProperties: false,
+};
+
+const awaitUserPayloadSchema = {
+    type: Type.OBJECT,
+    properties: {
+        promptId: { type: Type.STRING },
+        question: { type: Type.STRING },
+        options: {
+            type: Type.ARRAY,
+            minItems: 1,
+            items: awaitUserOptionSchema,
+        },
+        allowFreeText: { type: Type.BOOLEAN },
+        placeholder: { type: Type.STRING },
+    },
+    required: ['promptId', 'question', 'options', 'allowFreeText', 'placeholder'],
+    additionalProperties: false,
+};
+
+const domActionTargetProperties = {
+    byId: { type: Type.STRING },
+    byTitle: { type: Type.STRING },
+    selector: { type: Type.STRING },
+};
+
+const domActionTargetSchema = {
+    type: Type.OBJECT,
+    properties: withNullableProperties(domActionTargetProperties, Object.keys(domActionTargetProperties)),
+    required: Object.keys(domActionTargetProperties),
+    additionalProperties: false,
+};
+
+const domActionArgsProperties = {
+    cardId: { type: Type.STRING },
+    cardTitle: { type: Type.STRING },
+    newType: { type: Type.STRING, enum: ['bar', 'line', 'pie', 'doughnut', 'scatter', 'combo'] },
+    visible: { type: Type.BOOLEAN },
+    column: { type: Type.STRING },
+    values: { type: Type.ARRAY, items: { type: Type.STRING } },
+    topN: { type: Type.INTEGER },
+    hide: { type: Type.BOOLEAN },
+    label: { type: Type.STRING },
+    format: { type: Type.STRING, enum: ['png', 'csv', 'html'] },
+};
+
+const domActionArgsSchema = {
+    type: Type.OBJECT,
+    properties: withNullableProperties(domActionArgsProperties, Object.keys(domActionArgsProperties)),
+    required: Object.keys(domActionArgsProperties),
+    additionalProperties: false,
+};
+
+const domActionSchema = {
+    type: Type.OBJECT,
+    properties: {
+        toolName: {
+            type: Type.STRING,
+            enum: [
+                'highlightCard',
+                'changeCardChartType',
+                'showCardData',
+                'filterCard',
+                'setTopN',
+                'toggleHideOthers',
+                'toggleLegendLabel',
+                'exportCard',
+                'removeCard',
+            ],
+        },
+        target: domActionTargetSchema,
+        args: domActionArgsSchema,
+    },
+    required: ['toolName', 'target', 'args'],
+    additionalProperties: false,
+};
+
+const codePayloadSchema = {
+    type: Type.OBJECT,
+    properties: {
+        explanation: { type: Type.STRING },
+        jsFunctionBody: { type: Type.STRING, minLength: 10 },
+    },
+    required: ['explanation', 'jsFunctionBody'],
+    additionalProperties: false,
+};
+
+const filterArgsSchema = {
+    type: Type.OBJECT,
+    properties: {
+        query: { type: Type.STRING },
+    },
+    required: ['query'],
+    additionalProperties: false,
+};
+
+const ACTION_TYPE_ENUM = [
+    'plan_state_update',
+    'text_response',
+    'await_user',
+    'plan_creation',
+    'dom_action',
+    'execute_js_code',
+    'proceed_to_analysis',
+    'filter_spreadsheet',
+    'clarification_request',
+];
+
+const ENVELOPE_NULLABLE_KEYS = [
+    'intentContract',
+    'meta',
+        'planState',
+        'text',
+        'cardId',
+        'awaitUserPayload',
+    'plan',
+    'domAction',
+    'code',
+    'args',
+    'clarification',
+];
+
+const buildActionEnvelopeSchema = (typeEnum: string[] = ACTION_TYPE_ENUM) => ({
+    type: Type.OBJECT,
+    properties: withNullableProperties(
+        {
+            type: { type: Type.STRING, enum: typeEnum },
+            responseType: { type: Type.STRING, enum: typeEnum },
+            reason: { type: Type.STRING, maxLength: 280 },
+            stepId: { type: Type.STRING },
+            intentContract: intentContractSchema,
+            meta: actionMetaSchema,
+            planState: planStateSnapshotSchema,
+            text: { type: Type.STRING },
+            cardId: { type: Type.STRING },
+            awaitUserPayload: awaitUserPayloadSchema,
+            plan: singlePlanSchema,
+            domAction: domActionSchema,
+            code: codePayloadSchema,
+            args: filterArgsSchema,
+            clarification: clarificationRequestSchema,
+        },
+        ENVELOPE_NULLABLE_KEYS,
+    ),
+    required: [
+        'type',
+        'responseType',
+        'reason',
+        'stepId',
+        'intentContract',
+        'meta',
+        'planState',
+        'text',
+        'cardId',
+        'awaitUserPayload',
+        'plan',
+        'domAction',
+        'code',
+        'args',
+        'clarification',
+    ],
+    additionalProperties: false,
+});
+
+const actionEnvelopeSchema = buildActionEnvelopeSchema();
+
+const planOnlyActionsSchema = {
+    type: Type.ARRAY,
+    minItems: 1,
+    maxItems: 1,
+    items: buildActionEnvelopeSchema(['plan_state_update']),
+};
+
+const intentContractResponseSchema = {
+    type: Type.OBJECT,
+    properties: {
+        intent: { type: Type.STRING },
+        tool: { type: ['string', 'null'] },
+        args: makeNullableObject({
+            type: Type.OBJECT,
+            description: 'Tool arguments payload (free-form keys allowed).',
+            patternProperties: {
+                '^.*$': {
+                    type: ['string', 'number', 'integer', 'boolean', 'array', 'object', 'null'],
+                },
+            },
+            additionalProperties: false,
+        }),
+        awaitUser: { type: Type.BOOLEAN },
+        message: { type: ['string', 'null'] },
+    },
+    required: ['intent', 'tool', 'args', 'awaitUser', 'message'],
+    additionalProperties: false,
+};
 
 export const multiActionChatResponseSchema = {
     type: Type.OBJECT,
@@ -262,115 +551,21 @@ export const multiActionChatResponseSchema = {
         actions: {
             type: Type.ARRAY,
             description: "A sequence of actions for the assistant to perform.",
-            items: {
-                type: Type.OBJECT,
-                properties: {
-                    reason: {
-                        type: Type.STRING,
-                        maxLength: 280,
-                        description: "Short, auditable explanation (1-2 sentences) describing why this specific action is being taken.",
-                    },
-                    type: {
-                        type: Type.STRING,
-                        enum: ['text_response', 'await_user', 'plan_creation', 'dom_action', 'execute_js_code', 'proceed_to_analysis', 'filter_spreadsheet', 'clarification_request', 'plan_state_update'],
-                        description: 'Primary action type identifier. Must align with responseType for backward compatibility.',
-                    },
-                    stateTag: {
-                        type: Type.STRING,
-                        description: 'Monotonic tag minted as "<epochMs>-<seq>" that tracks action chronology (or a known label such as awaiting_clarification).',
-                    },
-                    stepId: { type: Type.STRING, description: "The identifier of the plan step this action is advancing. Required for every action including plan_state_update." },
-                    responseType: { type: Type.STRING, enum: ['text_response', 'await_user', 'plan_creation', 'dom_action', 'execute_js_code', 'proceed_to_analysis', 'filter_spreadsheet', 'clarification_request', 'plan_state_update'] },
-                    timestamp: { type: Type.STRING, description: 'ISO timestamp indicating when the action was created.' },
-                    text: { type: Type.STRING, description: "A conversational text response to the user. Required for 'text_response' or 'await_user'." },
-                    cardId: { type: Type.STRING, description: "Optional. The ID of the card this text response refers to. Used to link text to a specific chart." },
-                    meta: {
-                        type: Type.OBJECT,
-                        description: 'Optional runner hints controlling halt/wait behavior.',
-                        properties: {
-                            awaitUser: { type: Type.BOOLEAN, description: 'Set true to pause planning until the user responds.' },
-                            haltAfter: { type: Type.BOOLEAN, description: 'Set true to stop auto-continuations after this turn.' },
-                            resumePlanner: { type: Type.BOOLEAN, description: 'Set true to explicitly resume the planner after a previous pause.' },
-                            promptId: { type: Type.STRING, description: 'Stable identifier for matching follow-up UI (e.g., question cards).' },
-                        },
-                        required: ['awaitUser', 'haltAfter', 'resumePlanner', 'promptId'],
-                        additionalProperties: false,
-                    },
-                    plan: {
-                        ...singlePlanSchema,
-                        description: "Analysis plan object. Required for 'plan_creation'."
-                    },
-                    planState: {
-                        ...planStateSnapshotSchema,
-                        description: "Summary of the agent goal and progress. Required for 'plan_state_update'."
-                    },
-                    domAction: {
-                        type: Type.OBJECT,
-                        description: "A DOM manipulation action for the frontend to execute. Required for 'dom_action'.",
-                        properties: {
-                            toolName: { type: Type.STRING, enum: ['highlightCard', 'changeCardChartType', 'showCardData', 'filterCard', 'setTopN', 'toggleHideOthers', 'toggleLegendLabel', 'exportCard', 'removeCard'] },
-                            target: {
-                                type: Type.OBJECT,
-                                description: 'Declaration of the DOM target. Provide byId (card id), byTitle, or a CSS selector.',
-                                properties: {
-                                    byId: { type: Type.STRING, description: 'Card id target (preferred).' },
-                                    byTitle: { type: Type.STRING, description: 'Fallback title target.' },
-                                    selector: { type: Type.STRING, description: 'CSS selector when id/title are unavailable.' },
-                                },
-                                required: ['byId', 'byTitle', 'selector'],
-                                additionalProperties: false,
-                            },
-                            args: {
-                                type: Type.OBJECT,
-                                description: 'Arguments for the tool. Provide values for all properties; set unused ones to null.',
-                                properties: {
-                                    cardId: { type: Type.STRING, description: 'The ID of the target analysis card.' },
-                                    cardTitle: { type: Type.STRING, description: 'Optional title used to look up the card when cardId is unknown (removeCard only).' },
-                                    newType: { type: Type.STRING, enum: ['bar', 'line', 'pie', 'doughnut', 'scatter', 'combo'], description: "For 'changeCardChartType'." },
-                                    visible: { type: Type.BOOLEAN, description: "For 'showCardData'." },
-                                    column: { type: Type.STRING, description: "For 'filterCard', the column to filter on." },
-                                    values: { type: Type.ARRAY, items: { type: Type.STRING }, description: "For 'filterCard', the values to include." },
-                                    topN: { type: Type.INTEGER, description: "For 'setTopN'. Provide a positive integer. Omit this field to revert to showing all categories." },
-                                    hide: { type: Type.BOOLEAN, description: "For 'toggleHideOthers'. True hides the 'Others' bucket, false shows it." },
-                                    label: { type: Type.STRING, description: "For 'toggleLegendLabel'. The exact legend label to toggle visibility for." },
-                                    format: { type: Type.STRING, enum: ['png', 'csv', 'html'], description: "For 'exportCard'. Choose the export format." },
-                                },
-                                required: ['cardId', 'cardTitle', 'newType', 'visible', 'column', 'values', 'topN', 'hide', 'label', 'format'],
-                                additionalProperties: false,
-                            },
-                        },
-                        required: ['toolName', 'target', 'args'],
-                    },
-                    code: {
-                        type: Type.OBJECT,
-                        description: "For 'execute_js_code', the code to run.",
-                        properties: {
-                            explanation: { type: Type.STRING, description: "A brief, user-facing explanation of what the code will do." },
-                            jsFunctionBody: {
-                                type: Type.STRING,
-                                description: "The non-empty body of a JavaScript function that takes 'data' and returns the transformed 'data'. Blank strings or placeholders are invalid.",
-                                minLength: 10,
-                            },
-                        },
-                        required: ['explanation', 'jsFunctionBody']
-                    },
-                    args: {
-                        type: Type.OBJECT,
-                        description: "Arguments for other tools, like 'filter_spreadsheet'.",
-                        properties: {
-                            query: { type: Type.STRING, description: "The natural language query to filter the spreadsheet by." },
-                        },
-                    },
-                    clarification: {
-                        ...clarificationRequestSchema,
-                        description: "The clarification request object. Required for 'clarification_request'."
-                    },
-                },
-                required: ['type', 'responseType', 'reason', 'stateTag', 'stepId', 'timestamp', 'text']
-            }
-        }
+            minItems: 1,
+            items: actionEnvelopeSchema,
+        },
     },
-    required: ['actions']
+    required: ['actions'],
+    additionalProperties: false,
+};
+
+export const planOnlyChatResponseSchema = {
+    type: Type.OBJECT,
+    properties: {
+        actions: planOnlyActionsSchema,
+    },
+    required: ['actions'],
+    additionalProperties: false,
 };
 
 const typeMap = new Map<any, string>([
@@ -382,54 +577,11 @@ const typeMap = new Map<any, string>([
     [Type.OBJECT, 'object'],
 ]);
 
-const strictAdditionalPropsPaths = new Set([
-    '',
-    'properties.actions.items',
-    'properties.actions.items.properties.plan',
-    'properties.actions.items.properties.domAction',
-    'properties.actions.items.properties.domAction.properties.args',
-    'properties.actions.items.properties.code',
-    'properties.actions.items.properties.args',
-    'properties.actions.items.properties.clarification',
-    'properties.actions.items.properties.clarification.properties.options.items',
-    'properties.actions.items.properties.clarification.properties.pendingPlan',
-    'properties.actions.items.properties.planState',
-    'properties.actions.items.properties.planState.properties.nextSteps.items',
-]);
-
-const strictAllPropsRequiredPaths = new Set([
-    'properties.actions.items',
-    'properties.actions.items.properties.args',
-    'properties.actions.items.properties.plan',
-    'properties.actions.items.properties.planState',
-    'properties.actions.items.properties.clarification.properties.pendingPlan',
-    'properties.plans.items',
-]);
+const requireAllPropsPaths = new Set<string>();
 
 const nullablePropertyPaths = new Set([
-    'properties.actions.items.properties.reason',
     'properties.actions.items.properties.text',
-    'properties.actions.items.properties.stateTag',
-    'properties.actions.items.properties.stepId',
     'properties.actions.items.properties.cardId',
-    'properties.actions.items.properties.meta',
-    'properties.actions.items.properties.plan',
-    'properties.actions.items.properties.plan.properties.aggregation',
-    'properties.actions.items.properties.plan.properties.groupByColumn',
-    'properties.actions.items.properties.plan.properties.valueColumn',
-    'properties.actions.items.properties.plan.properties.xValueColumn',
-    'properties.actions.items.properties.plan.properties.yValueColumn',
-    'properties.actions.items.properties.plan.properties.secondaryValueColumn',
-    'properties.actions.items.properties.plan.properties.secondaryAggregation',
-    'properties.actions.items.properties.plan.properties.defaultTopN',
-    'properties.actions.items.properties.plan.properties.defaultHideOthers',
-    'properties.actions.items.properties.plan.properties.orderBy',
-    'properties.actions.items.properties.plan.properties.orderBy.items.properties.direction',
-    'properties.actions.items.properties.plan.properties.rowFilter',
-    'properties.actions.items.properties.plan.properties.rowFilter.properties.column',
-    'properties.actions.items.properties.plan.properties.rowFilter.properties.values',
-    'properties.actions.items.properties.plan.properties.limit',
-    'properties.actions.items.properties.domAction',
     'properties.actions.items.properties.domAction.properties.args',
     'properties.actions.items.properties.domAction.properties.args.properties.newType',
     'properties.actions.items.properties.domAction.properties.args.properties.visible',
@@ -443,10 +595,19 @@ const nullablePropertyPaths = new Set([
     'properties.actions.items.properties.domAction.properties.target.properties.byId',
     'properties.actions.items.properties.domAction.properties.target.properties.byTitle',
     'properties.actions.items.properties.domAction.properties.target.properties.selector',
-    'properties.actions.items.properties.code',
-    'properties.actions.items.properties.args',
-    'properties.actions.items.properties.clarification',
-    'properties.actions.items.properties.clarification.properties.pendingPlan',
+    'properties.actions.items.properties.planState.properties.contextSummary',
+    'properties.actions.items.properties.planState.properties.blockedBy',
+    'properties.actions.items.properties.planState.properties.confidence',
+    'properties.actions.items.properties.intentContract.properties.tool',
+    'properties.actions.items.properties.intentContract.properties.args.properties.datasetId',
+    'properties.actions.items.properties.intentContract.properties.args.properties.column',
+    'properties.actions.items.properties.intentContract.properties.args.properties.valueColumn',
+    'properties.actions.items.properties.intentContract.properties.args.properties.limit',
+    'properties.actions.items.properties.intentContract.properties.args.properties.topN',
+    'properties.actions.items.properties.intentContract.properties.args.properties.thresholdMultiplier',
+    'properties.actions.items.properties.intentContract.properties.args.properties.viewTitle',
+    'properties.actions.items.properties.intentContract.properties.args.properties.cardId',
+    'properties.actions.items.properties.intentContract.properties.message',
     'properties.actions.items.properties.clarification.properties.pendingPlan.properties.chartType',
     'properties.actions.items.properties.clarification.properties.pendingPlan.properties.title',
     'properties.actions.items.properties.clarification.properties.pendingPlan.properties.description',
@@ -465,12 +626,6 @@ const nullablePropertyPaths = new Set([
     'properties.actions.items.properties.clarification.properties.pendingPlan.properties.rowFilter.properties.column',
     'properties.actions.items.properties.clarification.properties.pendingPlan.properties.rowFilter.properties.values',
     'properties.actions.items.properties.clarification.properties.pendingPlan.properties.limit',
-    'properties.actions.items.properties.planState',
-    'properties.actions.items.properties.planState.properties.contextSummary',
-    'properties.actions.items.properties.planState.properties.blockedBy',
-    'properties.actions.items.properties.planState.properties.stateTag',
-    'properties.actions.items.properties.planState.properties.steps.items.properties.intent',
-    'properties.jsFunctionBody',
     'properties.plans.items.properties.aggregation',
     'properties.plans.items.properties.groupByColumn',
     'properties.plans.items.properties.valueColumn',
@@ -505,11 +660,14 @@ const applyNullability = (schema: any) => {
         } else if (schema.type !== 'null') {
             schema.type = [schema.type, 'null'];
         }
-    } else if (!schema.anyOf && !skipDefaultNullOnly) {
-        schema.anyOf = [{ type: 'null' }];
+    } else if (!skipDefaultNullOnly) {
+        schema.type = ['null'];
     }
     return schema;
 };
+
+const normalizeSchemaPath = (path: string): string =>
+    path.replace(/\.oneOf\[\d+\]/g, '').replace(/\.anyOf\[\d+\]/g, '');
 
 const convertGeminiSchemaToJsonSchema = (node: any, path = ''): any => {
     if (Array.isArray(node)) {
@@ -519,7 +677,11 @@ const convertGeminiSchemaToJsonSchema = (node: any, path = ''): any => {
         const converted: Record<string, any> = {};
         for (const [key, value] of Object.entries(node)) {
             if (key === 'type') {
-                converted.type = typeMap.get(value as number) ?? value;
+                if (Array.isArray(value)) {
+                    converted.type = value.map(entry => typeMap.get(entry as number) ?? entry);
+                } else {
+                    converted.type = typeMap.get(value as number) ?? value;
+                }
                 continue;
             }
             if (key === 'properties' && value && typeof value === 'object') {
@@ -535,21 +697,32 @@ const convertGeminiSchemaToJsonSchema = (node: any, path = ''): any => {
                 converted.items = convertGeminiSchemaToJsonSchema(value, nextPath);
                 continue;
             }
+            if (key === 'oneOf' && Array.isArray(value)) {
+                converted.oneOf = value.map((item, index) =>
+                    convertGeminiSchemaToJsonSchema(item, `${path}.oneOf[${index}]`),
+                );
+                continue;
+            }
+            if (key === 'anyOf' && Array.isArray(value)) {
+                converted.anyOf = value.map((item, index) =>
+                    convertGeminiSchemaToJsonSchema(item, `${path}.anyOf[${index}]`),
+                );
+                continue;
+            }
             converted[key] = convertGeminiSchemaToJsonSchema(value, path ? `${path}.${key}` : key);
         }
-        if (converted.type === 'object' && typeof converted.additionalProperties === 'undefined' && strictAdditionalPropsPaths.has(path)) {
-            converted.additionalProperties = false;
-        }
-        if (converted.type === 'object' && strictAllPropsRequiredPaths.has(path)) {
+        const normalizedPath = normalizeSchemaPath(path);
+        if (converted.type === 'object' && requireAllPropsPaths.has(normalizedPath)) {
             const propertyKeys = converted.properties ? Object.keys(converted.properties) : [];
             converted.required = propertyKeys;
         }
-        if (nullablePropertyPaths.has(path)) {
+        if (nullablePropertyPaths.has(normalizedPath)) {
             return applyNullability(converted);
         }
         return converted;
     }
-    if (nullablePropertyPaths.has(path)) {
+    const normalizedPath = normalizeSchemaPath(path);
+    if (nullablePropertyPaths.has(normalizedPath)) {
         return applyNullability(node);
     }
     return node;
@@ -560,3 +733,4 @@ export const dataPreparationJsonSchema = convertGeminiSchemaToJsonSchema(dataPre
 export const filterFunctionJsonSchema = convertGeminiSchemaToJsonSchema(filterFunctionSchema);
 export const proactiveInsightJsonSchema = convertGeminiSchemaToJsonSchema(proactiveInsightSchema);
 export const multiActionChatResponseJsonSchema = convertGeminiSchemaToJsonSchema(multiActionChatResponseSchema);
+export const planOnlyChatResponseJsonSchema = convertGeminiSchemaToJsonSchema(planOnlyChatResponseSchema);

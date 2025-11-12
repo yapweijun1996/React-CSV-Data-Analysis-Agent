@@ -4,6 +4,7 @@ import type { GraphObservation, StepStatus } from '../schema';
 import { getGraphToolSpec } from '../toolSpecs';
 import type { LangChainPlanGraphPayload } from '@/services/langchain/types';
 import { isLangChainPlanGraphPayload } from '@/services/langchain/types';
+import type { IntentContract } from '@/services/ai/intentContract';
 
 const createPlanId = () => `plan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 const MAX_OBSERVATIONS = 20;
@@ -13,6 +14,7 @@ const createToolAction = (spec: {
     stepId: string;
     reason: string;
     text: string;
+    intentContract?: IntentContract;
 }): AiAction => ({
     type: 'execute_js_code',
     responseType: 'execute_js_code',
@@ -25,6 +27,7 @@ const createToolAction = (spec: {
         toolCall: spec.toolCall,
     },
     toolCall: spec.toolCall,
+    intentContract: spec.intentContract ?? null,
 });
 
 const trimObservations = (existing: GraphObservation[], next: GraphObservation): GraphObservation[] => {
@@ -53,12 +56,13 @@ const handleLangChainPlan = (state: PipelineContext['state'], plan: LangChainPla
         },
     };
 
-    const pendingPlanEntry = {
-        id: plan.stepId,
-        summary: plan.summary,
-        plan: plan.plan,
-        createdAt: new Date().toISOString(),
-    };
+const pendingPlanEntry = {
+    id: plan.stepId,
+    summary: plan.summary,
+    plan: plan.plan,
+    lastUpdatedAt: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+};
 
     const observation: GraphObservation = {
         id: `langchain-plan-${Date.now().toString(36)}`,
@@ -92,19 +96,20 @@ export const planNode = ({ state, payload }: PipelineContext): NodeResult => {
         phase: 'plan',
         updatedAt: new Date().toISOString(),
     };
+    const langChainPlan = extractLangChainPlan(payload);
+    if (langChainPlan) {
+        return handleLangChainPlan(baseState, langChainPlan);
+    }
+
     const pendingReply = state.pendingUserReply;
     if (!pendingReply) {
         return { state: baseState, actions: [], label: 'plan' };
     }
 
-    const langChainPlan = extractLangChainPlan(payload);
     const toolSpec = pendingReply.optionId ? getGraphToolSpec(pendingReply.optionId) : undefined;
 
     if (!toolSpec) {
-        if (!langChainPlan) {
-            throw new Error('LangChain plan payload missing; cannot construct plan node actions.');
-        }
-        return handleLangChainPlan(baseState, langChainPlan);
+        throw new Error('LangChain plan payload missing; cannot construct plan node actions.');
     }
 
     const readableSummary =
@@ -151,8 +156,20 @@ export const planNode = ({ state, payload }: PipelineContext): NodeResult => {
             stepId: toolSpec.stepId,
             reason: toolSpec.reason,
             text: toolSpec.text,
+            intentContract: toolSpec.intentContract,
         }),
     );
+
+    const manualPendingPlan =
+        pendingReply.plan != null
+            ? {
+                  id: currentStepId,
+                  summary: readableSummary,
+                  plan: pendingReply.plan,
+                  createdAt: pendingReply.at,
+                  lastUpdatedAt: new Date().toISOString(),
+              }
+            : null;
 
     return {
         state: {
@@ -160,7 +177,7 @@ export const planNode = ({ state, payload }: PipelineContext): NodeResult => {
             planId,
             steps: [step],
             currentStepId,
-            pendingPlan: null,
+            pendingPlan: manualPendingPlan,
             pendingUserReply: null,
         },
         actions,

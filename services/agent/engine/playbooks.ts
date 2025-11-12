@@ -7,7 +7,7 @@ export const PLAYBOOKS: EnginePlaybook[] = [
         success_criteria: ['user_follow_up'],
         ui: {
             message_template:
-                '{{greeting}}！I am ready to explore your CSV. Pick a quick action or tell me what to analyze next.',
+                '{{greeting}}！I am ready to explore your CSV now. 快速開始選項：\n{{quick_choice_list}}\n(也可以直接輸入想看的指令～)',
             quick_action_rules: [
                 {
                     source: 'tools',

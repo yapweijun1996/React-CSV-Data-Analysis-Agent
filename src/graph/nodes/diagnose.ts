@@ -1,5 +1,6 @@
 import type { PipelineContext, NodeResult } from './types';
 import type { AiAction } from '@/types';
+import { normalizeIntentContract } from '@/services/ai/intentContract';
 
 export const diagnoseNode = ({ state }: PipelineContext): NodeResult => {
     const updatedState = {
@@ -18,6 +19,11 @@ export const diagnoseNode = ({ state }: PipelineContext): NodeResult => {
             reason: '需要列画像来制定计划。',
             meta: { toolCall: { kind: 'profile_dataset' } },
             toolCall: { kind: 'profile_dataset' },
+            intentContract: normalizeIntentContract({
+                intent: 'profile',
+                tool: 'csv.profile',
+                args: {},
+            }),
         });
     }
     return {

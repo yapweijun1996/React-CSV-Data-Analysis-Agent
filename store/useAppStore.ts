@@ -78,6 +78,13 @@ import { isGraphToolOption } from '@/src/graph/toolSpecs';
 import { toLangChainPlanGraphPayload } from '@/services/langchain/types';
 import type { LangChainPlanEnvelope, LangChainPlanTelemetry } from '@/services/langchain/types';
 import type { PlanGenerationUsageEntry } from '@/services/ai/planGenerator';
+import { normalizeIntentContract } from '@/services/ai/intentContract';
+import type { IntentContract } from '@/services/ai/intentContract';
+import {
+    buildRowFilterFromIntentFilters,
+    planFromAggregateIntent,
+    deriveSchemaFromRows,
+} from '@/services/agent/intentTransforms';
 import { dataTools, type AggregateResult, type AggregatePayload, type ProfileResult } from '../services/dataTools';
 import {
     persistCleanDataset,
@@ -89,6 +96,7 @@ import {
     saveMemorySnapshot,
     ensureDatasetRuntimeConfig,
     updateDatasetRuntimeConfig,
+    saveCardResult,
     type CardDataRef,
     type ViewStoreRecord,
     type CardKind,
@@ -103,7 +111,7 @@ import {
 import { getErrorMessage } from '../services/errorMessages';
 import { ERROR_CODES, type ErrorCode } from '../services/errorCodes';
 import { getGroupableColumnCandidates } from '../utils/groupByInference';
-import { AUTO_FULL_SCAN_ROW_THRESHOLD } from '../services/runtimeConfig';
+import { AUTO_FULL_SCAN_ROW_THRESHOLD, mergeRuntimeConfig } from '../services/runtimeConfig';
 import { estimateLlmCostUsd } from '../services/ai/llmPricing';
 import type { LlmUsageMetrics } from '@/services/ai/apiClient';
 
@@ -112,10 +120,54 @@ const createClarificationId = () =>
         ? crypto.randomUUID()
         : `clar-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+const createPlanNoticeId = () =>
+    `plan-warning-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
 const createRunId = () => `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const createToastId = () => `toast-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const createValidationEventId = () => `val-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const createPromptMetricId = () => `prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+const SAMPLE_TIERS: ReadonlyArray<number | null> = [100, 300, 1000, null];
+
+const describeSampleTier = (value: number | null): string =>
+    value === null ? '全量数据 (Full dataset)' : `${value.toLocaleString()} 行样本`;
+
+const deriveTierIndexFromConfig = (config: DatasetRuntimeConfig | null): number => {
+    if (!config) return 0;
+    if (config.mode === 'full' || config.allowFullScan) {
+        return SAMPLE_TIERS.length - 1;
+    }
+    const sampleSize = config.sampleSize ?? SAMPLE_TIERS[0] ?? 100;
+    let bestIndex = 0;
+    SAMPLE_TIERS.forEach((tier, index) => {
+        if (tier !== null && sampleSize >= tier) {
+            bestIndex = index;
+        }
+    });
+    return bestIndex;
+};
+
+const applyTierToRuntimeConfig = (
+    config: DatasetRuntimeConfig | null,
+    tierValue: number | null,
+    rowCountHint?: number,
+): DatasetRuntimeConfig | null => {
+    if (!config) return null;
+    if (tierValue === null) {
+        return mergeRuntimeConfig(config, {
+            mode: 'full',
+            allowFullScan: true,
+        });
+    }
+    const clamped = rowCountHint ? Math.min(tierValue, rowCountHint) : tierValue;
+    return mergeRuntimeConfig(config, {
+        mode: 'sample',
+        allowFullScan: false,
+        sampleSize: clamped,
+        profileSampleSize: clamped,
+    });
+};
 
 let autoSaveManager: AutoSaveManager | null = null;
 let latestAutoSaveConfig: AutoSaveConfig | null = null;
@@ -291,6 +343,139 @@ const formatGraphObservationForLog = (observation: GraphObservation): string => 
                 parts.push(`Tok ${tokenParts.join(' / ')}`);
             }
         }
+
+        const resolveIntentContract = (raw: unknown): IntentContract | null => {
+            if (!raw) return null;
+            try {
+                return normalizeIntentContract(raw as IntentContract);
+            } catch (error) {
+                console.warn('[IntentContract] Unable to normalize contract.', error);
+                get().addProgress('Intent contract validation failed，已忽略该工具提示。', 'error');
+                return null;
+            }
+        };
+
+        const buildToolCallFromIntent = (contract: IntentContract): GraphToolCall | null => {
+            switch (contract.tool) {
+                case 'csv.profile':
+                    return {
+                        kind: 'profile_dataset',
+                        params: contract.args.limit ? { sampleSize: contract.args.limit } : undefined,
+                    };
+                case 'csv.clean_invoice_month':
+                    return {
+                        kind: 'normalize_invoice_month',
+                        params: { column: contract.args.column ?? 'InvoiceMonth' },
+                    };
+                case 'csv.detect_outliers':
+                    return {
+                        kind: 'detect_outliers',
+                        params: {
+                            valueColumn: contract.args.valueColumn ?? contract.args.column ?? 'Amount',
+                            multiplier: contract.args.thresholdMultiplier ?? 2,
+                        },
+                    };
+                default:
+                    return null;
+            }
+        };
+
+        const executeIntentSideEffects = async (contract: IntentContract): Promise<boolean> => {
+            switch (contract.tool) {
+                case 'csv.aggregate': {
+                    const dataset = get().csvData;
+                    if (!dataset) {
+                        get().addProgress('无法执行聚合：尚未载入数据集。', 'error');
+                        return false;
+                    }
+                    const plan = planFromAggregateIntent(contract);
+                    if (!plan) {
+                        get().addProgress('聚合指令缺少必要的列信息（需要 valueColumn 或 column）。', 'error');
+                        return false;
+                    }
+                    const runId = createRunId();
+                    const cards = await runPlanWithChatLifecycle(plan, dataset, runId);
+                    if (!cards || cards.length === 0) {
+                        get().addProgress(`聚合 "${plan.title}" 未产生可用图表。`, 'error');
+                        return false;
+                    }
+                    get().addProgress(`已根据指令完成 "${plan.title}" 图表。`);
+                    return true;
+                }
+                case 'ui.remove_card': {
+                    const cardId = contract.args.cardId ?? null;
+                    if (!cardId) {
+                        get().addProgress('无法删除卡片：contract 缺少 cardId。', 'error');
+                        return false;
+                    }
+                    const domAction: DomAction = {
+                        toolName: 'removeCard',
+                        target: { byId: cardId },
+                        args: { cardId },
+                    };
+                    get().executeDomAction(domAction);
+                    return true;
+                }
+                case 'idb.save_view': {
+                    const datasetId = get().datasetHash;
+                    if (!datasetId) {
+                        get().addProgress('无法保存视图：尚未载入数据集。', 'error');
+                        return false;
+                    }
+                    const cardId = contract.args.cardId ?? null;
+                    if (!cardId) {
+                        get().addProgress('无法保存视图：contract 缺少 cardId。', 'error');
+                        return false;
+                    }
+                    const card = get().analysisCards.find(c => c.id === cardId);
+                    if (!card) {
+                        get().addProgress(`无法保存视图：找不到卡片 ${cardId}。`, 'error');
+                        return false;
+                    }
+                    if (!card.aggregatedData || card.aggregatedData.length === 0) {
+                        get().addProgress(`无法保存视图 "${card.plan.title}"：卡片没有数据。`, 'error');
+                        return false;
+                    }
+                    if (card.dataRefId) {
+                        get().addProgress(`视图 "${card.plan.title}" 已保存，无需重复操作。`);
+                        return true;
+                    }
+                    const schema = card.valueSchema ?? deriveSchemaFromRows(card.aggregatedData);
+                    const dataRef: CardDataRef = {
+                        schema,
+                        rows: card.aggregatedData,
+                        sampled: card.isSampledResult ?? card.aggregationMeta?.sampled ?? false,
+                        source: 'aggregate',
+                        planSnapshot: card.plan,
+                    };
+                    const viewTitle = contract.args.viewTitle ?? card.plan.title ?? 'Saved view';
+                    const queryHash = card.queryHash ?? `manual-${Date.now().toString(36)}`;
+                    try {
+                        const savedId = await saveCardResult({
+                            datasetId,
+                            title: viewTitle,
+                            kind: inferCardKind(card.plan),
+                            queryHash,
+                            explainer: card.summary,
+                            dataRef,
+                        });
+                        set(state => ({
+                            analysisCards: state.analysisCards.map(existing =>
+                                existing.id === cardId ? { ...existing, dataRefId: savedId, queryHash } : existing,
+                            ),
+                        }));
+                        get().addProgress(`视图 "${viewTitle}" 已保存，可在“保存的视图”中复用。`);
+                        return true;
+                    } catch (error) {
+                        const reason = error instanceof Error ? error.message : String(error);
+                        get().addProgress(`保存视图失败：${reason}`, 'error');
+                        return false;
+                    }
+                }
+                default:
+                    return false;
+            }
+        };
         if (telemetry.estimatedCostUsd != null) {
             parts.push(`$${telemetry.estimatedCostUsd.toFixed(4)}`);
         } else if (telemetry.latencyMs != null) {
@@ -794,6 +979,7 @@ const initialAppState: AppState = {
     graphLastReadyAt: null,
     graphAwaitPrompt: null,
     graphAwaitPromptId: null,
+    graphAwaitReason: null,
     graphAwaitHistory: [],
     graphSessionId: null,
     graphLastToolSummary: null,
@@ -805,12 +991,22 @@ const initialAppState: AppState = {
     graphObservations: [],
     graphPhase: 'idle',
     graphLoopBudget: { maxActs: 3, actsUsed: 0, exceeded: false },
+    samplePolicy: {
+        tiers: SAMPLE_TIERS,
+        currentIndex: 0,
+        userConfirmedFullScan: false,
+        lastUpgradeReason: null,
+    },
+    planValidationNotices: [],
+    activeSchemaPhase: 'plan',
 };
 
 export const useAppStore = create<StoreState & StoreActions>((set, get) => {
     const registerClarification = (clarificationPayload: ClarificationRequestPayload): ClarificationRequest => {
+        const fallbackReason = clarificationPayload.reasonHint ?? 'Need your choice before I can keep the plan moving.';
         const newClarification: ClarificationRequest = {
             ...clarificationPayload,
+            reasonHint: fallbackReason,
             id: createClarificationId(),
             status: 'pending',
             contextType: clarificationPayload.contextType ?? 'plan',
@@ -928,7 +1124,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                     const sampleSize =
                         typeof toolCall.params?.sampleSize === 'number'
                             ? (toolCall.params.sampleSize as number)
-                            : undefined;
+                            : get().getSampleSizeHint('profile');
                     const profile = await graphDataTools.profileDataset(datasetId, sampleSize);
                     recordGraphToolSuccess(profile, { description: 'Dataset profile' });
                     return true;
@@ -1039,9 +1235,19 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
         if (!datasetId) return null;
         try {
             const config = await ensureDatasetRuntimeConfig(datasetId, { rowCountHint });
-            set({
-                datasetRuntimeConfig: config,
-                aggregationModePreference: config.mode,
+            set(state => {
+                const tierIndex = deriveTierIndexFromConfig(config);
+                const syncedPolicy = {
+                    ...state.samplePolicy,
+                    currentIndex: tierIndex,
+                    userConfirmedFullScan: config.mode === 'full' || config.allowFullScan,
+                    lastUpgradeReason: null,
+                };
+                return {
+                    datasetRuntimeConfig: config,
+                    aggregationModePreference: config.mode,
+                    samplePolicy: syncedPolicy,
+                };
             });
             return config;
         } catch (error) {
@@ -1057,9 +1263,18 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
     ) => {
         try {
             const config = await updateDatasetRuntimeConfig(datasetId, updates, options);
-            set({
-                datasetRuntimeConfig: config,
-                aggregationModePreference: config.mode,
+            set(state => {
+                const tierIndex = deriveTierIndexFromConfig(config);
+                const syncedPolicy = {
+                    ...state.samplePolicy,
+                    currentIndex: tierIndex,
+                    userConfirmedFullScan: config.mode === 'full' || config.allowFullScan,
+                };
+                return {
+                    datasetRuntimeConfig: config,
+                    aggregationModePreference: config.mode,
+                    samplePolicy: syncedPolicy,
+                };
             });
             return config;
         } catch (error) {
@@ -1542,6 +1757,10 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                     const newObservations = incomingObservations.filter(obs => !prevIds.has(obs.id));
                     const heartbeat = new Date(event.timestamp).toISOString();
                     const awaitingPrompt = event.state.awaitPrompt ?? null;
+                    const awaitActionReason =
+                        Array.isArray(event.actions)
+                            ? event.actions.find(action => action.responseType === 'await_user')?.reason?.trim() ?? null
+                            : null;
                     const nextPhase = event.phase ?? current.graphPhase ?? 'idle';
                     const nextLoopBudget = event.loopBudget ?? current.graphLoopBudget;
                     set(current => ({
@@ -1552,6 +1771,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                         graphLoopBudget: nextLoopBudget,
                         graphAwaitPrompt: awaitingPrompt,
                         graphAwaitPromptId: awaitingPrompt?.promptId ?? null,
+                        graphAwaitReason: awaitingPrompt ? awaitActionReason ?? current.graphAwaitReason ?? null : null,
                         agentAwaitingUserInput: Boolean(awaitingPrompt),
                         graphSessionId: event.state.sessionId ?? current.graphSessionId ?? null,
                         graphAwaitHistory: awaitingPrompt
@@ -1668,14 +1888,15 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             });
         }
     },
-    processGraphActions: async (actions: AiAction[]) => {
-        if (!Array.isArray(actions) || actions.length === 0) return;
-        for (const action of actions) {
-            switch (action.responseType) {
-                case 'plan_state_update':
-                    if (action.planState) {
-                        get().updatePlannerPlanState(action.planState);
-                    }
+        processGraphActions: async (actions: AiAction[]) => {
+            if (!Array.isArray(actions) || actions.length === 0) return;
+            for (const action of actions) {
+                const intentContract = resolveIntentContract(action.intentContract);
+                switch (action.responseType) {
+                    case 'plan_state_update':
+                        if (action.planState) {
+                            get().updatePlannerPlanState(action.planState);
+                        }
                     break;
                 case 'plan_creation':
                     if (action.plan) {
@@ -1719,11 +1940,27 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                         await runPlanWithChatLifecycle(action.plan, dataset, runId);
                     }
                     break;
-                case 'execute_js_code':
-                    if (action.toolCall || action.meta?.toolCall) {
-                        await executeGraphToolCall(action.toolCall ?? action.meta?.toolCall);
-                    }
-                    break;
+                    case 'execute_js_code':
+                        if (intentContract) {
+                            const handled = await executeIntentSideEffects(intentContract);
+                            if (handled) {
+                                break;
+                            }
+                            const inferredCall = buildToolCallFromIntent(intentContract);
+                            if (inferredCall) {
+                                await executeGraphToolCall(inferredCall);
+                                break;
+                            }
+                        }
+                        if (action.toolCall || action.meta?.toolCall) {
+                            await executeGraphToolCall(action.toolCall ?? action.meta?.toolCall);
+                        } else if (intentContract) {
+                            get().addProgress(
+                                `Intent ${intentContract.intent} 尚未实现对应的执行器（tool=${intentContract.tool ?? 'n/a'}）。`,
+                                'error',
+                            );
+                        }
+                        break;
                 case 'text_response':
                 case 'await_user': {
                     const text = action.text?.trim();
@@ -1887,7 +2124,10 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                     finalizeTrace('failed', preparation.errorMessage ?? 'Plan invalid.');
                     return null;
                 }
-                preparation.warnings.forEach(warning => addProgress(`${plan.title}: ${warning}`));
+                preparation.warnings.forEach(warning => {
+                    addProgress(`${plan.title}: ${warning}`);
+                    get().recordPlanValidationNotice(plan.title, warning);
+                });
 
                 const preparedPlan = preparation.plan;
                 let aggregateResultWrapper: { result: AggregateResult; durationMs: number } | null = null;
@@ -2317,7 +2557,7 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 try {
                     const profileResponse = await graphDataTools.profileDataset(
                         datasetId,
-                        get().datasetRuntimeConfig?.profileSampleSize,
+                        get().getSampleSizeHint('profile'),
                     );
                     const snapshot = (profileResponse.context ?? null) as ProfileResult | null;
                     if (snapshot) {
@@ -2789,6 +3029,82 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             conversationMemoryCompactionInFlight = false;
         }
     },
+    setActiveSchemaPhase: phase => {
+        set(state => (state.activeSchemaPhase === phase ? {} : { activeSchemaPhase: phase }));
+    },
+    resetSamplePolicy: () => {
+        set(state => {
+            const resetPolicy = {
+                tiers: SAMPLE_TIERS,
+                currentIndex: 0,
+                userConfirmedFullScan: false,
+                lastUpgradeReason: null,
+            };
+            const updatedConfig = applyTierToRuntimeConfig(
+                state.datasetRuntimeConfig,
+                resetPolicy.tiers[resetPolicy.currentIndex],
+                state.datasetProfile?.rowCount ?? state.csvData?.data.length,
+            );
+            return {
+                samplePolicy: resetPolicy,
+                datasetRuntimeConfig: updatedConfig ?? state.datasetRuntimeConfig,
+            };
+        });
+    },
+    requestSampleUpgrade: reason => {
+        const currentIndex = get().samplePolicy.currentIndex;
+        if (currentIndex >= SAMPLE_TIERS.length - 1) {
+            return;
+        }
+        set(state => {
+            const nextIndex = state.samplePolicy.currentIndex + 1;
+            const nextPolicy = {
+                ...state.samplePolicy,
+                currentIndex: nextIndex,
+                userConfirmedFullScan: state.samplePolicy.userConfirmedFullScan || reason === 'user_confirm',
+                lastUpgradeReason: reason,
+            };
+            const tierValue = nextPolicy.tiers[nextIndex];
+            const updatedConfig = applyTierToRuntimeConfig(
+                state.datasetRuntimeConfig,
+                tierValue,
+                state.datasetProfile?.rowCount ?? state.csvData?.data.length,
+            );
+            return {
+                samplePolicy: nextPolicy,
+                datasetRuntimeConfig: updatedConfig ?? state.datasetRuntimeConfig,
+            };
+        });
+        const updatedPolicy = get().samplePolicy;
+        const tierValue = updatedPolicy.tiers[updatedPolicy.currentIndex];
+        const reasonLabel = reason === 'confidence' ? '模型置信度偏低，自动拓样' : '你已确认需要更高精度';
+        get().addProgress(`采样级别提升至 ${describeSampleTier(tierValue)}（${reasonLabel}）`, 'system');
+    },
+    getSampleSizeHint: (_kind) => {
+        const { samplePolicy } = get();
+        const tierValue = samplePolicy.tiers[samplePolicy.currentIndex];
+        if (tierValue === null) {
+            return undefined;
+        }
+        const rowCount = get().datasetProfile?.rowCount ?? get().csvData?.data.length ?? undefined;
+        return rowCount ? Math.min(tierValue, rowCount) : tierValue;
+    },
+    recordPlanValidationNotice: (planTitle, message) => {
+        const notice = {
+            id: createPlanNoticeId(),
+            planTitle,
+            message,
+            at: new Date().toISOString(),
+        };
+        set(state => ({
+            planValidationNotices: [...state.planValidationNotices, notice].slice(-4),
+        }));
+    },
+    dismissPlanValidationNotice: noticeId => {
+        set(state => ({
+            planValidationNotices: state.planValidationNotices.filter(notice => notice.id !== noticeId),
+        }));
+    },
     recordLlmUsage: usage => {
         const estimatedCostUsd =
             usage.estimatedCostUsd != null
@@ -3134,6 +3450,9 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
                 plannerPendingSteps: normalizedSteps,
                 plannerDatasetHash: state.datasetHash ?? null,
             }));
+            if (typeof planState.confidence === 'number' && planState.confidence < 0.6) {
+                get().requestSampleUpgrade('confidence');
+            }
         },
         clearPlannerPlanState: () => {
             set(state => ({
@@ -3146,11 +3465,35 @@ export const useAppStore = create<StoreState & StoreActions>((set, get) => {
             set({ plannerPendingSteps: normalizePlanSteps(steps) });
         },
         completePlannerPendingStep: () => {
-            set(state =>
-                state.plannerPendingSteps.length === 0
-                    ? {}
-                    : { plannerPendingSteps: state.plannerPendingSteps.slice(1) },
-            );
+            set(state => {
+                if (state.plannerPendingSteps.length === 0) {
+                    return {};
+                }
+                const [completedStep, ...remainingSteps] = state.plannerPendingSteps;
+                const currentPlanState = state.plannerSession.planState;
+                if (!currentPlanState) {
+                    return { plannerPendingSteps: remainingSteps };
+                }
+                const updatedSteps =
+                    currentPlanState.steps?.map(step =>
+                        step.id === completedStep.id
+                            ? { ...step, status: 'done' as AgentPlanStep['status'] }
+                            : step,
+                    ) ?? currentPlanState.steps;
+                const nextStepId = remainingSteps[0]?.id ?? currentPlanState.currentStepId;
+                return {
+                    plannerPendingSteps: remainingSteps,
+                    plannerSession: {
+                        ...state.plannerSession,
+                        planState: {
+                            ...currentPlanState,
+                            steps: updatedSteps,
+                            nextSteps: remainingSteps,
+                            currentStepId: nextStepId,
+                        },
+                    },
+                };
+            });
         },
     focusDataPreview: () => {
         set({ isSpreadsheetVisible: true });

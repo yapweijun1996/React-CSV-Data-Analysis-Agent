@@ -4,9 +4,54 @@ import { COLUMN_TARGET_PROPERTIES, columnHasUsableData, resolveColumnChoice } fr
 import { applyFriendlyPlanCopy } from '../../utils/planCopy';
 import { runWithBusyState } from '../../utils/runWithBusy';
 import { inferGroupByColumn } from '../../utils/groupByInference';
-import type { AnalysisPlan, ChatMessage, ClarificationOption } from '../../types';
+import type { AnalysisPlan, ChatMessage, ClarificationOption, AgentPlanState } from '../../types';
 import type { AppStore, ChatSlice } from '../appStoreTypes';
 import { AgentWorker, ChatSliceDependencies } from '../../services/agent/AgentWorker';
+import type { LangChainPlanGraphPayload } from '@/services/langchain/types';
+
+const buildClarificationGraphPayload = (
+    plan: AnalysisPlan,
+    question: string,
+    answerLabel: string,
+    existingPlanId?: string | null,
+): LangChainPlanGraphPayload => {
+    const now = Date.now();
+    const planId = existingPlanId ?? `plan-${now.toString(36)}`;
+    const stepId = `clarified-${now.toString(36)}`;
+    const planStep = {
+        id: stepId,
+        label: plan.title ?? 'Clarified analysis',
+        intent: 'analysis',
+        status: 'ready' as const,
+    };
+    const planState: AgentPlanState = {
+        planId,
+        goal: plan.description ?? plan.title ?? 'Execute clarified analysis',
+        contextSummary: question,
+        progress: `Clarification answered: ${answerLabel}`,
+        nextSteps: [planStep],
+        steps: [planStep],
+        currentStepId: stepId,
+        blockedBy: null,
+        observationIds: [],
+        confidence: 0.75,
+        updatedAt: new Date(now).toISOString(),
+        stateTag: 'context_ready',
+    };
+    return {
+        source: 'langchain',
+        planId,
+        stepId,
+        summary: `Clarification resolved: ${plan.title ?? 'analysis'}`,
+        plan,
+        planState,
+        telemetry: {
+            latencyMs: 0,
+            startedAt: now,
+            finishedAt: now,
+        },
+    };
+};
 
 export { agentSdk, runPlannerWorkflow, registerActionMiddleware } from '../../services/agent/AgentWorker';
 
@@ -137,6 +182,9 @@ export const createChatSlice = (
                                 activeClarificationId:
                                     state.activeClarificationId === clarificationId ? null : state.activeClarificationId,
                             }));
+                            if (typeof get().completePlannerPendingStep === 'function') {
+                                get().completePlannerPendingStep();
+                            }
                         };
 
                         if (targetClarification.contextType === 'dom_action' && pendingPlan?.domActionContext) {
@@ -280,7 +328,18 @@ export const createChatSlice = (
                             );
                         }
 
-                        await deps.runPlanWithChatLifecycle(completedPlan, csvData, runId);
+                        const plannerPlanId = get().plannerSession?.planState?.planId ?? null;
+                        const graphPayload = buildClarificationGraphPayload(
+                            completedPlan,
+                            targetClarification.question,
+                            userChoice.label,
+                            plannerPlanId,
+                        );
+                        get().addProgress(`Clarification resolved — building "${completedPlan.title ?? 'analysis'}" via Graph.`);
+                        get().runGraphPipeline({
+                            reason: 'clarification_plan',
+                            langChainPlan: graphPayload,
+                        });
                         deps.updateClarificationStatus(clarificationId, 'resolved');
                         completeClarification();
                     } catch (error) {

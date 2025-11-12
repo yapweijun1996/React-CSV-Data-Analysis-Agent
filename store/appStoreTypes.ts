@@ -27,6 +27,7 @@ import type {
     AgentPromptMetric,
     LlmUsageEntry,
     QuickActionId,
+    AgentSchemaPhase,
 } from '../types';
 import type { ProfileResult } from '../services/dataToolTypes';
 
@@ -168,6 +169,12 @@ export interface StoreActions {
     setLangChainPlannerEnabled: (enabled: boolean) => void;
     resetConversationMemory: () => void;
     maybeCompactConversationMemory: () => Promise<void>;
+    setActiveSchemaPhase: (phase: AgentSchemaPhase) => void;
+    requestSampleUpgrade: (reason: 'confidence' | 'user_confirm') => void;
+    resetSamplePolicy: () => void;
+    getSampleSizeHint: (kind: 'profile' | 'aggregate') => number | undefined;
+    recordPlanValidationNotice: (planTitle: string, message: string) => void;
+    dismissPlanValidationNotice: (noticeId: string) => void;
 }
 
 export type AppStore = StoreState & StoreActions;

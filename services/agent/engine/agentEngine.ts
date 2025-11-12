@@ -1,12 +1,62 @@
 import type { AiAction, AiChatResponse, AgentPlanState, AgentPlanStep } from '../../../types';
-import type { EngineActionCandidate, EngineContext, EnginePlaybook } from './contracts';
-import { lookupToolProfile } from './toolRegistry';
+import type {
+    EngineActionCandidate,
+    EngineContext,
+    EnginePlaybook,
+    EnginePlaybookQuickActionRule,
+    ToolRegistryEntry,
+} from './contracts';
+import { lookupToolProfile, TOOL_REGISTRY } from './toolRegistry';
 import { selectPlaybookForIntent } from './playbooks';
 import { runAutoHealPipeline } from './autoHeal';
 import { StateTagFactory } from '../stateTagFactory';
 
 const riskWeight: Record<string, number> = { low: 0.1, medium: 0.4, high: 0.9 };
 const latencyWeight: Record<string, number> = { short: 0.1, medium: 0.3, long: 0.7 };
+
+const DEFAULT_GREET_QUICK_CHOICES = [
+    '快速 Profile：掃描 CSV 缺失值/分布 (auto profile)',
+    '毛利 KPI：比較 Salesperson 毛利率 (top/bottom)',
+    '自定义提问：直接告诉我想分析什么',
+];
+
+const formatQuickChoiceList = (choices: string[]): string => {
+    return choices.map((choice, index) => `${index + 1}) ${choice}`).join('\n');
+};
+
+const matchesQuickActionRule = (entry: ToolRegistryEntry, rule: EnginePlaybookQuickActionRule): boolean => {
+    if (rule.filter?.tags_any && !rule.filter.tags_any.some(tag => entry.tags.includes(tag))) {
+        return false;
+    }
+    if (rule.filter?.context && rule.filter.context.length > 0) {
+        const entryContexts = entry.applicableIf?.context;
+        if (entryContexts && !rule.filter.context.some(ctx => entryContexts.includes(ctx))) {
+            return false;
+        }
+    }
+    return true;
+};
+
+const pickQuickActionLabels = (playbook?: EnginePlaybook): string[] => {
+    if (!playbook?.ui.quick_action_rules || playbook.ui.quick_action_rules.length === 0) {
+        return DEFAULT_GREET_QUICK_CHOICES;
+    }
+    const labels: string[] = [];
+    for (const rule of playbook.ui.quick_action_rules) {
+        if (rule.source !== 'tools') continue;
+        const cap = Math.max(1, rule.top_k ?? 3);
+        for (const entry of TOOL_REGISTRY) {
+            if (!matchesQuickActionRule(entry, rule)) continue;
+            const label = entry.quickActionLabel ?? entry.description ?? entry.name;
+            if (!label || labels.includes(label)) continue;
+            labels.push(label);
+            if (labels.length >= cap) break;
+        }
+    }
+    const seeded = labels.length >= 2 ? labels : [...labels, ...DEFAULT_GREET_QUICK_CHOICES];
+    const deduped = Array.from(new Set(seeded));
+    return deduped.slice(0, 4);
+};
 
 const intentMatchesAction = (intent: string | undefined, action: AiAction): boolean => {
     if (!intent) return false;
@@ -28,24 +78,43 @@ const intentMatchesAction = (intent: string | undefined, action: AiAction): bool
     return false;
 };
 
-const renderTemplate = (template: string, context: EngineContext): string => {
-    const greeting = '嗨 hi';
-    const quickActions = '[Filter Data, Create Chart, Clean Data]';
+const renderTemplate = (
+    template: string,
+    context: EngineContext,
+    tokens: Record<string, string> = {},
+): string => {
     const cardTitle = context.detectedIntent?.payloadHints?.cardTitle ?? 'the selected card';
-    return template
-        .replace(/{{\s*greeting\s*}}/gi, greeting)
-        .replace(/{{\s*quick_actions\s*}}/gi, quickActions)
-        .replace(/{{\s*cardTitle\s*}}/gi, cardTitle)
-        .replace(/{{\s*userMessage\s*}}/gi, context.userMessage);
+    const replacements: Record<string, string> = {
+        greeting: '嗨 hi',
+        quick_actions: tokens.quick_actions ?? '[Filter Data, Create Chart, Clean Data]',
+        quick_choice_list: tokens.quick_choice_list ?? '',
+        cardTitle,
+        userMessage: context.userMessage ?? '',
+    };
+    return Object.entries(replacements).reduce((acc, [key, value]) => {
+        const pattern = new RegExp(`{{\\s*${key}\\s*}}`, 'gi');
+        return acc.replace(pattern, () => value ?? '');
+    }, template);
 };
 
-const createPlaybookTextResponse = (playbook: EnginePlaybook, context: EngineContext): AiAction => ({
-    type: 'text_response',
-    responseType: 'text_response',
-    stepId: context.planState?.currentStepId ?? 'ad_hoc_response',
-    reason: `Applying playbook ${playbook.id} for intent ${playbook.intent}.`,
-    text: renderTemplate(playbook.ui.message_template, context),
-});
+const createPlaybookTextResponse = (playbook: EnginePlaybook, context: EngineContext): AiAction => {
+    const wantsQuickChoices = playbook.ui.message_template.includes('{{quick_choice_list}}');
+    const quickChoices = wantsQuickChoices ? pickQuickActionLabels(playbook) : [];
+    const quickChoiceList = wantsQuickChoices ? formatQuickChoiceList(quickChoices) : '';
+    const templateTokens = wantsQuickChoices
+        ? {
+              quick_actions: quickChoices.join(', '),
+              quick_choice_list: quickChoiceList,
+          }
+        : undefined;
+    return {
+        type: 'text_response',
+        responseType: 'text_response',
+        stepId: context.planState?.currentStepId ?? 'ad_hoc_response',
+        reason: `Applying playbook ${playbook.id} for intent ${playbook.intent}.`,
+        text: renderTemplate(playbook.ui.message_template, context, templateTokens),
+    };
+};
 
 const GREETING_INTENTS = new Set(['greeting', 'smalltalk', 'ask_user_choice']);
 const GREETING_PLAN_STEP: AgentPlanStep = {
@@ -92,6 +161,19 @@ const normalizeGreetingPlanAction = (action: AiAction): AiAction => {
     return { ...action, planState: normalizedState, stateTag: 'context_ready' };
 };
 
+const sanitizeGreetingTextAction = (action: AiAction | undefined, fallbackStepId: string): AiAction | null => {
+    if (!action) return null;
+    return {
+        ...action,
+        type: 'text_response',
+        responseType: 'text_response',
+        stepId: action.stepId ?? fallbackStepId,
+        meta: action.meta
+            ? { ...action.meta, awaitUser: false, haltAfter: false }
+            : undefined,
+    };
+};
+
 const enforceGreetingResponse = (
     actions: AiAction[],
     context: EngineContext,
@@ -108,9 +190,8 @@ const enforceGreetingResponse = (
             reason: 'Auto-initialized greeting plan tracker.',
             stepId: context.planState?.currentStepId ?? GREETING_PLAN_STEP.id,
         } as AiAction);
-    const textCandidate =
-        actions.find(action => action.responseType === 'text_response') ??
-        (playbook
+    const fallbackText: AiAction =
+        playbook
             ? createPlaybookTextResponse(playbook, context)
             : {
                   type: 'text_response',
@@ -118,7 +199,12 @@ const enforceGreetingResponse = (
                   stepId: planCandidate.stepId ?? GREETING_PLAN_STEP.id,
                   reason: 'Auto-generated greeting response.',
                   text: '嗨！我在这等你。告诉我想从哪一步开始探索 CSV 数据吧。',
-              });
+              };
+    const sanitizedExisting = sanitizeGreetingTextAction(
+        actions.find(action => action.responseType === 'text_response'),
+        fallbackText.stepId ?? GREETING_PLAN_STEP.id,
+    );
+    const textCandidate = sanitizedExisting ?? fallbackText;
     return [normalizeGreetingPlanAction(planCandidate), textCandidate];
 };
 
@@ -172,6 +258,7 @@ const enforceGovernance = (
 const limitAtomicActions = (
     candidates: EngineActionCandidate[],
     context: EngineContext,
+    isPlanOnly: boolean,
 ): AiAction[] => {
     if (candidates.length === 0) return [];
     const scored = candidates
@@ -196,8 +283,23 @@ const limitAtomicActions = (
         } as AiAction);
     }
 
-    if (nonPlanCandidates.length > 0) {
+    if (!isPlanOnly && nonPlanCandidates.length > 0) {
         selected.push(nonPlanCandidates[0].action);
+    }
+
+    if (isPlanOnly) {
+        const planActions = selected.filter(action => action.responseType === 'plan_state_update');
+        if (planActions.length > 0) {
+            return planActions.slice(0, 1);
+        }
+        return [
+            {
+                type: 'plan_state_update',
+                responseType: 'plan_state_update',
+                reason: 'Auto-initializing plan because plan-only prompt requires it.',
+                stepId: context.planState?.currentStepId ?? 'ad_hoc_response',
+            } as AiAction,
+        ];
     }
 
     return selected.slice(0, 2);
@@ -222,6 +324,7 @@ export class AgentEngine {
     private readonly stateTagFactory = new StateTagFactory();
 
     run(rawResponse: AiChatResponse, context: EngineContext): AiChatResponse {
+        const isPlanOnly = context.promptMode === 'plan_only';
         const rawActions = Array.isArray(rawResponse.actions) ? rawResponse.actions : [];
         const playbook = selectPlaybookForIntent(context.detectedIntent?.intent);
         let candidates = rawActions.map(action => deriveCandidate(action, context, 'model'));
@@ -244,11 +347,21 @@ export class AgentEngine {
 
         candidates = enforceGovernance(candidates, playbook);
 
-        let actions = limitAtomicActions(candidates, context);
-        actions = enforceGreetingResponse(actions, context, playbook);
-        actions = ensureFallbackTextAction(actions, context);
+        let actions = limitAtomicActions(candidates, context, isPlanOnly);
 
-        const healed = runAutoHealPipeline(actions, context, hint => this.stateTagFactory.mint(context.now, hint));
+        const isGreetingIntent = GREETING_INTENTS.has(context.detectedIntent?.intent ?? '');
+        const shouldEnforceGreeting = isGreetingIntent && !isPlanOnly;
+        if (shouldEnforceGreeting) {
+            actions = enforceGreetingResponse(actions, context, playbook);
+            actions = ensureFallbackTextAction(actions, context);
+        } else if (!isPlanOnly) {
+            actions = ensureFallbackTextAction(actions, context);
+        }
+
+        const healed = runAutoHealPipeline(actions, context, hint => this.stateTagFactory.mint(context.now, hint), {
+            stampOnly: isPlanOnly,
+            maxActions: isPlanOnly ? 1 : undefined,
+        });
         return {
             ...rawResponse,
             actions: healed.actions,

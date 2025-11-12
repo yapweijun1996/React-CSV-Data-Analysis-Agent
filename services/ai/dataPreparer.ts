@@ -2,8 +2,9 @@
 import { CsvData, ColumnProfile, Settings, DataPreparationPlan } from '../../types';
 import { callGemini, callOpenAI, type LlmUsageMetrics } from './apiClient';
 import { dataPreparationSchema, dataPreparationJsonSchema } from './schemas';
-import { createDataPreparationPrompt } from '../promptTemplates';
+import { createDataPreparationPrompt, dataPreparationSystemPrompt } from '../promptTemplates';
 import { robustParseFloat, splitNumericString } from '../../utils/dataProcessor';
+import { coerceJsonObject } from './jsonRepair';
 
 interface DataPreparationPlanOptions {
     signal?: AbortSignal;
@@ -30,10 +31,8 @@ export const generateDataPreparationPlan = async (
 
             if (settings.provider === 'openai') {
                 if (!settings.openAIApiKey) return { explanation: "No transformation needed as API key is not set.", jsFunctionBody: null, outputColumns: columns };
-                const systemPrompt = "You are an expert data engineer. Your task is to analyze a raw dataset and, if necessary, provide a JavaScript function to clean and reshape it into a tidy, analysis-ready format. CRITICALLY, you must also provide the schema of the NEW, transformed data with detailed data types.\nYou MUST respond with a single valid JSON object, and nothing else. The JSON object must adhere to the provided schema.";
-                
                 const messages = [
-                    { role: 'system', content: systemPrompt },
+                    { role: 'system', content: dataPreparationSystemPrompt },
                     { role: 'user', content: promptContent }
                 ];
                 jsonStr = await callOpenAI(
@@ -49,14 +48,19 @@ export const generateDataPreparationPlan = async (
 
             } else { // Google Gemini
                 if (!settings.geminiApiKey) return { explanation: "No transformation needed as Gemini API key is not set.", jsFunctionBody: null, outputColumns: columns };
-                jsonStr = await callGemini(settings, promptContent, dataPreparationSchema, {
+                jsonStr = await callGemini(
+                    settings,
+                    `${dataPreparationSystemPrompt}\n\n${promptContent}`,
+                    dataPreparationSchema,
+                    {
                     signal: options?.signal,
                     operation,
                     onUsage: usage => options?.onUsage?.({ ...usage, operation }),
-                });
+                },
+                );
             }
             
-            const plan = JSON.parse(jsonStr) as DataPreparationPlan;
+            const plan = coerceJsonObject<DataPreparationPlan>(jsonStr);
 
             // Test execution before returning
             if (plan.jsFunctionBody) {

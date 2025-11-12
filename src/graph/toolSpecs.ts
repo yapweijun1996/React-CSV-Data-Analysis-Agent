@@ -1,4 +1,6 @@
 import type { GraphToolCall } from '@/types';
+import { normalizeIntentContract } from '@/services/ai/intentContract';
+import type { IntentContract } from '@/services/ai/intentContract';
 
 export interface GraphToolPlanSpec {
     toolCall: GraphToolCall;
@@ -9,6 +11,7 @@ export interface GraphToolPlanSpec {
     planProgress: string;
     reason: string;
     text: string;
+    intentContract?: IntentContract;
 }
 
 export const GRAPH_TOOL_SPECS: Record<string, GraphToolPlanSpec | undefined> = {
@@ -21,6 +24,11 @@ export const GRAPH_TOOL_SPECS: Record<string, GraphToolPlanSpec | undefined> = {
         planProgress: '已进入 InvoiceMonth 字段标准化阶段。',
         reason: '根据你的选择，先统一 InvoiceMonth 字段格式。',
         text: '正在本地标准化 InvoiceMonth 字段（YYYY-MM），完成后我会告知影响行数。',
+        intentContract: normalizeIntentContract({
+            intent: 'clean',
+            tool: 'csv.clean_invoice_month',
+            args: { column: 'InvoiceMonth' },
+        }),
     },
     outlier: {
         toolCall: { kind: 'detect_outliers', params: { valueColumn: 'Amount', multiplier: 3 } },
@@ -31,6 +39,11 @@ export const GRAPH_TOOL_SPECS: Record<string, GraphToolPlanSpec | undefined> = {
         planProgress: '已开始金额异常检测（以 Amount 字段计算阈值）。',
         reason: '根据你的选择，先扫描金额异常值。',
         text: '正在比较 Amount 分布，找出超过阈值的可疑记录，稍后回报。',
+        intentContract: normalizeIntentContract({
+            intent: 'detect_anomaly',
+            tool: 'csv.detect_outliers',
+            args: { valueColumn: 'Amount', thresholdMultiplier: 3 },
+        }),
     },
 };
 

@@ -7,6 +7,7 @@
 * step by step with small action by todo list.
 * reply me in listing format, eg: 1,2,3.....
 * Restate user’s query with your understanding.
+* Auto proceed to implementation of task.md no need to ask user for approval.
 
 
 # Quick Check**
@@ -24,107 +25,126 @@
 * Fully frontend project.
 * When review issues or bug, no need provide code, only breakdown issues or bug only.
 * gpt-5 and gpt-5-mini is latest model from OPENAI
+* After planing update task.md, and make sure the engineer can follow up bt task.md
+* Before amendment update task.md, and make sure the engineer can follow up bt task.md
+* After amendment update task.md, and make sure the engineer can follow up bt task.md
 
-# Project Info
-# CSV Agent — Frontend-Only One-Pager （项目方向）
-
-## 1) What we’re building / 我们要做的
-
-* **Local-first CSV 分析助手**：读取→清洗→聚合→图表，全在浏览器完成（IndexedDB + Web Workers）。
-* **Agentic, step-by-step**：先问再做（Ask → **Wait** → Act），每回合最多 **1 份计划 + 1 个动作**，可复现（opChain）。
-* **Zero backend**：不走网络；可选 BYO-key，但默认离线（Airplane mode）。
 
 ---
 
-## 2) Must-have rules / 硬性规则
+# What is an “Agent” 是什么？
 
-1. **No backend**（纯前端）
-2. **Data stays local**：CSV→IndexedDB（raw / views / opChains / cards / insights）
-3. **All compute in browser**：Web Workers；数据用 **DuckDB-WASM**（或 Arquero）
-4. **Ask → Wait**：提问后 **必须等待用户**（awaitUser），不自动继续
-5. **Domain split**：`ui.*` 动作（删卡/重排）≠ `df.*` 数据动作（聚合/清洗）
-6. **Deterministic**：每回合 ≤ `plan_state_update` + 一个原子动作
-7. **Reproducible**：所有变换记录为 **opChain**（SQL/JSON）；图表只是视图
-8. **Offline-ready**：PWA 缓存静态资源 + WASM
+* **English**: An **agent** is a software entity that can **perceive**, **reason**, and **act** toward a goal—often by calling tools/APIs and iterating with feedback.
+* **中文**：**Agent（智能体）**是一种能**感知—思考—行动**以达成目标的程序，通常会**调用工具/接口**并根据结果**循环改进**。
+
+## Core traits 核心特性
+
+1. **Goal-directed 目标驱动**：给它任务与成功条件，它自己找路径。
+2. **Sense → Think → Act 感知→思考→行动**：读环境/数据 → 规划 → 执行。
+3. **Tool use 工具使用**：能调用数据库、搜索、发邮件、生成文档等。
+4. **Feedback loop 反馈回路**：执行后验证结果，失败重试或换策略。
+5. **Memory 记忆**：短期（当前对话/上下文）+ 长期（经验/知识）。
+6. **Policies 护栏**：权限、审批、审计日志、阈值策略确保安全可控。
+
+## Minimal loop 最小闭环
+
+**Observe → Think → Plan → Act → Verify → (repeat)**
+感知输入 → 推理 → 出计划 → 执行动作 → 验证结果 → 继续/调整。
+
+## What an agent is *not* 不是什么
+
+* 不是单次回答的“聊天机器人”（只会回文本）。
+* 不是硬编码脚本（只能按固定流程走）。
+* 不是无限制的自动化（需要护栏与审批）。
+  
+---
+
+# What is a “CSV Analysis Agent”? / 什么是 CSV 分析智能体？
+
+**English**: A **CSV Analysis Agent** is a goal-driven app that can **read CSV files**, **profile the data**, **generate insights/charts/tables**, and **act** (e.g., export reports, flag anomalies) via an iterative **Observe → Think → Plan → Act → Verify** loop — all with minimal manual work.
+**中文**：**CSV 分析智能体**能**读取CSV**、**剖析数据**、**产出图表/表格/结论**，并能**执行动作**（导出报告、告警等），通过**“观察→思考→计划→行动→验证”**持续优化结果。
+
+## Core abilities 核心能力
+
+* **Auto-profile 自动剖析**：检测列类型、缺失值、异常值、分布、相关性。
+* **Insight generation 洞察生成**：自动提出“可看”的分析卡片（趋势、TopN、同比环比、分组聚合）。
+* **Explainability 可解释**：每张卡给“Why/So what/Next step”。
+* **Chart & Table 图表与表格**：条形图、折线、饼图、散点、透视表（groupby/agg）。
+* **Anomaly & Quality 异常/质量**：检测异常点、重复行、脏数据规则。
+* **Actions 动作**：导出CSV/PNG/PDF、生成摘要、创建任务/提醒。
+* **Memory 记忆**：记住字段含义与用户偏好（口径、单位、格式）。
+* **Privacy 隐私**：可在本地浏览器完成（只上传列名给LLM，或离线模式）。
+
+## Minimal loop 最小闭环
+
+**Observe(读CSV)** → **Think(找规律/问题)** → **Plan(列出卡片计划)** → **Act(生成卡片/导出)** → **Verify(检查正确性/让用户确认)** → **repeat**。
+
+## Typical tools 工具接口（示例）
+
+* **Data**：CSV parser、type infer、groupby/agg、join、sample。
+* **Viz**：Chart.js 渲染器。
+* **Quality**：重复/缺失/异常检测器、单位/货币标准化。
+* **NLG**：自动总结（洞察/建议/商业解读）。
+* **Export**：CSV/PNG/PDF 下载器。
+* **Guardrails**：列名白名单、行数上限、本地执行优先。
+
+## UX at a glance 界面快速概览
+
+* **Chat 左侧**：问问题或下命令（/pivot /topN /trend）。
+* **Card Grid 右侧**：自动生成的分析卡（表/图/说明）。
+* **Timeline**：显示计划与进度（1 of N completed）。
+* **Toolbox**：可见工具+参数模板，点击即用。
+* **ELI5 开关**：一句话解释，面向业务同学。
+
+## Example prompts 例子
+
+* “Sales by month and top 10 products with YoY.”
+* “检测异常付款并标注疑似重复供应商发票。”
+* “客户分层(High/Medium/Low) + 每层的贡献度。”
+
+## What it’s not 不是什么
+
+* 不是静态仪表盘（它会**思考并生成**新的分析）。
+* 不是黑盒：每张卡都有来源和计算口径说明。
 
 ---
 
-## 3) Core user flow / 用户主流程（Happy Path）
+# Agent 工程化
+* 把任务切成**很小的可验证动作**，每一步都有**即时反馈信号（oracles）**，再用**短回路 + 低延迟策略**驱动“想→做→看→修”。不是魔法，是架构。
 
-1. 用户 **Upload CSV**（本地）
-2. Agent 在 Worker 中 **Profile 列**（类型/缺失/异常、去除小计/标题行）
-3. 若有歧义，Agent **提问**（例如“按金额还是按笔数？”）
-4. UI 显示 **QuestionCard**（按钮 + 文本输入），**进入等待**
-5. 用户点击或输入 → Agent 执行 **本地变换/聚合**（DuckDB-WASM）
-6. 生成 **Cards**（表格/图表/洞察），并保存 **opChain + 视图** 到 IndexedDB
-7. 用户可 **删除/重排卡片**（纯 UI 动作，不触发数据管线）
+# Why it feels so good（为什么快又会自纠）
 
----
+1. **Tight event loop（紧凑回路）**
 
-## 4) Minimal architecture / 最小架构
+   * Plan → Act → Observe → Repair，用**很小的步长**循环，多次快速迭代，而不是一次长回答。
+2. **Action ontology（动作本体清晰）**
 
-* **UI（Main thread）**：Light 模式 Timeline（可展开）、QuestionCard、Cards（Chart.js / 表格）、设置/导出
-* **Agent Worker**：IntentRouter → **Governance**（信封校验/收敛）→ Executors（`ui.*` / `df.*` / `idb.*`）
-* **Data Worker**：DuckDB-WASM（profile / clean / aggregate），返回 Arrow/JSON
-* **IndexedDB（Dexie）**：
+   * 工具类型很少且语义清楚（如：`run`, `read`, `write`, `test`），让模型更会“选工具”。
+3. **Strong oracles（强反馈信号）**
 
-  * `rawFiles(id,name,hash,blob)`
-  * `tables(id,fileId,name,arrow,rowCount,cols)`
-  * `views(id,tableId,name,arrow,opChainId)`
-  * `opChains(id,tableId,ops[])`
-  * `cards(id,viewId,kind,config,layout)`
-  * `insights(id,viewId,text,severity,tags[])`
-  * `prepLog(id,datasetId,scope,column,rule,impactMeta)` —— 逐步清洗轨迹（只写入一次，给解释卡读）
-  * `memorySnapshots(id,datasetId,viewId,title,summary,qualityScore,tags[])` —— 高价值视图快照，供计划生成/质量 Gate 循环复用
+   * 每个动作都有可判定结果：编译/运行错误、测试失败、diff、SQL 行数/超时、DOM 选择器是否命中… 模型用这些**客观信号**自我修正。
+4. **Schema-less contracts（宽松输出契约）**
 
----
+   * 不靠严格 JSON Schema；只要 `type + payload` 能解析就继续，失败立即**本地修复/重试**。
+5. **Granular retries（细粒度重试）**
 
-## 5) Built-in tools / 内置本地工具（MVP）
+   * 只重试失败的那一步（而非整段）；最多 1–2 次，快速收敛。
+6. **Latency tricks（低延迟技巧）**
 
-* `df.profile`（列画像/去除小计行）
-* `df.clean_invoice_month`（归一化月份，复合值拆分）
-* `df.aggregate_topN`（Top N 供应商：金额/次数/人均）
-* `df.monthly_sum_vs_count`（月度金额与单据量）
-* `ui.removeCard` / `ui.relayout`（纯 UI）
-* `idb.saveView` / `idb.loadView`
+   * 小模型做路由/草案（低温度、短上下文），大模型做难点；热启动、缓存（schema/embeddings/历史修复）、并行探测（如同时尝试2套小变更）。
+7. **State machine（显式状态机）**
 
----
+   * 明确哪些状态允许哪些动作，减少“梦游”。
+8. **Test-as-oracle（用测试当裁判）**
 
-## 6) What’s in / out（MVP 范围）
+   * 单元测试/校验脚本把“是否正确”具体化，模型只要“绿灯”为止。
 
-**In**：本地 CSV、DuckDB-WASM 计算、QuestionCard、轻量洞察、导出 CSV/Arrow/opChain、自给自足 PWA
-**Out**：任何后端服务、云同步、多用户协作、大模型强依赖（可后续 BYO-key 选配）
+# What’s likely inside a “Codex-CLI-style” loop
 
----
+* **Planner**（很短的计划，最多 1–3 步）
+* **Executor**（工具层：shell / fs / git / db / http / sql）
+* **Observer**（收集日志、错误、diff、metrics）
+* **Repairer**（基于错误片段做局部补丁，而非重写全部）
+* **Stop conditions**（通过测试/阈值，或预算用完）
 
-## 7) 简单 6 件事
-
-1. **Await-User Gate**：提问/列出选项 → `awaitUser` 生效，UI 显示 *Waiting for your input*，**不**自动继续
-2. **Domain Router**：`ui.*` 与 `df.*` 分流；UI 动作不进入数据前置/重试
-3. **Envelope Normalizer**：强制 `type===responseType`；统一 `stateTag`（`obs-<13位epoch>-<4位>`）；`stepId` 绑定 `currentStepId`
-4. **QuestionCard**：按钮 + 文本框，两条路都走同一动作通道（带回 stepId）
-5. **Data Worker (MVP)**：接入 DuckDB-WASM，完成 4 个 df.* 操作，结果存 IndexedDB
-6. **PWA Offline**：缓存应用壳与 WASM 资源（首次在线，后续离线可用）
-
----
-
-## 8) Done-when / 验收标准（简短可测）
-
-* 断网（Airplane mode）依然可：载入应用 → 打开本地 CSV → 跑聚合 → 出卡片 → 保存到 IndexedDB → 导出结果
-* 提问后 **不会**再出现 “Continuing plan …”，直到用户点击/输入
-* 删除卡片 **不会**触发数据管线或自动重试
-* 1000 次动作 **零** `type/responseType` 不匹配、`stateTag` 非法、`stepId` 缺失
-* 每个卡片都有 “View opChain/SQL”，刷新后可按 opChain 重放
-
----
-
-## 9) Risks & notes / 风险补充
-
-* 大 CSV：用 **采样预览** + DuckDB 分页；表格虚拟化
-* IndexedDB 容量：仅持久化 opChain/选定视图，大结果按需清理
-* 无 LLM 模式：启用规则+工具照样可跑（LLM 选配，默认关闭）
-
----
-
-**一句话**：
-**纯前端**、**问就停**、**本地计算**、**可复现**。先把 **Await-User Gate / Domain Split / Envelope 一致性 / DuckDB-WASM 最小能力** 做到位，其它能力再按 opChain 逐步扩展。
+* 不用 JSON Schema，改成“约定格式 + 容错解析”的做法：让模型输出 JSON，但由你在客户端做最小必需校验 + 自动修复。这样稳定很多，迭代也快。

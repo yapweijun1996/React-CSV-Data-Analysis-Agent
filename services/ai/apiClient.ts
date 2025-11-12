@@ -242,6 +242,32 @@ const resolveResponseFormat = (format?: boolean | OpenAIJsonSchemaFormat): Respo
     return undefined;
 };
 
+const extractHttpStatus = (error: any): number | undefined => {
+    return (
+        error?.status ??
+        error?.response?.status ??
+        error?.code ??
+        error?.error?.status ??
+        error?.cause?.status
+    );
+};
+
+const waitFor = (ms: number, signal?: AbortSignal): Promise<void> =>
+    new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(new DOMException('Aborted', 'AbortError'));
+            return;
+        }
+        const timer = setTimeout(resolve, ms);
+        if (signal) {
+            const onAbort = () => {
+                clearTimeout(timer);
+                reject(new DOMException('Aborted', 'AbortError'));
+            };
+            signal.addEventListener('abort', onAbort, { once: true });
+        }
+    });
+
 export const callOpenAI = async (
     settings: Settings,
     messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
@@ -263,30 +289,63 @@ export const callOpenAI = async (
         };
     }
 
-    const response = await withRetry(
-        () => openai.responses.create(requestPayload, options.signal ? { signal: options.signal } : undefined),
-        2,
-        options.signal,
-    );
+    const maxRetries = 2;
+    const maxTotalDurationMs = 30_000;
+    const startTime = Date.now();
+    let attempt = 0;
+    let lastError: unknown;
+    while (attempt < maxRetries) {
+        if (options.signal?.aborted) {
+            throw new DOMException('Aborted', 'AbortError');
+        }
+        try {
+            const response = await openai.responses.create(
+                requestPayload,
+                options.signal ? { signal: options.signal } : undefined,
+            );
+            const usageMetrics = (response as any)?.usage;
+            if (usageMetrics && options.onUsage) {
+                options.onUsage({
+                    provider: 'openai',
+                    model: settings.model,
+                    promptTokens:
+                        usageMetrics.prompt_tokens ??
+                        usageMetrics.input_tokens ??
+                        usageMetrics.input_token_count,
+                    completionTokens:
+                        usageMetrics.completion_tokens ??
+                        usageMetrics.output_tokens ??
+                        usageMetrics.output_token_count,
+                    totalTokens:
+                        usageMetrics.total_tokens ?? usageMetrics.total_token_count,
+                    operation: options.operation,
+                });
+            }
 
-    const usageMetrics = (response as any)?.usage;
-    if (usageMetrics && options.onUsage) {
-        options.onUsage({
-            provider: 'openai',
-            model: settings.model,
-            promptTokens: usageMetrics.prompt_tokens ?? usageMetrics.input_tokens ?? usageMetrics.input_token_count,
-            completionTokens:
-                usageMetrics.completion_tokens ?? usageMetrics.output_tokens ?? usageMetrics.output_token_count,
-            totalTokens: usageMetrics.total_tokens ?? usageMetrics.total_token_count,
-            operation: options.operation,
-        });
+            const content = (response.output_text ?? '').trim();
+            if (!content) {
+                throw new Error('OpenAI returned an empty response.');
+            }
+            return content;
+        } catch (error) {
+            lastError = error;
+            const status = extractHttpStatus(error);
+            const retryable =
+                status === 429 || (typeof status === 'number' && status >= 500);
+            const elapsed = Date.now() - startTime;
+            if (
+                !retryable ||
+                attempt === maxRetries - 1 ||
+                elapsed >= maxTotalDurationMs
+            ) {
+                throw error;
+            }
+            const backoffMs = Math.min(2000, 500 * Math.pow(2, attempt));
+            await waitFor(backoffMs, options.signal);
+            attempt += 1;
+        }
     }
-
-    const content = (response.output_text ?? '').trim();
-    if (!content) {
-        throw new Error('OpenAI returned an empty response.');
-    }
-    return content;
+    throw lastError instanceof Error ? lastError : new Error('OpenAI request failed.');
 };
 
 export const callGemini = async (
@@ -299,20 +358,23 @@ export const callGemini = async (
     const ai = new GoogleGenAI({ apiKey: settings.geminiApiKey });
     const options = resolveCallOptions(signalOrOptions);
     
-    // The Gemini API works better if the schema instruction is part of the main prompt text, not just in config.
-    const finalPrompt = `${prompt}\n${schema ? 'Your response must be a valid JSON object adhering to the provided schema.' : ''}`;
+    const schemaSnippet = schema
+        ? `\n\nSCHEMA (for reference only):\n${JSON.stringify(schema, null, 2)}\n\nReturn a JSON object that matches this structure exactly.`
+        : '';
+    const finalPrompt = `${prompt}${schemaSnippet}`.trim();
 
-    const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent(
-        {
-            model: settings.model,
-            contents: finalPrompt,
-            config: schema ? {
-                responseMimeType: 'application/json',
-                responseSchema: schema,
-            } : undefined,
-        },
-        options.signal ? { signal: options.signal } : undefined
-    ), 2, options.signal);
+    const response: GenerateContentResponse = await withRetry(
+        () =>
+            ai.models.generateContent(
+                {
+                    model: settings.model,
+                    contents: finalPrompt,
+                },
+                options.signal ? { signal: options.signal } : undefined,
+            ),
+        2,
+        options.signal,
+    );
 
     const usageMetadata = response.usageMetadata;
     if (usageMetadata && options.onUsage) {

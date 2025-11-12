@@ -33,7 +33,7 @@ export const actNode = ({ state }: PipelineContext): NodeResult => {
         state: {
             ...state,
             phase: 'act',
-            pendingPlan: null,
+            pendingPlan: pendingPlan,
             pendingVerification: {
                 id: pendingPlan.id,
                 description: pendingPlan.summary,

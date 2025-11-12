@@ -103,6 +103,7 @@ const handleRunPipeline = (payload: Record<string, unknown>) => {
 
 const handleUserReply = (optionId: string | null, freeText: string | null) => {
     const promptSnapshot = graphState.awaitPrompt;
+    const pendingPlanPayload = graphState.pendingPlan?.plan ?? null;
     graphState = {
         ...graphState,
         awaitingUser: false,
@@ -116,6 +117,7 @@ const handleUserReply = (optionId: string | null, freeText: string | null) => {
             question: promptSnapshot?.question ?? 'User follow-up',
             options: promptSnapshot?.options ?? [],
             at: new Date().toISOString(),
+            plan: pendingPlanPayload,
         },
         stateTag: 'context_ready',
         updatedAt: new Date().toISOString(),

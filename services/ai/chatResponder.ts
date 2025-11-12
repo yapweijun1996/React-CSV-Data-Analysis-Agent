@@ -5,18 +5,20 @@ import {
     CardContext,
     Settings,
     AppView,
-    CsvRow,
     DataPreparationPlan,
     AiChatResponse,
     AgentActionTrace,
     AgentObservation,
     AgentPlanState,
+    AiAction,
 } from '../../types';
 import { callGemini, callOpenAI, type LlmUsageMetrics } from './apiClient';
-import { multiActionChatResponseSchema, multiActionChatResponseJsonSchema } from './schemas';
 import { createChatPrompt, createChatPromptForStage, createPlanPrimerPrompt } from '../promptTemplates';
 import type { PromptStage } from '../utils/promptBudget';
 import { StateTagFactory } from '../agent/stateTagFactory';
+import type { AgentSchemaPhase } from '@/types';
+import { coerceChatResponseJson } from './chatResponseParser';
+import { describePhaseConvention } from './phaseConventions';
 
 export interface PromptProfile {
     mode: 'plan_only' | 'full';
@@ -31,6 +33,7 @@ export interface ChatResponseOptions {
     onPromptProfile?: (profile: PromptProfile) => void;
     onUsage?: (usage: LlmUsageMetrics) => void;
     promptStage?: PromptStage | PromptStage[];
+    phase?: AgentSchemaPhase;
 }
 
 const hasMissingExecutableCode = (response: AiChatResponse): boolean => {
@@ -50,8 +53,6 @@ const ACTION_SCHEMA_EXAMPLE = `Example JSON response (plan_state_update + text a
       "type": "plan_state_update",
       "responseType": "plan_state_update",
       "stepId": "plan-init",
-      "stateTag": "1731234567890-1",
-      "timestamp": "2024-05-18T09:00:00.000Z",
       "reason": "Restating the plan so the UI stays in sync.",
       "planState": {
         "planId": "plan-abc123",
@@ -63,23 +64,59 @@ const ACTION_SCHEMA_EXAMPLE = `Example JSON response (plan_state_update + text a
         "confidence": 0.65,
         "updatedAt": "2024-05-18T09:00:00.000Z",
         "currentStepId": "plan-init",
-        "nextSteps": [{ "id": "plan-init", "label": "Draft comparison plan", "status": "in_progress" }],
-        "steps": [{ "id": "plan-init", "label": "Draft comparison plan", "status": "in_progress" }],
-        "stateTag": "1731234567890-1"
+        "nextSteps": [{ "id": "acknowledge_user", "label": "向用户问候并确认需求" }],
+        "steps": [
+          {
+            "id": "acknowledge_user",
+            "label": "向用户问候并确认需求",
+            "intent": "conversation",
+            "status": "in_progress"
+          }
+        ],
+        "stateTag": "context_ready"
       }
     },
     {
       "type": "text_response",
       "responseType": "text_response",
       "stepId": "plan-init",
-      "stateTag": "1731234567890-2",
-      "timestamp": "2024-05-18T09:00:05.000Z",
       "reason": "Let the user know I captured the plan.",
-      "text": "Plan updated—ready when you are to proceed with the channel comparison."
+      "text": "计划已更新，随时可以继续。"
     }
   ]
 }
 \`\`\``;
+
+const clampConfidenceValue = (value: unknown): number => {
+    if (typeof value !== 'number' || Number.isNaN(value) || !Number.isFinite(value)) {
+        return 0.65;
+    }
+    return Math.min(1, Math.max(0, value));
+};
+
+const normalizePlanStateDefaults = (action: AiAction) => {
+    if (action.type !== 'plan_state_update' || !action.planState) {
+        return;
+    }
+    const planState = action.planState;
+    if (typeof planState.updatedAt !== 'string' || !planState.updatedAt.trim()) {
+        planState.updatedAt = new Date().toISOString();
+    }
+    if (typeof planState.stateTag !== 'string' || !planState.stateTag.trim()) {
+        planState.stateTag = fallbackStateTagFactory.mint(Date.now(), 'plan');
+    }
+    if (!Array.isArray(planState.observationIds)) {
+        planState.observationIds = [];
+    }
+    planState.blockedBy = planState.blockedBy ?? null;
+    if (
+        typeof planState.contextSummary !== 'string' ||
+        planState.contextSummary.trim().length === 0
+    ) {
+        planState.contextSummary = null;
+    }
+    planState.confidence = clampConfidenceValue(planState.confidence);
+};
 
 export const generateChatResponse = async (
     columns: ColumnProfile[],
@@ -89,7 +126,6 @@ export const generateChatResponse = async (
     settings: Settings,
     aiCoreAnalysisSummary: string | null,
     currentView: AppView,
-    rawDataSample: CsvRow[],
     longTermMemory: string[],
     recentObservations: AgentObservation[],
     activePlanState: AgentPlanState | null,
@@ -119,6 +155,9 @@ export const generateChatResponse = async (
         const promptMode = options?.mode ?? 'full';
         const stageOverride = promptMode === 'full' ? options?.promptStage : undefined;
         const usageOperation = promptMode === 'plan_only' ? 'chat.plan_only' : 'chat.full';
+        const phaseKey: AgentSchemaPhase | undefined =
+            options?.phase ?? (promptMode === 'plan_only' ? 'plan' : undefined);
+        const phaseDirective = describePhaseConvention(phaseKey);
         const promptContent =
             promptMode === 'plan_only'
                 ? createPlanPrimerPrompt(
@@ -142,7 +181,6 @@ export const generateChatResponse = async (
                               cardContext,
                               settings.language,
                               aiCoreAnalysisSummary,
-                              rawDataSample,
                               longTermMemory,
                               recentObservations,
                               activePlanState,
@@ -159,7 +197,6 @@ export const generateChatResponse = async (
                       cardContext,
                       settings.language,
                       aiCoreAnalysisSummary,
-                      rawDataSample,
                       longTermMemory,
                       recentObservations,
                       activePlanState,
@@ -187,21 +224,21 @@ export const generateChatResponse = async (
             });
         }
 
-        const baseSystemPrompt = `You are an expert data analyst and business strategist, required to operate using a Reason-Act (ReAct) framework. For every action you take, you must first explain your reasoning in the 'reason' field, and then define the action itself. Keep each reason under 280 characters (ideally two sentences or fewer) and tie it to the plan step you're executing. You also maintain an explicit goal tracker by emitting a 'plan_state_update' action at the start of each response (and whenever the mission changes) so the UI can display your progress. Every action JSON object must include \`type\`, \`responseType\`, \`stepId\`, a monotonic \`stateTag\` formatted as "<epochMs>-<seq>" (or a known label like \`awaiting_clarification\`), **and** a \`timestamp\` string in ISO-8601 format. The plan_state_update payload must include \`planId\`, \`currentStepId\`, and a \`steps\` array (each entry with intent + status). Emit at most two actions per response: the plan_state_update plus a single atomic action. Your final conversational responses should be in ${settings.language}.
+        const baseSystemPrompt = `You are an expert data analyst and business strategist, required to operate using a Reason-Act (ReAct) framework. For every action you take, you must first explain your reasoning in the 'reason' field, and then define the action itself. Keep each reason under 280 characters (ideally two sentences or fewer) and tie it to the plan step you're executing. You also maintain an explicit goal tracker by emitting a 'plan_state_update' action at the start of each response (and whenever the mission changes) so the UI can display your progress. Every action JSON object must include \`type\`, \`responseType\`, and \`stepId\`. The runtime appends metadata like timestamps and stateTags automatically, so you may omit them. The plan_state_update payload must include \`planId\`, \`currentStepId\`, and a \`steps\` array (each entry with intent + status). Emit at most two actions per response: the plan_state_update plus a single atomic action. When the user's latest message is only a greeting or check-in, the first entry in \`nextSteps\` (and \`steps\`) must be an \`acknowledge_user\` conversation step before any data work. Your final conversational responses should be in ${settings.language}.
 ${ACTION_SCHEMA_EXAMPLE}
-Your output MUST be a single JSON object with an "actions" key containing an array of action objects.`;
+Your output MUST be a single JSON object with an "actions" key containing an array of action objects. Never wrap the JSON in markdown fences or add commentary—the response must start with '{' and end with '}'.`;
         const maxAttempts = settings.provider === 'openai' ? 2 : 1;
         let retryInstruction = '';
 
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
             let jsonStr: string;
             if (settings.provider === 'openai') {
-                const systemPrompt = `${baseSystemPrompt}${retryInstruction}`;
+                const systemPrompt = `${baseSystemPrompt}\n${phaseDirective}${retryInstruction}`;
                 const messages = [{ role: 'system', content: systemPrompt }, { role: 'user', content: promptContent }];
                 jsonStr = await callOpenAI(
                     settings,
                     messages,
-                    { name: 'MultiActionResponse', schema: multiActionChatResponseJsonSchema, strict: true },
+                    false,
                     {
                         signal: options?.signal,
                         operation: usageOperation,
@@ -209,22 +246,24 @@ Your output MUST be a single JSON object with an "actions" key containing an arr
                     },
                 );
             } else {
-                jsonStr = await callGemini(settings, promptContent, multiActionChatResponseSchema, {
+                const augmentedPrompt = `${promptContent}\n\n${phaseDirective}`;
+                jsonStr = await callGemini(settings, augmentedPrompt, undefined, {
                     signal: options?.signal,
                     operation: usageOperation,
                     onUsage: usage => options?.onUsage?.({ ...usage, operation: usageOperation }),
                 });
             }
 
-            const chatResponse = JSON.parse(jsonStr) as AiChatResponse;
+            const chatResponse = coerceChatResponseJson(jsonStr);
 
             if (!chatResponse.actions || !Array.isArray(chatResponse.actions)) {
                 throw new Error("Invalid response structure from AI: 'actions' array not found.");
             }
+            chatResponse.actions.forEach(action => normalizePlanStateDefaults(action));
 
             const missingExecutableCode = settings.provider === 'openai' && hasMissingExecutableCode(chatResponse);
             if (missingExecutableCode && attempt < maxAttempts - 1) {
-                retryInstruction = `\nIMPORTANT VALIDATION FAILURE: Your previous response included an action with responseType=execute_js_code but did not include a valid code.jsFunctionBody. You must respond with executable JavaScript that mutates the provided data and returns the updated array (including an explicit return statement). Provide only valid JSON matching the required schema.`;
+                retryInstruction = `\nIMPORTANT VALIDATION FAILURE: Your previous response included an action with responseType=execute_js_code but did not include a valid code.jsFunctionBody. You must respond with executable JavaScript that mutates the provided data and returns the updated array (including an explicit return statement). Provide only valid JSON matching the required action envelope.`;
                 continue;
             }
 

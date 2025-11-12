@@ -181,40 +181,103 @@ export const applyTopNWithOthers = (data: CsvRow[], groupByKey: string, valueKey
 };
 
 
-// Fix: Changed return type to Promise<CsvData> to include filename along with parsed data.
-export const processCsv = (file: File): Promise<CsvData> => {
+const FALLBACK_HEADER_PATTERN = /^column_\d+$/i;
+
+const sanitizeHeaderLabel = (raw: string | null | undefined): string => {
+    if (typeof raw !== 'string') return '';
+    return raw.replace(/[\u0000-\u001F]/g, '').trim();
+};
+
+const createHeaderResolver = () => {
+    const usage = new Map<string, number>();
+    return (raw: string | null | undefined, index: number): string => {
+        const sanitized = sanitizeHeaderLabel(raw);
+        const base = sanitized.length > 0 ? sanitized : `column_${index + 1}`;
+        const count = usage.get(base) ?? 0;
+        usage.set(base, count + 1);
+        return count === 0 ? base : `${base}_${count + 1}`;
+    };
+};
+
+const normalizeRowsWithHeaders = (rows: CsvRow[], headers: string[]): CsvRow[] => {
+    return rows
+        .filter(row => headers.some(header => {
+            const value = row[header];
+            return value !== undefined && String(value).trim() !== '';
+        }))
+        .map(row => {
+            const normalized: CsvRow = {};
+            headers.forEach(header => {
+                normalized[header] = sanitizeValue(String(row[header] ?? ''));
+            });
+            return normalized;
+        });
+};
+
+const parseWithGenericHeaders = (file: File): Promise<CsvData> => {
     return new Promise((resolve, reject) => {
         Papa.parse(file, {
-            header: false, // CRITICAL FIX: Do not assume the first row is a header.
-            skipEmptyLines: true,
+            header: false,
+            skipEmptyLines: 'greedy',
             worker: true,
             complete: (results: { data: string[][] }) => {
                 if (results.data.length === 0) {
                     resolve({ fileName: file.name, data: [] });
                     return;
                 }
-                
-                // Find the maximum number of columns across all rows to create a consistent object structure.
                 const maxCols = results.data.reduce((max, row) => Math.max(max, row.length), 0);
-                // Create generic headers (e.g., column_1, column_2) for the AI to reference.
                 const genericHeaders = Array.from({ length: maxCols }, (_, i) => `column_${i + 1}`);
-                
-                // Convert the array of arrays into an array of objects with generic keys.
-                // This provides a stable structure for the AI to analyze, regardless of the file's header position.
                 const objectData = results.data.map(rowArray => {
                     const newRow: CsvRow = {};
                     genericHeaders.forEach((header, index) => {
-                        const value = rowArray[index] !== undefined ? rowArray[index] : ''; // Handle jagged rows
+                        const value = rowArray[index] !== undefined ? rowArray[index] : '';
                         newRow[header] = sanitizeValue(String(value));
                     });
                     return newRow;
                 });
-
                 resolve({ fileName: file.name, data: objectData });
             },
-            error: (error: Error) => {
-                reject(error);
+            error: reject,
+        });
+    });
+};
+
+export const processCsv = (file: File): Promise<CsvData> => {
+    return new Promise((resolve, reject) => {
+        const resolveHeaderName = createHeaderResolver();
+        const resolvedHeaders: string[] = [];
+        Papa.parse(file, {
+            header: true,
+            skipEmptyLines: 'greedy',
+            // Papa's worker transport cannot serialize functions such as transformHeader,
+            // so we must stay on the main thread for this pass.
+            worker: false,
+            transformHeader: (header: string, index: number) => {
+                const finalName = resolveHeaderName(header, index);
+                resolvedHeaders[index] = finalName;
+                return finalName;
             },
+            complete: async (results: { data: CsvRow[] }) => {
+                try {
+                    const usableHeaders =
+                        resolvedHeaders.length > 0 &&
+                        resolvedHeaders.some(name => !FALLBACK_HEADER_PATTERN.test(name));
+
+                    if (!usableHeaders) {
+                        const fallback = await parseWithGenericHeaders(file);
+                        resolve(fallback);
+                        return;
+                    }
+
+                    resolve({
+                        fileName: file.name,
+                        data: normalizeRowsWithHeaders(results.data as CsvRow[], resolvedHeaders),
+                    });
+                } catch (error) {
+                    reject(error);
+                }
+            },
+            error: reject,
         });
     });
 };
@@ -518,16 +581,21 @@ export const executeJavaScriptDataTransform = (
         const transformFunction = new Function('data', '_util', normalizedBody);
         const result = transformFunction(data, _util);
 
-        if (!Array.isArray(result)) {
-            console.error("AI-generated transform function returned a non-array value. This is likely due to a missing 'return' statement in the generated code.", {
-                returnedValue: result,
-                generatedCode: jsFunctionBody
-            });
-            throw new Error('AI-generated transform function did not return an array.');
-        }
-        
-        if (result.length > 0 && typeof result[0] !== 'object') {
-             throw new Error('AI-generated transform function did not return an array of objects.');
+        const buildNoOpMeta = (): DataTransformMeta => ({
+            rowsBefore: data.length,
+            rowsAfter: data.length,
+            addedRows: 0,
+            removedRows: 0,
+            modifiedRows: 0,
+            noOp: true,
+        });
+
+        if (!Array.isArray(result) || (result.length > 0 && typeof result[0] !== 'object')) {
+            console.warn(
+                "AI-generated transform function did not produce an array of row objects. Treating as pass-through.",
+                { returnedValue: result, generatedCode: jsFunctionBody },
+            );
+            return { data, meta: buildNoOpMeta() };
         }
 
         const castResult = result as CsvRow[];
@@ -544,19 +612,25 @@ export const executeJavaScriptDataTransform = (
         }
 
         const hasChanges = removedRows > 0 || addedRows > 0 || modifiedRows > 0;
+        const meta: DataTransformMeta = {
+            rowsBefore,
+            rowsAfter,
+            addedRows,
+            removedRows,
+            modifiedRows,
+            noOp: !hasChanges,
+        };
+
         if (!hasChanges) {
-            throw new Error('AI-generated data transformation produced no observable changes. Please refine the instruction or regenerate the code.');
+            console.warn(
+                'AI-generated data transformation produced no observable row changes. Treating result as a no-op.',
+                { generatedCode: jsFunctionBody },
+            );
         }
 
         return {
             data: castResult,
-            meta: {
-                rowsBefore,
-                rowsAfter,
-                addedRows,
-                removedRows,
-                modifiedRows,
-            },
+            meta,
         };
     } catch (error) {
         console.error("Error executing AI-generated JavaScript:", error);

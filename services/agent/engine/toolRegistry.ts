@@ -14,6 +14,7 @@ export const TOOL_REGISTRY: ToolRegistryEntry[] = [
         name: 'text_response',
         description: 'Send a conversational reply to the user and suggest next actions.',
         tags: ['conversation', 'starter', 'safe', 'low_latency'],
+        quickActionLabel: '自定义提问：直接告诉我想分析什么 (Ask anything)',
         costEstimate: 1,
         latencyClass: 'short',
         risk: 'low',
@@ -38,7 +39,8 @@ export const TOOL_REGISTRY: ToolRegistryEntry[] = [
     {
         name: 'filter_spreadsheet',
         description: 'Apply a natural-language filter to the raw data explorer.',
-        tags: ['data', 'tool'],
+        tags: ['data', 'tool', 'safe', 'starter'],
+        quickActionLabel: '筛选数据：告诉我条件来过滤 rows',
         costEstimate: 2,
         latencyClass: 'short',
         risk: 'low',
@@ -56,7 +58,8 @@ export const TOOL_REGISTRY: ToolRegistryEntry[] = [
     {
         name: 'clarification_request',
         description: 'Ask the user to choose between concrete options.',
-        tags: ['conversation', 'safe'],
+        tags: ['conversation', 'safe', 'low_latency'],
+        quickActionLabel: '澄清需求：列出想聚焦的字段或指标',
         costEstimate: 2,
         latencyClass: 'short',
         risk: 'low',

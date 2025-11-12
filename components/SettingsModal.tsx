@@ -71,184 +71,186 @@ export const SettingsModal: React.FC = () => {
 
 
     return (
-        <div 
+        <div
             className="fixed inset-0 bg-slate-900 bg-opacity-50 flex items-center justify-center z-50"
             onClick={onClose}
         >
-            <div 
-                className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md border border-slate-200 max-h-[80vh] overflow-y-auto"
+            <div
+                className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md border border-slate-200 max-h-[80vh] flex flex-col overflow-hidden"
                 onClick={e => e.stopPropagation()}
             >
-                <h2 className="text-2xl font-bold text-slate-900 mb-6">Settings</h2>
-                
-                <div className="space-y-6">
-                     <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-2">
-                            AI Provider
-                        </label>
-                        <div className="flex space-x-2 rounded-lg bg-slate-200 p-1">
-                            <button onClick={() => handleProviderChange('google')} className={`w-full rounded-md py-1.5 text-sm font-medium transition-colors ${settings.provider === 'google' ? 'bg-blue-600 text-white shadow' : 'text-slate-700 hover:bg-slate-300'}`}>
-                                Google Gemini
-                            </button>
-                            <button onClick={() => handleProviderChange('openai')} className={`w-full rounded-md py-1.5 text-sm font-medium transition-colors ${settings.provider === 'openai' ? 'bg-blue-600 text-white shadow' : 'text-slate-700 hover:bg-slate-300'}`}>
-                                OpenAI
-                            </button>
-                        </div>
-                    </div>
+                <div className="flex-1 overflow-y-auto pr-1">
+                    <h2 className="text-2xl font-bold text-slate-900 mb-6">Settings</h2>
                     
-                    {settings.provider === 'google' && (
+                    <div className="space-y-6 pb-4">
                         <div>
-                            <label htmlFor="geminiApiKey" className="block text-sm font-medium text-slate-700">
-                                Gemini API Key
+                            <label className="block text-sm font-medium text-slate-700 mb-2">
+                                AI Provider
                             </label>
-                            <input
-                                type="password"
-                                id="geminiApiKey"
-                                name="geminiApiKey"
-                                value={settings.geminiApiKey}
-                                onChange={handleInputChange}
-                                className="mt-1 block w-full bg-white border border-slate-300 rounded-md py-2 px-3 text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                placeholder="Enter your API key"
-                            />
-                             <p className="text-xs text-slate-500 mt-1">
-                                Get your key from <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">Google AI Studio</a>.
-                            </p>
+                            <div className="flex space-x-2 rounded-lg bg-slate-200 p-1">
+                                <button onClick={() => handleProviderChange('google')} className={`w-full rounded-md py-1.5 text-sm font-medium transition-colors ${settings.provider === 'google' ? 'bg-blue-600 text-white shadow' : 'text-slate-700 hover:bg-slate-300'}`}>
+                                    Google Gemini
+                                </button>
+                                <button onClick={() => handleProviderChange('openai')} className={`w-full rounded-md py-1.5 text-sm font-medium transition-colors ${settings.provider === 'openai' ? 'bg-blue-600 text-white shadow' : 'text-slate-700 hover:bg-slate-300'}`}>
+                                    OpenAI
+                                </button>
+                            </div>
                         </div>
-                    )}
-                    
-                    {settings.provider === 'openai' && (
-                         <div>
-                            <label htmlFor="openAIApiKey" className="block text-sm font-medium text-slate-700">
-                                OpenAI API Key
-                            </label>
-                            <input
-                                type="password"
-                                id="openAIApiKey"
-                                name="openAIApiKey"
-                                value={settings.openAIApiKey}
-                                onChange={handleInputChange}
-                                className="mt-1 block w-full bg-white border border-slate-300 rounded-md py-2 px-3 text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                placeholder="Enter your API key (sk-...)"
-                            />
-                            <p className="text-xs text-slate-500 mt-1">
-                                Get your key from <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">OpenAI Platform</a>.
-                            </p>
-                        </div>
-                    )}
-
-
-                    <div>
-                        <label htmlFor="model" className="block text-sm font-medium text-slate-700">
-                            AI Model
-                        </label>
-                         <input
-                            type="text"
-                            id="model"
-                            name="model"
-                            value={settings.model}
-                            onChange={handleInputChange}
-                            list="model-list"
-                            className="mt-1 block w-full bg-white border border-slate-300 rounded-md py-2 px-3 text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            placeholder="e.g., gpt-5"
-                        />
-                        <datalist id="model-list">
-                             {(settings.provider === 'google' ? googleModels : openAIModels).map(model => (
-                                <option key={model} value={model} />
-                            ))}
-                        </datalist>
-                         <p className="text-xs text-slate-500 mt-1">
-                            Select a suggested model or type a custom one.
-                        </p>
-                    </div>
-
-                    <div>
-                        <label htmlFor="language" className="block text-sm font-medium text-slate-700">
-                            Agent Language
-                        </label>
-                        <select
-                            id="language"
-                            name="language"
-                            value={settings.language}
-                            onChange={handleInputChange}
-                            className="mt-1 block w-full bg-white border border-slate-300 rounded-md py-2 px-3 text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        >
-                            {languages.map(lang => (
-                                <option key={lang} value={lang}>{lang}</option>
-                            ))}
-                        </select>
-                         <p className="text-xs text-slate-500 mt-1">
-                            Primary language for AI summaries and chat responses.
-                        </p>
-                    </div>
-
-                    <div className="border-t border-slate-200 pt-4">
-                        <label className="block text-sm font-medium text-slate-700">
-                            Aggregation Mode · 汇总模式
-                        </label>
-                        <p className="text-xs text-slate-500 mb-3 max-w-sm">
-                            全量 = DuckDB 全表扫描（默认，精准）；快速 = 采样 5k 行内以提速。每个数据集将记住你的选择。
-                        </p>
-                        <div className="inline-flex items-center gap-1 rounded-lg bg-slate-100 p-1">
-                            <button
-                                type="button"
-                                className={aggregationModeButtonClass('full')}
-                                onClick={() => setAggregationMode('full')}
-                            >
-                                全量（默认）
-                            </button>
-                            <button
-                                type="button"
-                                className={aggregationModeButtonClass('sample')}
-                                onClick={() => setAggregationMode('sample')}
-                            >
-                                快速（采样）
-                            </button>
-                        </div>
-                    </div>
-
-                    <div className="border-t border-slate-200 pt-4">
-                        <div className="flex items-center justify-between">
+                        
+                        {settings.provider === 'google' && (
                             <div>
-                                <label className="block text-sm font-medium text-slate-700">
-                                    Auto-Save
+                                <label htmlFor="geminiApiKey" className="block text-sm font-medium text-slate-700">
+                                    Gemini API Key
                                 </label>
-                                <p className="text-xs text-slate-500">
-                                    Periodically store the current analysis so you can recover it later.
+                                <input
+                                    type="password"
+                                    id="geminiApiKey"
+                                    name="geminiApiKey"
+                                    value={settings.geminiApiKey}
+                                    onChange={handleInputChange}
+                                    className="mt-1 block w-full bg-white border border-slate-300 rounded-md py-2 px-3 text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    placeholder="Enter your API key"
+                                />
+                                <p className="text-xs text-slate-500 mt-1">
+                                    Get your key from <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">Google AI Studio</a>.
                                 </p>
                             </div>
-                            <button
-                                onClick={() => setSettings(prev => ({ ...prev, autoSaveEnabled: !prev.autoSaveEnabled }))}
-                                className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${
-                                    settings.autoSaveEnabled ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-700'
-                                }`}
-                            >
-                                {settings.autoSaveEnabled ? 'Enabled' : 'Paused'}
-                            </button>
-                        </div>
-                        {settings.autoSaveEnabled && (
-                            <div className="mt-4">
-                                <label htmlFor="autoSaveIntervalSeconds" className="block text-sm font-medium text-slate-700">
-                                    Auto-Save Frequency
+                        )}
+                        
+                        {settings.provider === 'openai' && (
+                            <div>
+                                <label htmlFor="openAIApiKey" className="block text-sm font-medium text-slate-700">
+                                    OpenAI API Key
                                 </label>
-                                <select
-                                    id="autoSaveIntervalSeconds"
-                                    name="autoSaveIntervalSeconds"
-                                    value={settings.autoSaveIntervalSeconds}
+                                <input
+                                    type="password"
+                                    id="openAIApiKey"
+                                    name="openAIApiKey"
+                                    value={settings.openAIApiKey}
                                     onChange={handleInputChange}
-                                    className="mt-1 block w-full bg-white border border-slate-300 rounded-md py-2 px-3 text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                >
-                                    {autoSaveIntervals.map(option => (
-                                        <option key={option.value} value={option.value}>
-                                            {option.label}
-                                        </option>
-                                    ))}
-                                </select>
+                                    className="mt-1 block w-full bg-white border border-slate-300 rounded-md py-2 px-3 text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    placeholder="Enter your API key (sk-...)"
+                                />
+                                <p className="text-xs text-slate-500 mt-1">
+                                    Get your key from <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">OpenAI Platform</a>.
+                                </p>
                             </div>
                         )}
+
+
+                        <div>
+                            <label htmlFor="model" className="block text-sm font-medium text-slate-700">
+                                AI Model
+                            </label>
+                            <input
+                                type="text"
+                                id="model"
+                                name="model"
+                                value={settings.model}
+                                onChange={handleInputChange}
+                                list="model-list"
+                                className="mt-1 block w-full bg-white border border-slate-300 rounded-md py-2 px-3 text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                placeholder="e.g., gpt-5"
+                            />
+                            <datalist id="model-list">
+                                {(settings.provider === 'google' ? googleModels : openAIModels).map(model => (
+                                    <option key={model} value={model} />
+                                ))}
+                            </datalist>
+                            <p className="text-xs text-slate-500 mt-1">
+                                Select a suggested model or type a custom one.
+                            </p>
+                        </div>
+
+                        <div>
+                            <label htmlFor="language" className="block text-sm font-medium text-slate-700">
+                                Agent Language
+                            </label>
+                            <select
+                                id="language"
+                                name="language"
+                                value={settings.language}
+                                onChange={handleInputChange}
+                                className="mt-1 block w-full bg-white border border-slate-300 rounded-md py-2 px-3 text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            >
+                                {languages.map(lang => (
+                                    <option key={lang} value={lang}>{lang}</option>
+                                ))}
+                            </select>
+                            <p className="text-xs text-slate-500 mt-1">
+                                Primary language for AI summaries and chat responses.
+                            </p>
+                        </div>
+
+                        <div className="border-t border-slate-200 pt-4">
+                            <label className="block text-sm font-medium text-slate-700">
+                                Aggregation Mode · 汇总模式
+                            </label>
+                            <p className="text-xs text-slate-500 mb-3 max-w-sm">
+                                全量 = DuckDB 全表扫描（默认，精准）；快速 = 采样 5k 行内以提速。每个数据集将记住你的选择。
+                            </p>
+                            <div className="inline-flex items-center gap-1 rounded-lg bg-slate-100 p-1">
+                                <button
+                                    type="button"
+                                    className={aggregationModeButtonClass('full')}
+                                    onClick={() => setAggregationMode('full')}
+                                >
+                                    全量（默认）
+                                </button>
+                                <button
+                                    type="button"
+                                    className={aggregationModeButtonClass('sample')}
+                                    onClick={() => setAggregationMode('sample')}
+                                >
+                                    快速（采样）
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="border-t border-slate-200 pt-4">
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-700">
+                                        Auto-Save
+                                    </label>
+                                    <p className="text-xs text-slate-500">
+                                        Periodically store the current analysis so you can recover it later.
+                                    </p>
+                                </div>
+                                <button
+                                    onClick={() => setSettings(prev => ({ ...prev, autoSaveEnabled: !prev.autoSaveEnabled }))}
+                                    className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${
+                                        settings.autoSaveEnabled ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-700'
+                                    }`}
+                                >
+                                    {settings.autoSaveEnabled ? 'Enabled' : 'Paused'}
+                                </button>
+                            </div>
+                            {settings.autoSaveEnabled && (
+                                <div className="mt-4">
+                                    <label htmlFor="autoSaveIntervalSeconds" className="block text-sm font-medium text-slate-700">
+                                        Auto-Save Frequency
+                                    </label>
+                                    <select
+                                        id="autoSaveIntervalSeconds"
+                                        name="autoSaveIntervalSeconds"
+                                        value={settings.autoSaveIntervalSeconds}
+                                        onChange={handleInputChange}
+                                        className="mt-1 block w-full bg-white border border-slate-300 rounded-md py-2 px-3 text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    >
+                                        {autoSaveIntervals.map(option => (
+                                            <option key={option.value} value={option.value}>
+                                                {option.label}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                            )}
+                        </div>
                     </div>
                 </div>
 
-                <div className="mt-8 flex justify-end space-x-3">
+                <div className="mt-6 flex justify-end space-x-3 border-t border-slate-200 pt-4 shrink-0 bg-white">
                     <button
                         onClick={onClose}
                         className="px-4 py-2 bg-slate-200 text-slate-800 rounded-md hover:bg-slate-300 transition-colors"

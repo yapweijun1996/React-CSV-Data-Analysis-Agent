@@ -28,45 +28,46 @@ const commonRules = {
     dataframeHelpers: `- **DataFrame Helper DSL**: The runtime provides reliable helpers via \`_util\`. Use \`_util.groupBy(rows, key)\`, \`_util.pivot(rows, rowKey, columnKey, valueKey, reducer)\`, \`_util.join(leftRows, rightRows, { leftKey, rightKey, how })\`, and \`_util.rollingWindow(rows, windowSize, { column, op })\` instead of rewriting these routines. These helpers dramatically reduce JavaScript mistakes—use them whenever you need grouping, reshaping, joining, or window calculations.`,
 };
 
-export const createDataPreparationPrompt = (columns: ColumnProfile[], sampleData: CsvRow[], lastError?: Error): string => `
-    You are an expert data engineer. Your task is to analyze a raw dataset and, if necessary, provide a JavaScript function to clean and reshape it into a tidy, analysis-ready format. CRITICALLY, you must also provide the schema of the NEW, transformed data with detailed data types.
-    A tidy format has: 1. Each variable as a column. 2. Each observation as a row.
-    
-    Common problems to fix:
-    ${commonRules.numberParsing}
-    ${commonRules.splitNumeric}
-    ${commonRules.dataVsSummaries}
-    ${commonRules.dataframeHelpers}
-    - **Crosstab/Wide Format**: Unpivot data where column headers are values (e.g., years, regions).
-    - **Multi-header Rows**: Skip initial junk rows.
+export const dataPreparationSystemPrompt = `
+You are an expert data engineer. Your job is to analyze the provided dataset snapshot and, only when necessary, emit JavaScript code that converts it into a tidy, analysis-ready table. Always include the new output schema with precise data types. A tidy table has one column per variable and one row per observation.
 
-    Dataset Columns (Initial Schema):
-    ${JSON.stringify(columns, null, 2)}
-    Sample Data (up to 20 rows):
-    ${JSON.stringify(sampleData, null, 2)}
-    ${lastError ? `On the previous attempt, your generated code failed with this error: "${lastError.message}". Please analyze the error and the data, then provide a corrected response.` : ''}
-    
-    Your task:
-    1.  **Analyze**: Look at the initial schema and sample data.
-    2.  **Plan Transformation**: Decide if cleaning or reshaping is needed. If you identify date or time columns as strings, your function should attempt to parse them into a standard format (e.g., 'YYYY-MM-DD' for dates).
-    3.  **Define Output Schema**: Determine the exact column names and types of the data AFTER your transformation. This is the MOST important step. Be as specific as possible with the types. Use 'categorical' for text labels, 'numerical' for general numbers, but you MUST identify and use the more specific types where they apply:
-        - **'date'**: For columns containing dates (e.g., "2023-10-26", "10/26/2023").
-        - **'time'**: For columns with time values (e.g., "14:30:00").
-        - **'currency'**: For columns representing money, especially if they contain symbols like '$' or ','.
-        - **'percentage'**: For columns with '%' symbols or values that are clearly percentages.
-    4.  **Write Code**: If transformation is needed, write the body of a JavaScript function. This function receives two arguments, \`data\` and \`_util\`, and must return the transformed array of objects.
-    5.  **Explain**: Provide a concise 'explanation' of what you did.
+Common issues to fix (apply only when observed):
+${commonRules.numberParsing}
+${commonRules.splitNumeric}
+${commonRules.dataVsSummaries}
+${commonRules.dataframeHelpers}
+- **Crosstab/Wide Format**: Pivot columns like years/regions back into rows.
+- **Multi-header Rows**: Remove banner/header rows before processing.
 
-    **CRITICAL REQUIREMENTS:**
-    - You MUST provide the \`outputColumns\` array. If you don't transform the data, \`outputColumns\` should be identical to the initial schema (but with more specific types if you identified them). If you do transform it, it must accurately reflect the new structure your code creates.
-    - Your JavaScript code MUST include a \`return\` statement as its final operation.
-
-    **Example: Reshaping and identifying types using the utility**
-    - Initial Data: [{'Product': 'A', 'DateStr': 'Oct 26 2023', 'Revenue': '$1,500.00'}]
-    - Explanation: "Standardized the date format and converted the revenue column to a number."
-    - jsFunctionBody: "return data.map(row => ({ ...row, DateStr: new Date(row.DateStr).toISOString().split('T')[0], Revenue: _util.parseNumber(row.Revenue) }));"
-    - outputColumns: [{'name': 'Product', 'type': 'categorical'}, {'name': 'DateStr', 'type': 'date'}, {'name': 'Revenue', 'type': 'currency'}]
+Response contract:
+- Return exactly one JSON object matching the provided schema (explanation, jsFunctionBody, outputColumns).
+- If no transformation is required, set jsFunctionBody to null and keep outputColumns aligned with the detected column types (upgrade to date/currency/percentage when obvious).
+- If code is emitted, it must end with \`return data;\` (or the transformed array) and rely on the provided \`_util\` helpers for parsing numbers or splitting numeric strings.
 `;
+
+export const createDataPreparationPrompt = (columns: ColumnProfile[], sampleData: CsvRow[], lastError?: Error): string => {
+    const columnLines = columns.slice(0, 15).map((col, idx) => {
+        const stats = [
+            col.type ? `type=${col.type}` : null,
+            typeof col.uniqueValues === 'number' ? `unique≈${col.uniqueValues}` : null,
+            typeof col.missingPercentage === 'number' ? `missing=${col.missingPercentage}%` : null,
+        ]
+            .filter(Boolean)
+            .join(', ');
+        return `${idx + 1}. ${col.name}${stats ? ` (${stats})` : ''}`;
+    });
+
+    const summarySections = [
+        `Dataset snapshot: ${columns.length} columns, ${sampleData.length} sampled rows (raw rows omitted for privacy).`,
+        columnLines.length > 0
+            ? `Column inventory (first ${Math.min(columns.length, 15)}):\n${columnLines.join('\n')}`
+            : 'No column metadata was provided.',
+        'Identify obvious metric columns (amount, revenue, quantity) and dimension columns (region, product, channel). Note any columns that should be cast to date/currency/percentage.',
+        lastError ? `Previous attempt failed with: ${lastError.message}` : null,
+    ].filter(Boolean);
+
+    return summarySections.join('\n\n');
+};
 
 export const createFilterFunctionPrompt = (query: string, columns: ColumnProfile[], sampleData: CsvRow[]): string => `
     You are an expert data analyst. Your task is to convert a user's natural language query into a JavaScript filter function body for a dataset.
@@ -299,15 +300,17 @@ export const createPlanPrimerPrompt = (
     const recentHistory = formatConversationChunk(chatHistory, 5);
 
     const instructions = `
-You are beginning STEP 1 of a multi-stage workflow. Your sole objective in this turn is to emit a high-quality \`plan_state_update\` action that sets the shared goal tracker for the UI. Do **not** run tools, transformations, or DOM actions yet.
+You are beginning STEP 1 of a multi-stage workflow. Your sole objective in this turn is to emit a high-quality \`plan_state_update\` action that sets the shared goal tracker for the UI. Do **not** run tools, transformations, DOM actions, or conversational replies yet.
 Requirements for this response:
 - The first action must be \`plan_state_update\` with goal, contextSummary, progress, nextSteps (each having id + label), blockedBy (or null), observationIds (array, can be empty), confidence (0-1 or null), and updatedAt.
-- Every action you send must include \`type\`, \`responseType\`, \`stepId\`, and a monotonic \`stateTag\` formatted as "<epochMs>-<seq>" (set \`stateTag\` even on plan_state_update).
+- Every action you send must include \`type\`, \`responseType\`, and \`stepId\`. The runtime will append metadata such as timestamps and stateTag tokens.
 - Each action's \`reason\` must be no more than 280 characters and clearly state the immediate justification for that step (e.g., "Plan: drafting the chart creation steps").
 - The plan_state_update payload must include \`planId\`, \`currentStepId\`, and a comprehensive \`steps\` array where each entry has \`intent\` and \`status\` (\`ready\`|\`in_progress\`|\`done\`).
-- You may optionally include one short \`text_response\` after the plan_state_update to acknowledge the plan to the user in ${language}, but do not trigger other action types.
+- Emit exactly **one** action (the plan_state_update). **Do NOT** include \`text_response\`; the host UI will provide any greeting copy.
 - If the user's latest message is merely a greeting or check-in (e.g., "hi", "hello there", "早安"), still include a first nextSteps entry with id "acknowledge_user" and a label that confirms you will greet/clarify with them before moving to data work.
 - Keep nextSteps focused on the minimum set of concrete moves (e.g., build chart, run filter, gather clarification). Reference dataset columns exactly as they appear.
+- Return **raw JSON only** (no Markdown fences/backticks, no commentary) and only include the fields described above—do not invent extra keys.
+- Never wrap the JSON in \`\`\` \`\`\` or prepend/append explanatory text; the response must begin with \u007B and end with \u007D.
 `.trim();
 
     const conversation = `
@@ -341,7 +344,6 @@ const buildChatPromptSections = (
     cardContext: CardContext[],
     language: Settings['language'],
     aiCoreAnalysisSummary: string | null,
-    rawDataSample: CsvRow[],
     longTermMemory: string[],
     recentObservations: AgentObservation[],
     planState: AgentPlanState | null,
@@ -402,23 +404,19 @@ const buildChatPromptSections = (
         longTermMemory.length > 0
             ? `Long-term memory (top ${Math.min(longTermMemory.length, 3)}):\n${longTermMemory.slice(0, 3).join('\n---\n')}`
             : 'No relevant long-term memories.';
-    const rawDataSection =
-        rawDataSample.length > 0
-            ? `Raw data sample (first 3 rows):\n${JSON.stringify(rawDataSample.slice(0, 3), null, 2)}`
-            : 'Raw data preview unavailable.';
-
     const instructions = `
 You are an expert data analyst and strategist operating with a Reason-Act (ReAct) framework. Every action needs a short reason first, then the action payload. Keep final conversational replies in ${language}.
 `.trim();
 
-    const planProtocol = `
+const planProtocol = `
 PLAN TRACKER PROTOCOL (Follow exactly):
-- Every action JSON must include \`type\`, \`responseType\`, \`stepId\`, and a monotonic \`stateTag\`.
+- Every action JSON must include \`type\`, \`responseType\`, and \`stepId\`. The host app will supply timestamps/stateTags after validation.
 - \`plan_state_update\` entries must list \`nextSteps\` objects (id + label) and a \`steps\` array including \`intent\` + \`status\`.
 - Emit at most two actions per turn (plan_state_update + one atomic action). Reasons ≤280 chars referencing the plan step.
 - Use \`await_user\` when the user must choose; include numbered options and set \`meta.awaitUser=true\`.
 - For \`dom_action\`, always specify \`domAction.target\`. If the target is unknown, fall back to a text_response asking the user.
-- When blocked, set \`plan_state_update.blockedBy\` and change its stateTag to \`awaiting_clarification\`.
+- When blocked, set \`plan_state_update.blockedBy\` to the waiting label (e.g., "awaiting_clarification").
+- Structured tool intents must be placed in \`intentContract\` (object with \`intent\`, \`tool\`, \`args\`, \`awaitUser\`, \`message\`). Supported tools: csv.aggregate, csv.profile, csv.clean_invoice_month, csv.detect_outliers, ui.remove_card, idb.save_view. For ask_clarify set \`tool=null\` and \`awaitUser=true\`. Default aggregation "sum" and groupBy [] when unspecified.
 `.trim();
 
     const analysisBriefing = `
@@ -448,13 +446,9 @@ ${planStateSummary}
                   .map(card => `  - ${card.title}${card.chartType ? ` (${card.chartType})` : ''}`)
                   .join('\n')
             : '  - No analysis cards yet.';
-    const rawDataPreview =
-        rawDataSample.length > 0 ? JSON.stringify(rawDataSample.slice(0, 5), null, 2) : 'No raw data preview available.';
-
     const runtimeNotes = `
 Agent runtime notes:
 - Pipeline: Context Builder → Planner → Action Dispatcher. Keep plans concise for downstream executors.
-- Ensure \`stateTag\` tokens stay strictly increasing (use "<epochMs>-<seq>" as a fallback).
 `.trim();
 
     const actionBlock = `
@@ -484,6 +478,8 @@ Respond with a JSON object containing an "actions" array. Example (pseudocode):
 }
 
 Primary actions available: text_response, plan_creation, dom_action, execute_js_code, clarification_request, await_user, filter_spreadsheet, proceed_to_analysis. Always acknowledge the user via text_response when you finish a complex step.
+- Output raw JSON only (no Markdown fences/backticks). Stick to the documented fields; do not add extra keys or prose outside the JSON object.
+- The response must start with \u007B and end with \u007D—no greetings or commentary outside the JSON.
 `.trim();
 
     return [
@@ -496,7 +492,6 @@ Primary actions available: text_response, plan_creation, dom_action, execute_js_
         { label: 'Context: data prep', content: dataPrepSection, priority: 4, stage: 'context' },
         { label: 'Context: long-term memory', content: memorySection, priority: 5, stage: 'context' },
         { label: 'Context: plan state', content: planStateBlock, priority: 5, stage: 'context' },
-        { label: 'Context: raw data sample', content: rawDataSection, priority: 6, stage: 'context' },
         { label: 'Context: runtime notes', content: runtimeNotes, priority: 7, stage: 'context' },
         { label: 'Context: action traces', content: actionBlock, priority: 7, stage: 'context' },
         { label: 'Context: observations', content: observationBlock, priority: 7, stage: 'context' },
@@ -511,7 +506,6 @@ export const createChatPrompt = (
     cardContext: CardContext[],
     language: Settings['language'],
     aiCoreAnalysisSummary: string | null,
-    rawDataSample: CsvRow[],
     longTermMemory: string[],
     recentObservations: AgentObservation[],
     planState: AgentPlanState | null,
@@ -526,7 +520,6 @@ export const createChatPrompt = (
         cardContext,
         language,
         aiCoreAnalysisSummary,
-        rawDataSample,
         longTermMemory,
         recentObservations,
         planState,
@@ -550,7 +543,6 @@ export const createChatPromptForStage = (
     cardContext: CardContext[],
     language: Settings['language'],
     aiCoreAnalysisSummary: string | null,
-    rawDataSample: CsvRow[],
     longTermMemory: string[],
     recentObservations: AgentObservation[],
     planState: AgentPlanState | null,
@@ -565,7 +557,6 @@ export const createChatPromptForStage = (
         cardContext,
         language,
         aiCoreAnalysisSummary,
-        rawDataSample,
         longTermMemory,
         recentObservations,
         planState,

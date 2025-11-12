@@ -241,14 +241,8 @@ export const preparePlanForExecution = (
                 };
             }
             if (!filterResolution.resolved) {
-                return {
-                    plan,
-                    warnings,
-                    isValid: false,
-                    errorMessage: `Row filter references missing column "${filterColumn}".`,
-                };
-            }
-            if (filterResolution.resolved !== filterColumn) {
+                resolvedFilterColumn = null;
+            } else if (filterResolution.resolved !== filterColumn) {
                 resolvedFilterColumn = filterResolution.resolved;
                 warnings.push(`Row filter column "${filterColumn}" normalized to "${resolvedFilterColumn}".`);
             }
