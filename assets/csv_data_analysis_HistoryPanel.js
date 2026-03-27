@@ -1,0 +1,459 @@
+import { j as jsxRuntimeExports, r as reactExports } from "./csv_data_analysis_vendor-react-core.js";
+import { s as shallow$1 } from "./csv_data_analysis_vendor-state.js";
+import { u as useAppStore } from "./csv_data_analysis_index.js";
+import { O as getTranslation, cy as getStorageEstimate, bm as CURRENT_SESSION_KEY } from "./csv_data_analysis_app-agent.js";
+import { I as IconClose } from "./csv_data_analysis_IconClose.js";
+import "./csv_data_analysis_vendor-data.js";
+import "./csv_data_analysis_vendor-monaco.js";
+import "./csv_data_analysis_vendor-misc.js";
+import "./csv_data_analysis_app-reporting.js";
+import "./csv_data_analysis_vendor-ai-sdk.js";
+import "./csv_data_analysis_app-ai.js";
+import "./csv_data_analysis_app-agent-planning.js";
+import "./csv_data_analysis_vendor-storage.js";
+const MoreDotsIcon = () => /* @__PURE__ */ jsxRuntimeExports.jsx("svg", { xmlns: "http://www.w3.org/2000/svg", viewBox: "0 0 20 20", fill: "currentColor", className: "h-4 w-4", children: /* @__PURE__ */ jsxRuntimeExports.jsx("path", { d: "M10 3a1.5 1.5 0 110 3 1.5 1.5 0 010-3zM10 8.5a1.5 1.5 0 110 3 1.5 1.5 0 010-3zM11.5 15.5a1.5 1.5 0 10-3 0 1.5 1.5 0 003 0z" }) });
+const HistoryOverflowMenu = ({
+  reportId,
+  reportFilename,
+  isOpen,
+  isProtected,
+  language,
+  overflowRef,
+  onToggle,
+  onOpenReport,
+  onExportPdf,
+  onDelete
+}) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "relative", ref: isOpen ? overflowRef : void 0, children: [
+  /* @__PURE__ */ jsxRuntimeExports.jsx(
+    "button",
+    {
+      onClick: (e) => {
+        e.stopPropagation();
+        onToggle(isOpen ? null : reportId);
+      },
+      className: "inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-200 hover:text-slate-600",
+      title: getTranslation("history_more_actions", language),
+      children: /* @__PURE__ */ jsxRuntimeExports.jsx(MoreDotsIcon, {})
+    }
+  ),
+  isOpen && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "absolute right-0 z-20 mt-1 w-44 rounded-lg border border-slate-200 bg-white py-1 shadow-xl", children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsx(
+      "button",
+      {
+        onClick: () => {
+          onOpenReport(reportId);
+          onToggle(null);
+        },
+        className: "flex w-full items-center gap-2 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50",
+        children: getTranslation("history_open_report", language)
+      }
+    ),
+    /* @__PURE__ */ jsxRuntimeExports.jsx(
+      "button",
+      {
+        onClick: () => {
+          onExportPdf(reportId);
+          onToggle(null);
+        },
+        className: "flex w-full items-center gap-2 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50",
+        children: getTranslation("history_export_pdf", language)
+      }
+    ),
+    !isProtected && /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "my-1 border-t border-slate-100" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx(
+        "button",
+        {
+          onClick: () => onDelete(reportId, reportFilename),
+          className: "flex w-full items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50",
+          children: getTranslation("history_delete", language)
+        }
+      )
+    ] })
+  ] })
+] });
+const FileIcon = () => /* @__PURE__ */ jsxRuntimeExports.jsx("svg", { xmlns: "http://www.w3.org/2000/svg", fill: "none", viewBox: "0 0 24 24", strokeWidth: 1.5, stroke: "currentColor", className: "h-5 w-5", children: /* @__PURE__ */ jsxRuntimeExports.jsx("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" }) });
+const ChevronIcon = ({ open }) => /* @__PURE__ */ jsxRuntimeExports.jsx("svg", { xmlns: "http://www.w3.org/2000/svg", viewBox: "0 0 20 20", fill: "none", stroke: "currentColor", strokeWidth: "1.75", className: `h-3.5 w-3.5 transition-transform ${open ? "" : "-rotate-90"}`, children: /* @__PURE__ */ jsxRuntimeExports.jsx("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M6 8l4 4 4-4" }) });
+const showDualDates = (created, updated) => Math.abs(new Date(updated).getTime() - new Date(created).getTime()) > 6e4;
+const HistoryReportRow = ({
+  group,
+  language,
+  loadingId,
+  isGroupExpanded,
+  overflowMenuId,
+  overflowRef,
+  onToggleExpand,
+  onLoad,
+  onOpenReport,
+  onDelete,
+  onExportPdf,
+  onOverflowToggle,
+  isProtectedReport,
+  formatDate,
+  formatDateFull
+}) => {
+  const { latest, older, isCurrent } = group;
+  const hasTitle = Boolean(latest.reportTitle);
+  const displayTitle = latest.reportTitle ?? group.filename;
+  const dualDates = showDualDates(latest.createdAt, latest.updatedAt);
+  const renderActionButton = (report, isCurrent2, compact) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+    "button",
+    {
+      onClick: () => isCurrent2 ? void onOpenReport(report.id) : void onLoad(report.id),
+      disabled: loadingId !== null,
+      className: `rounded-lg border border-slate-200 bg-white text-xs font-medium transition-colors ${compact ? "rounded-md px-2 py-1" : "px-3 py-1.5"} ${loadingId === report.id ? "text-slate-400 cursor-wait" : "text-slate-700 hover:border-slate-300 hover:bg-slate-50"} ${loadingId !== null && loadingId !== report.id ? "opacity-50 cursor-not-allowed" : ""}`,
+      children: loadingId === report.id ? getTranslation("history_loading", language) ?? "Loading..." : isCurrent2 ? getTranslation("history_open_report", language) : getTranslation("history_load_session", language)
+    }
+  );
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("li", { className: "group/row", children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: `flex items-start gap-3 px-5 py-3 transition-colors hover:bg-slate-50 ${isCurrent ? "bg-blue-50/50" : ""}`, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: `mt-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg ${isCurrent ? "bg-blue-100 text-blue-600" : "bg-slate-100 text-slate-400"}`, children: /* @__PURE__ */ jsxRuntimeExports.jsx(FileIcon, {}) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "min-w-0 flex-1", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "truncate text-sm font-medium text-slate-800", children: displayTitle }),
+        hasTitle && /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "truncate text-xs text-slate-400 mt-0.5", children: group.filename }),
+        latest.reportDescription && /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-1 text-xs leading-relaxed text-slate-400 line-clamp-2", children: latest.reportDescription }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-1.5", children: [
+          dualDates ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "text-[11px] text-slate-400", children: [
+              getTranslation("history_created_label", language),
+              ": ",
+              formatDate(latest.createdAt)
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[11px] text-slate-300", children: "·" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "text-[11px] text-slate-400", children: [
+              getTranslation("history_modified_label", language),
+              ": ",
+              formatDate(latest.updatedAt)
+            ] })
+          ] }) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[11px] text-slate-400", children: formatDateFull(latest.updatedAt) }),
+          isCurrent && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700", children: getTranslation("history_current_badge", language) }),
+          older.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs(
+            "button",
+            {
+              onClick: () => onToggleExpand(group.filename),
+              className: "inline-flex items-center gap-0.5 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 transition-colors hover:bg-slate-200",
+              children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(ChevronIcon, { open: isGroupExpanded }),
+                getTranslation("history_older_versions", language, { count: older.length })
+              ]
+            }
+          )
+        ] })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-1.5 flex-shrink-0 mt-0.5", children: [
+        renderActionButton(latest, isCurrent),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(
+          HistoryOverflowMenu,
+          {
+            reportId: latest.id,
+            reportFilename: group.filename,
+            isOpen: overflowMenuId === latest.id,
+            isProtected: isProtectedReport(latest.id),
+            language,
+            overflowRef,
+            onToggle: onOverflowToggle,
+            onOpenReport,
+            onExportPdf,
+            onDelete
+          }
+        )
+      ] })
+    ] }),
+    isGroupExpanded && older.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "border-t border-slate-50 bg-slate-50/50", children: older.map((entry) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-3 px-5 py-2 pl-16 transition-colors hover:bg-slate-100/80", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "min-w-0 flex-1", children: [
+        entry.reportTitle && /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "truncate text-xs text-slate-500", children: entry.reportTitle }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex flex-wrap items-center gap-x-2 gap-y-0.5", children: showDualDates(entry.createdAt, entry.updatedAt) ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "text-[11px] text-slate-400", children: [
+            getTranslation("history_created_label", language),
+            ": ",
+            formatDate(entry.createdAt)
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[11px] text-slate-300", children: "·" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "text-[11px] text-slate-400", children: [
+            getTranslation("history_modified_label", language),
+            ": ",
+            formatDate(entry.updatedAt)
+          ] })
+        ] }) : /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "text-[11px] text-slate-400", children: [
+          getTranslation("history_created_label", language),
+          ": ",
+          formatDate(entry.createdAt)
+        ] }) })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-1.5 flex-shrink-0", children: [
+        renderActionButton(entry, false, true),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(
+          HistoryOverflowMenu,
+          {
+            reportId: entry.id,
+            reportFilename: group.filename,
+            isOpen: overflowMenuId === entry.id,
+            isProtected: isProtectedReport(entry.id),
+            language,
+            overflowRef,
+            onToggle: onOverflowToggle,
+            onOpenReport,
+            onExportPdf,
+            onDelete
+          }
+        )
+      ] })
+    ] }, entry.id)) })
+  ] });
+};
+function groupReportsByFilename(reports, currentSessionId, sortField, sortDirection) {
+  const groups = /* @__PURE__ */ new Map();
+  for (const report of reports) {
+    const key = report.filename;
+    const list = groups.get(key) ?? [];
+    list.push(report);
+    groups.set(key, list);
+  }
+  return Array.from(groups.values()).map((entries) => {
+    const sorted = entries.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    const currentIdx = sorted.findIndex((r) => r.id === currentSessionId);
+    const latest = currentIdx >= 0 ? sorted[currentIdx] : sorted[0];
+    const older = sorted.filter((r) => r.id !== latest.id);
+    return {
+      filename: latest.filename,
+      latest,
+      older,
+      isCurrent: latest.id === currentSessionId
+    };
+  }).sort((a, b) => {
+    if (a.isCurrent) return -1;
+    if (b.isCurrent) return 1;
+    const dir = sortDirection === "asc" ? 1 : -1;
+    if (sortField === "filename") {
+      return dir * a.filename.localeCompare(b.filename);
+    }
+    const aDate = new Date(a.latest[sortField]).getTime();
+    const bDate = new Date(b.latest[sortField]).getTime();
+    return dir * (aDate - bDate);
+  });
+}
+const HistoryPanel = () => {
+  const {
+    isOpen,
+    onClose,
+    reports,
+    onLoadReport,
+    onDeleteReport,
+    onOpenReport,
+    onExportPdf,
+    currentSessionId,
+    language,
+    hasCsvData
+  } = useAppStore((state) => ({
+    isOpen: state.isHistoryPanelOpen,
+    onClose: () => state.setIsHistoryPanelOpen(false),
+    reports: state.reportsList,
+    onLoadReport: state.handleLoadReport,
+    onDeleteReport: state.handleDeleteReport,
+    onOpenReport: state.openPersistedReportArtifact,
+    onExportPdf: state.exportPersistedReportPdf,
+    currentSessionId: state.sessionId,
+    language: state.settings.language,
+    hasCsvData: Boolean(state.csvData)
+  }), shallow$1);
+  const [search, setSearch] = reactExports.useState("");
+  const [overflowMenuId, setOverflowMenuId] = reactExports.useState(null);
+  const [expandedGroup, setExpandedGroup] = reactExports.useState(null);
+  const [loadingId, setLoadingId] = reactExports.useState(null);
+  const [confirmLoadId, setConfirmLoadId] = reactExports.useState(null);
+  const [sortField, setSortField] = reactExports.useState("updatedAt");
+  const [sortDirection, setSortDirection] = reactExports.useState("desc");
+  const [storageInfo, setStorageInfo] = reactExports.useState(null);
+  const overflowRef = reactExports.useRef(null);
+  reactExports.useEffect(() => {
+    if (!isOpen) return;
+    void getStorageEstimate().then((est) => {
+      if (est) {
+        setStorageInfo({
+          usageMB: (est.usageBytes / 1024 / 1024).toFixed(1),
+          quotaMB: (est.quotaBytes / 1024 / 1024).toFixed(0),
+          percent: est.usagePercent.toFixed(1)
+        });
+      }
+    });
+  }, [isOpen]);
+  const toggleSort = (field) => {
+    if (sortField === field) {
+      setSortDirection((prev) => prev === "desc" ? "asc" : "desc");
+    } else {
+      setSortField(field);
+      setSortDirection("desc");
+    }
+  };
+  const handleLoad = (id) => {
+    if (hasCsvData) {
+      setConfirmLoadId(id);
+      return;
+    }
+    void doLoad(id);
+  };
+  const doLoad = async (id) => {
+    setConfirmLoadId(null);
+    setLoadingId(id);
+    try {
+      await onLoadReport(id);
+    } finally {
+      setLoadingId(null);
+    }
+  };
+  reactExports.useEffect(() => {
+    if (!overflowMenuId) return;
+    const handler = (e) => {
+      if (overflowRef.current && !overflowRef.current.contains(e.target)) {
+        setOverflowMenuId(null);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [overflowMenuId]);
+  const groups = reactExports.useMemo(
+    () => groupReportsByFilename(reports, currentSessionId, sortField, sortDirection),
+    [reports, currentSessionId, sortField, sortDirection]
+  );
+  const filteredGroups = reactExports.useMemo(
+    () => groups.filter((g) => {
+      var _a;
+      if (!search) return true;
+      const q = search.toLowerCase();
+      const title = ((_a = g.latest.reportTitle) == null ? void 0 : _a.toLowerCase()) ?? "";
+      return g.filename.toLowerCase().includes(q) || title.includes(q);
+    }),
+    [groups, search]
+  );
+  if (!isOpen) return null;
+  const handleDelete = (id, filename) => {
+    if (window.confirm(`Are you sure you want to delete the report for "${filename}"? This cannot be undone.`)) {
+      onDeleteReport(id);
+      setOverflowMenuId(null);
+    }
+  };
+  const pad = (n) => String(n).padStart(2, "0");
+  const fmtStd = (date) => {
+    const d = new Date(date);
+    return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  };
+  const formatDate = fmtStd;
+  const formatDateFull = fmtStd;
+  const isProtectedReport = (reportId) => reportId === currentSessionId || reportId === CURRENT_SESSION_KEY;
+  return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4", onClick: onClose, children: /* @__PURE__ */ jsxRuntimeExports.jsxs(
+    "div",
+    {
+      role: "dialog",
+      "aria-modal": "true",
+      className: "relative flex h-full max-h-[80vh] w-full max-w-xl flex-col rounded-2xl border border-slate-200 bg-white shadow-2xl",
+      onClick: (e) => e.stopPropagation(),
+      children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between border-b border-slate-100 px-5 py-4", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { className: "text-lg font-semibold text-slate-900", children: getTranslation("history_title", language) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-0.5 text-xs text-slate-500", children: getTranslation("history_footer", language) })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "button",
+            {
+              onClick: onClose,
+              className: "flex h-8 w-8 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600",
+              title: getTranslation("history_close", language),
+              children: /* @__PURE__ */ jsxRuntimeExports.jsx(IconClose, {})
+            }
+          )
+        ] }),
+        reports.length > 2 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "border-b border-slate-100 px-5 py-3", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+          "input",
+          {
+            type: "text",
+            value: search,
+            onChange: (e) => setSearch(e.target.value),
+            placeholder: getTranslation("history_search_placeholder", language),
+            className: "w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 placeholder-slate-400 focus:border-blue-300 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-300"
+          }
+        ) }),
+        reports.length > 2 && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between border-b border-slate-100 px-5 py-2", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-1 text-[11px]", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-slate-400 mr-1", children: "Sort:" }),
+            [
+              ["updatedAt", "Last Modified"],
+              ["createdAt", "Created"],
+              ["filename", "Name"]
+            ].map(([field, label]) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
+              "button",
+              {
+                onClick: () => toggleSort(field),
+                className: `rounded px-1.5 py-0.5 transition-colors ${sortField === field ? "bg-blue-100 text-blue-700 font-medium" : "text-slate-500 hover:bg-slate-100"}`,
+                children: [
+                  label,
+                  sortField === field && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ml-0.5", children: sortDirection === "desc" ? "↓" : "↑" })
+                ]
+              },
+              field
+            ))
+          ] }),
+          storageInfo && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-1.5 text-[10px] text-slate-400", title: `${storageInfo.usageMB} MB / ${storageInfo.quotaMB} MB (${storageInfo.percent}%)`, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "h-1.5 w-16 rounded-full bg-slate-100 overflow-hidden", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "div",
+              {
+                className: `h-full rounded-full transition-all ${Number(storageInfo.percent) > 75 ? "bg-amber-400" : "bg-blue-400"}`,
+                style: { width: `${Math.min(100, Number(storageInfo.percent))}%` }
+              }
+            ) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
+              storageInfo.usageMB,
+              " MB"
+            ] })
+          ] })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex-grow overflow-y-auto", children: filteredGroups.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center justify-center h-full px-5", children: /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm text-slate-500", children: search ? getTranslation("history_no_results", language) : getTranslation("history_empty", language) }) }) : /* @__PURE__ */ jsxRuntimeExports.jsx("ul", { className: "divide-y divide-slate-100", children: filteredGroups.map((group) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+          HistoryReportRow,
+          {
+            group,
+            language,
+            loadingId,
+            isGroupExpanded: expandedGroup === group.filename,
+            overflowMenuId,
+            overflowRef,
+            onToggleExpand: (fn) => setExpandedGroup((prev) => prev === fn ? null : fn),
+            onLoad: handleLoad,
+            onOpenReport: (id) => void onOpenReport(id),
+            onDelete: handleDelete,
+            onExportPdf: (id) => void onExportPdf(id),
+            onOverflowToggle: setOverflowMenuId,
+            isProtectedReport,
+            formatDate,
+            formatDateFull
+          },
+          group.latest.id
+        )) }) }),
+        confirmLoadId && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "absolute inset-0 z-30 flex items-center justify-center rounded-2xl bg-slate-900/40 backdrop-blur-[2px]", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mx-6 w-full max-w-sm rounded-xl border border-slate-200 bg-white p-5 shadow-2xl", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { className: "text-sm font-semibold text-slate-800", children: language === "Mandarin" ? "切换会话" : "Switch Session" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-2 text-xs leading-relaxed text-slate-500", children: language === "Mandarin" ? "加载此会话将替换当前工作区。您的当前数据已自动保存，不会丢失。" : "Loading this session will replace your current workspace. Your current data has been auto-saved and will not be lost." }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-4 flex justify-end gap-2", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                onClick: () => setConfirmLoadId(null),
+                className: "rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-50",
+                children: language === "Mandarin" ? "取消" : "Cancel"
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                onClick: () => void doLoad(confirmLoadId),
+                className: "rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-700",
+                children: language === "Mandarin" ? "确认加载" : "Load Session"
+              }
+            )
+          ] })
+        ] }) })
+      ]
+    }
+  ) });
+};
+export {
+  HistoryPanel
+};
