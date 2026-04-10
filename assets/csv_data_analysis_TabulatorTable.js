@@ -1,6 +1,6 @@
-import { r as reactExports, j as jsxRuntimeExports } from "./csv_data_analysis_vendor-react-core.js";
+import { W as We, r as reactExports, j as jsxRuntimeExports } from "./csv_data_analysis_vendor-react-core.js";
 import { T as TabulatorFull } from "./csv_data_analysis_vendor-ui.js";
-import { O as getTranslation } from "./csv_data_analysis_app-agent.js";
+import { I as getTranslation } from "./csv_data_analysis_app-agent.js";
 const TABULATOR_EVENT_TARGET_LOOKUP_WARNING = "Event Target Lookup Error - The row this cell is attached to cannot be found, has the table been reinitialized without being destroyed first?";
 let applied$1 = false;
 function applyTabulatorInteractionGuard() {
@@ -114,6 +114,7 @@ function applyTabulatorStyleGuard() {
 applyTabulatorStyleGuard();
 applyTabulatorInteractionGuard();
 const DEFAULT_EMPTY_STATE_KEY = "tabulator_empty_state";
+const REMOTE_PAGINATION_THRESHOLD = 1e3;
 const areSortStatesEqual = (left, right) => ((left == null ? void 0 : left.column) ?? null) === right.column && ((left == null ? void 0 : left.direction) ?? "asc") === right.direction;
 const escapeHtml = (value) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 const getColumnLetter = (index) => {
@@ -134,92 +135,27 @@ const calculateColumnWidth = (header, field, data) => {
   }, 0);
   return Math.max(120, headerLength, sampleLength);
 };
-const TABULATOR_LOCALES = {
-  English: {
-    pagination: {
-      page_size: "Rows",
-      page_title: "Show Page",
-      first: "First",
-      first_title: "First Page",
-      last: "Last",
-      last_title: "Last Page",
-      prev: "Prev",
-      prev_title: "Previous Page",
-      next: "Next",
-      next_title: "Next Page",
-      all: "All",
-      counter: {
-        showing: "Showing",
-        of: "of",
-        rows: "rows",
-        pages: "pages"
-      }
-    }
-  },
-  Mandarin: {
-    pagination: {
-      page_size: "每页",
-      page_title: "跳转页码",
-      first: "首页",
-      first_title: "第一页",
-      last: "末页",
-      last_title: "最后一页",
-      prev: "上一页",
-      prev_title: "上一页",
-      next: "下一页",
-      next_title: "下一页",
-      all: "全部",
-      counter: {
-        showing: "显示",
-        of: "/",
-        rows: "行",
-        pages: "页"
-      }
-    }
-  },
-  Malay: {
-    pagination: {
-      page_size: "Baris",
-      page_title: "Pergi ke halaman",
-      first: "Pertama",
-      first_title: "Halaman pertama",
-      last: "Akhir",
-      last_title: "Halaman terakhir",
-      prev: "Sebelumnya",
-      prev_title: "Halaman sebelumnya",
-      next: "Seterusnya",
-      next_title: "Halaman seterusnya",
-      all: "Semua",
-      counter: {
-        showing: "Memaparkan",
-        of: "daripada",
-        rows: "baris",
-        pages: "halaman"
-      }
-    }
-  },
-  Japanese: {
-    pagination: {
-      page_size: "行数",
-      page_title: "ページを表示",
-      first: "最初",
-      first_title: "最初のページ",
-      last: "最後",
-      last_title: "最後のページ",
-      prev: "前へ",
-      prev_title: "前のページ",
-      next: "次へ",
-      next_title: "次のページ",
-      all: "全て",
-      counter: {
-        showing: "表示",
-        of: "/",
-        rows: "行",
-        pages: "ページ"
-      }
+const buildTabulatorLocale = (language) => ({
+  pagination: {
+    page_size: getTranslation("tabulator_page_size", language),
+    page_title: getTranslation("tabulator_page_title", language),
+    first: getTranslation("tabulator_first", language),
+    first_title: getTranslation("tabulator_first_title", language),
+    last: getTranslation("tabulator_last", language),
+    last_title: getTranslation("tabulator_last_title", language),
+    prev: getTranslation("tabulator_prev", language),
+    prev_title: getTranslation("tabulator_prev_title", language),
+    next: getTranslation("tabulator_next", language),
+    next_title: getTranslation("tabulator_next_title", language),
+    all: getTranslation("tabulator_all", language),
+    counter: {
+      showing: getTranslation("tabulator_showing", language),
+      of: getTranslation("tabulator_of", language),
+      rows: getTranslation("tabulator_rows", language),
+      pages: getTranslation("tabulator_pages", language)
     }
   }
-};
+});
 const localeKeyByLanguage = {
   English: "en",
   Mandarin: "zh-cn",
@@ -262,7 +198,7 @@ const buildColumns = (columns, data, displayColumnLabels, annotatedColumns) => [
     };
   })
 ];
-const TabulatorTable = ({
+const TabulatorTableInner = ({
   data,
   columns,
   displayColumnLabels,
@@ -287,6 +223,7 @@ const TabulatorTable = ({
   const onColumnHeaderClickRef = reactExports.useRef(onColumnHeaderClick);
   const hasColumns = columns.length > 0;
   const pageSizeOptionsKey = (pageSizeOptions == null ? void 0 : pageSizeOptions.join(",")) ?? "";
+  const [isBuilding, setIsBuilding] = reactExports.useState(true);
   const columnDefinitions = reactExports.useMemo(
     () => buildColumns(columns, data, displayColumnLabels, annotatedColumns),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -304,8 +241,9 @@ const TabulatorTable = ({
   latestColumnDefinitionsRef.current = columnDefinitions;
   latestColumnSignatureRef.current = columnSignature;
   const updateGenerationRef = reactExports.useRef(0);
+  const useRemotePaginationRef = reactExports.useRef(false);
   const applyTableData = (table) => {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e, _f, _g;
     if (!table || !tableBuiltRef.current) {
       return;
     }
@@ -316,7 +254,14 @@ const TabulatorTable = ({
         (_b = table.setColumns) == null ? void 0 : _b.call(table, latestColumnDefinitionsRef.current);
         appliedColumnSignatureRef.current = latestColumnSignatureRef.current;
       }
-      const setDataResult = (_c = table.setData) == null ? void 0 : _c.call(table, latestDataRef.current);
+      if (useRemotePaginationRef.current) {
+        latestDataRef.current = latestDataRef.current;
+        (_c = table.setPage) == null ? void 0 : _c.call(table, 1);
+        (_d = table.restoreRedraw) == null ? void 0 : _d.call(table);
+        (_e = table.redraw) == null ? void 0 : _e.call(table, true);
+        return;
+      }
+      const setDataResult = (_f = table.setData) == null ? void 0 : _f.call(table, latestDataRef.current);
       Promise.resolve(setDataResult).catch(() => void 0).finally(() => {
         var _a2, _b2;
         if (updateGenerationRef.current !== generation || tableRef.current !== table || !tableBuiltRef.current) {
@@ -326,7 +271,7 @@ const TabulatorTable = ({
         (_b2 = table.redraw) == null ? void 0 : _b2.call(table, true);
       });
     } catch (error) {
-      (_d = table.restoreRedraw) == null ? void 0 : _d.call(table);
+      (_g = table.restoreRedraw) == null ? void 0 : _g.call(table);
       throw error;
     }
   };
@@ -356,82 +301,112 @@ const TabulatorTable = ({
     onColumnHeaderClickRef.current = onColumnHeaderClick;
   }, [onColumnHeaderClick]);
   reactExports.useEffect(() => {
-    var _a;
     const containerElement = containerRef.current;
     if (!hasColumns || !containerElement) {
       return void 0;
     }
-    const localeKey = localeKeyByLanguage[language];
-    const initialSort = ((_a = sortStateRef.current) == null ? void 0 : _a.column) ? [{ column: sortStateRef.current.column, dir: sortStateRef.current.direction }] : false;
-    tableBuiltRef.current = false;
-    const table = new TabulatorFull(containerElement, {
-      data,
-      columns: columnDefinitions,
-      // Ensure all columns (including any Tabulator creates internally)
-      // have a valid hozAlign so the library never writes empty textAlign.
-      columnDefaults: { hozAlign: "left", headerHozAlign: "left" },
-      layout: "fitDataTable",
-      layoutColumnsOnNewData: false,
-      height: "100%",
-      placeholder: resolvedEmptyStateText,
-      pagination: true,
-      paginationMode: "local",
-      paginationSize: pageSize,
-      paginationSizeSelector: pageSizeOptions && pageSizeOptions.length > 0 ? pageSizeOptions : false,
-      paginationCounter: "rows",
-      initialSort,
-      columnHeaderSortMulti: false,
-      selectableRows: 1,
-      selectableRowsPersistence: false,
-      langs: {
-        [localeKey]: TABULATOR_LOCALES[language]
-      },
-      locale: localeKey,
-      rowClick: (_event, row) => {
-        row.toggleSelect();
-      }
-    });
-    tableRef.current = table;
-    appliedColumnSignatureRef.current = columnSignature;
-    table.on("tableBuilt", () => {
-      if (tableRef.current !== table) {
-        return;
-      }
-      tableBuiltRef.current = true;
-      applyTableData(table);
-      applySortState(table);
-    });
-    if (onSortChangeRef.current) {
-      table.on("dataSorted", (sorters) => {
-        var _a2, _b;
-        const primarySorter = Array.isArray(sorters) ? sorters[0] : void 0;
-        if ((primarySorter == null ? void 0 : primarySorter.field) && (primarySorter.dir === "asc" || primarySorter.dir === "desc")) {
-          const nextState2 = { column: primarySorter.field, direction: primarySorter.dir };
-          if (!areSortStatesEqual(sortStateRef.current, nextState2)) {
-            (_a2 = onSortChangeRef.current) == null ? void 0 : _a2.call(onSortChangeRef, nextState2);
+    setIsBuilding(true);
+    let buildTimerId = null;
+    const frameId = requestAnimationFrame(() => {
+      buildTimerId = setTimeout(() => {
+        var _a;
+        const localeKey = localeKeyByLanguage[language];
+        const initialSort = ((_a = sortStateRef.current) == null ? void 0 : _a.column) ? [{ column: sortStateRef.current.column, dir: sortStateRef.current.direction }] : false;
+        tableBuiltRef.current = false;
+        const isRemote = data.length >= REMOTE_PAGINATION_THRESHOLD;
+        useRemotePaginationRef.current = isRemote;
+        const table = new TabulatorFull(containerElement, {
+          data: isRemote ? [] : data,
+          columns: columnDefinitions,
+          nestedFieldSeparator: false,
+          columnDefaults: { hozAlign: "left", headerHozAlign: "left" },
+          layout: "fitDataTable",
+          layoutColumnsOnNewData: false,
+          height: "100%",
+          placeholder: resolvedEmptyStateText,
+          pagination: true,
+          paginationMode: isRemote ? "remote" : "local",
+          paginationSize: pageSize,
+          paginationSizeSelector: pageSizeOptions && pageSizeOptions.length > 0 ? pageSizeOptions : false,
+          paginationCounter: "rows",
+          ...isRemote ? {
+            ajaxURL: "local://in-memory",
+            ajaxRequestFunc: (_url, _config, params) => {
+              const { page, size, sorters } = params;
+              let rows = latestDataRef.current;
+              if (sorters == null ? void 0 : sorters[0]) {
+                const { field, dir } = sorters[0];
+                rows = [...rows].sort((a, b) => {
+                  const va = String(a[field] ?? "");
+                  const vb = String(b[field] ?? "");
+                  return dir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
+                });
+              }
+              const start = (page - 1) * size;
+              return Promise.resolve({
+                data: rows.slice(start, start + size),
+                last_page: Math.ceil(rows.length / size)
+              });
+            }
+          } : {},
+          initialSort,
+          columnHeaderSortMulti: false,
+          selectableRows: 1,
+          selectableRowsPersistence: false,
+          langs: {
+            [localeKey]: buildTabulatorLocale(language)
+          },
+          locale: localeKey,
+          rowClick: (_event, row) => {
+            row.toggleSelect();
           }
-          return;
+        });
+        tableRef.current = table;
+        appliedColumnSignatureRef.current = columnSignature;
+        table.on("tableBuilt", () => {
+          if (tableRef.current !== table) {
+            return;
+          }
+          tableBuiltRef.current = true;
+          setIsBuilding(false);
+          applyTableData(table);
+          applySortState(table);
+        });
+        if (onSortChangeRef.current) {
+          table.on("dataSorted", (sorters) => {
+            var _a2, _b;
+            const primarySorter = Array.isArray(sorters) ? sorters[0] : void 0;
+            if ((primarySorter == null ? void 0 : primarySorter.field) && (primarySorter.dir === "asc" || primarySorter.dir === "desc")) {
+              const nextState2 = { column: primarySorter.field, direction: primarySorter.dir };
+              if (!areSortStatesEqual(sortStateRef.current, nextState2)) {
+                (_a2 = onSortChangeRef.current) == null ? void 0 : _a2.call(onSortChangeRef, nextState2);
+              }
+              return;
+            }
+            const nextState = { column: null, direction: "asc" };
+            if (!areSortStatesEqual(sortStateRef.current, nextState)) {
+              (_b = onSortChangeRef.current) == null ? void 0 : _b.call(onSortChangeRef, nextState);
+            }
+          });
         }
-        const nextState = { column: null, direction: "asc" };
-        if (!areSortStatesEqual(sortStateRef.current, nextState)) {
-          (_b = onSortChangeRef.current) == null ? void 0 : _b.call(onSortChangeRef, nextState);
-        }
-      });
-    }
-    table.on("headerDblClick", (_e, column) => {
-      var _a2, _b;
-      const field = (_a2 = column.getField) == null ? void 0 : _a2.call(column);
-      const element = (_b = column.getElement) == null ? void 0 : _b.call(column);
-      if (field && element && onColumnHeaderClickRef.current) {
-        onColumnHeaderClickRef.current(field, element.getBoundingClientRect());
-      }
+        table.on("headerDblClick", (_e, column) => {
+          var _a2, _b;
+          const field = (_a2 = column.getField) == null ? void 0 : _a2.call(column);
+          const element = (_b = column.getElement) == null ? void 0 : _b.call(column);
+          if (field && element && onColumnHeaderClickRef.current) {
+            onColumnHeaderClickRef.current(field, element.getBoundingClientRect());
+          }
+        });
+      }, 0);
     });
     return () => {
+      cancelAnimationFrame(frameId);
+      if (buildTimerId !== null) clearTimeout(buildTimerId);
       updateGenerationRef.current += 1;
       tableBuiltRef.current = false;
       appliedColumnSignatureRef.current = null;
-      table.destroy();
-      if (tableRef.current === table) {
+      if (tableRef.current) {
+        tableRef.current.destroy();
         tableRef.current = null;
       }
       containerElement.innerHTML = "";
@@ -458,8 +433,37 @@ const TabulatorTable = ({
   if (columns.length === 0) {
     return /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm text-slate-500", children: resolvedEmptyStateText });
   }
-  return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: `raw-data-tabulator tabulator-table--${variant} h-full w-full ${containerClassName ?? ""}`.trim(), children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { ref: containerRef, className: "h-full w-full" }, tableKey ?? "tabulator-root") });
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: `raw-data-tabulator tabulator-table--${variant} h-full w-full ${containerClassName ?? ""}`.trim(), children: [
+    isBuilding && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center justify-center h-full text-sm text-slate-400", children: getTranslation("loading_table", language) }),
+    /* @__PURE__ */ jsxRuntimeExports.jsx(
+      "div",
+      {
+        ref: containerRef,
+        className: "h-full w-full",
+        style: isBuilding ? { visibility: "hidden", position: "absolute" } : void 0
+      },
+      tableKey ?? "tabulator-root"
+    )
+  ] });
 };
+const tabulatorPropsAreEqual = (prev, next) => {
+  if (prev.data === next.data && prev.columns === next.columns && prev.displayColumnLabels === next.displayColumnLabels && prev.pageSize === next.pageSize && prev.tableKey === next.tableKey && prev.language === next.language && prev.variant === next.variant && prev.emptyStateText === next.emptyStateText && prev.sortState === next.sortState && prev.annotatedColumns === next.annotatedColumns) {
+    return true;
+  }
+  if (prev.pageSize !== next.pageSize || prev.tableKey !== next.tableKey || prev.language !== next.language || prev.variant !== next.variant || prev.emptyStateText !== next.emptyStateText) {
+    return false;
+  }
+  if (prev.data !== next.data) {
+    if (prev.data.length !== next.data.length) return false;
+    if (prev.data.length > 0 && (prev.data[0] !== next.data[0] || prev.data[prev.data.length - 1] !== next.data[next.data.length - 1])) return false;
+  }
+  if (prev.columns !== next.columns) {
+    if (prev.columns.length !== next.columns.length) return false;
+    if (prev.columns.join(",") !== next.columns.join(",")) return false;
+  }
+  return true;
+};
+const TabulatorTable = We.memo(TabulatorTableInner, tabulatorPropsAreEqual);
 export {
   TabulatorTable as T
 };

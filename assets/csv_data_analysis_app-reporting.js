@@ -1,6 +1,6 @@
-import { aW as robustParseFloat, aX as saveReportArtifactRecord, aY as getReportArtifactRecord, aZ as classifyAnalysisColumnRole, a_ as buildCleaningInspectionBundle, a$ as buildDataPreparationWorkflowBundle, b0 as analyzeDatasetQualityGovernance, x as buildDatasetContext, b1 as attachAutoAnalysisEvaluationToCards, b2 as analystMemoSchema, r as robustlyParseJsonObject, b3 as forumSummarySchema, b4 as getTemporalSortTimestamp, s as hasDuplicateNormalizedBuckets, p as isSequentialDimensionName, b5 as isSortableSequence, v as resolveOrdinalIndices, u as isMonotonicSequence, b6 as formatTemporalDisplayValue, b7 as getOrdinalSortKey, O as getTranslation, n as normalizePreFilterOperator, b8 as applyPreFilter } from "./csv_data_analysis_app-agent.js";
-import { g as generateText, o as output_exports, j as jsonSchema } from "./csv_data_analysis_vendor-ai-sdk.js";
-import { i as isProviderConfigured, R as createAnalystMemoPrompt, m as createProviderModel, w as withTransientRetry, p as prepareSchemaForProvider, S as createForumSummaryPrompt } from "./csv_data_analysis_app-ai.js";
+import { aJ as robustParseFloat, aK as saveReportArtifactRecord, aL as getReportArtifactRecord, aM as classifyAnalysisColumnRole, aN as buildCleaningInspectionBundle, aO as buildDataPreparationWorkflowBundle, aP as analyzeDatasetQualityGovernance, q as buildDatasetContext, aQ as attachAutoAnalysisEvaluationToCards, r as robustlyParseJsonObject, b as isRuntimeAbortError, aR as getTemporalSortTimestamp, aS as hasDuplicateNormalizedBuckets, m as isSequentialDimensionName, aT as isSortableSequence, aU as resolveOrdinalIndices, aV as isMonotonicSequence, aW as formatTemporalDisplayValue, aX as getOrdinalSortKey, I as getTranslation, n as normalizePreFilterOperator, aY as applyPreFilter } from "./csv_data_analysis_app-agent.js";
+import { o as output_exports, j as jsonSchema } from "./csv_data_analysis_vendor-ai-sdk.js";
+import { i as isProviderConfigured, _ as createAnalystMemoPrompt, v as createProviderModel, x as withTransientRetry, y as streamGenerateText, C as prepareSchemaForProvider, $ as analystMemoSchema, a0 as createForumSummaryPrompt, a1 as forumSummarySchema } from "./csv_data_analysis_app-ai.js";
 const PERCENTAGE_LIKE_PATTERN = /pct|percent|percentage|rate|ratio|share|margin/i;
 const TRAILING_PUNCTUATION_PATTERN = /[\s._:;,)\]-]+$/;
 const NON_ASCII_PATTERN = /[^\x00-\x7F]/;
@@ -378,7 +378,7 @@ const formatColumnDisplayHints = (columns, plans = []) => columns.map((column) =
   const displayLabel = resolveColumnDisplayLabel(column.name, plans);
   return displayLabel !== column.name ? `- ${column.name} -> ${displayLabel}` : `- ${column.name}`;
 }).join("\n");
-const BLOB_URL_REVOKE_DELAY_MS = 6e4;
+const BLOB_URL_REVOKE_DELAY_MS = 18e4;
 const openReportWindow = (html, mode) => {
   if (typeof window === "undefined" || typeof Blob === "undefined" || typeof URL === "undefined") {
     return null;
@@ -1055,68 +1055,32 @@ const resolveReportReadinessAssessment = (state, workflow, inspection, caveats) 
     hasStructuralAmbiguity ? "Metadata/header recovery signals suggest structural ambiguity." : null,
     usedFallbackContext ? "Report context required fallback recovery." : null
   ], MAX_CAVEATS$3);
+  const base = { readinessDrivers, readinessRisks, structuralSignals };
+  const blocked = (reason) => ({ reportReadiness: "blocked", reportReadinessReason: reason, ...base });
   if (!state.csvData) {
-    return {
-      reportReadiness: "blocked",
-      reportReadinessReason: "Not ready for analyst synthesis because no prepared dataset is loaded.",
-      readinessDrivers,
-      readinessRisks,
-      structuralSignals
-    };
+    return blocked("Not ready for analyst synthesis because no prepared dataset is loaded.");
   }
   if (workflow.summary.intakeGateStatus === "blocked") {
-    return {
-      reportReadiness: "blocked",
-      reportReadinessReason: trimText$6(workflow.summary.intakeGateMessage) || "Not ready for analyst synthesis because intake diagnostics blocked analysis.",
-      readinessDrivers,
-      readinessRisks,
-      structuralSignals
-    };
+    return blocked(trimText$6(workflow.summary.intakeGateMessage) || "Not ready for analyst synthesis because intake diagnostics blocked analysis.");
   }
   if (workflow.verification.datasetSafetyStatus === "failed") {
-    return {
-      reportReadiness: "blocked",
-      reportReadinessReason: "Not ready for analyst synthesis because dataset safety checks failed.",
-      readinessDrivers,
-      readinessRisks,
-      structuralSignals
-    };
+    return blocked("Not ready for analyst synthesis because dataset safety checks failed.");
   }
   if (workflow.verification.cleaningConsistencyStatus === "blocked" || workflow.verification.downstreamAnalysisBlocked) {
-    return {
-      reportReadiness: "blocked",
-      reportReadinessReason: "Not ready for analyst synthesis because cleaning consistency blocked downstream analysis.",
-      readinessDrivers,
-      readinessRisks,
-      structuralSignals
-    };
+    return blocked("Not ready for analyst synthesis because cleaning consistency blocked downstream analysis.");
   }
   if (workflow.verification.sqlPrecheckStatus === "blocked") {
-    return {
-      reportReadiness: "blocked",
-      reportReadinessReason: inspection.verification.sqlPrecheckSummary ?? "Not ready for analyst synthesis because SQL precheck blocked automatic analysis.",
-      readinessDrivers,
-      readinessRisks,
-      structuralSignals
-    };
+    return blocked(inspection.verification.sqlPrecheckSummary ?? "Not ready for analyst synthesis because SQL precheck blocked automatic analysis.");
   }
   if (workflow.verification.sqlPrecheckStatus === "warning") {
     return {
       reportReadiness: "partial",
-      reportReadinessReason: inspection.verification.sqlPrecheckSummary ?? "SQL precheck could not confirm the preferred SQL path, so analyst synthesis should proceed with explicit caveats.",
-      readinessDrivers,
-      readinessRisks,
-      structuralSignals
+      ...base,
+      reportReadinessReason: inspection.verification.sqlPrecheckSummary ?? "SQL precheck could not confirm the preferred SQL path, so analyst synthesis should proceed with explicit caveats."
     };
   }
   if (!workflow.summary.canAnalyze) {
-    return {
-      reportReadiness: "blocked",
-      reportReadinessReason: "Not ready for analyst synthesis because the prepared dataset is not eligible for downstream analysis.",
-      readinessDrivers,
-      readinessRisks,
-      structuralSignals
-    };
+    return blocked("Not ready for analyst synthesis because the prepared dataset is not eligible for downstream analysis.");
   }
   const shouldDowngradeToPartial = cardsCount === 0 || parserConfidenceLimited || hasWorkflowWarnings || caveats.length > 0 || hasShapeInflation || hasStructuralAmbiguity || usedFallbackContext;
   if (shouldDowngradeToPartial) {
@@ -1128,20 +1092,12 @@ const resolveReportReadinessAssessment = (state, workflow, inspection, caveats) 
     } else if (parserConfidenceLimited || hasWorkflowWarnings || usedFallbackContext) {
       reason = "Usable for bounded synthesis, but workflow and context caveats still limit executive certainty.";
     }
-    return {
-      reportReadiness: "partial",
-      reportReadinessReason: reason,
-      readinessDrivers,
-      readinessRisks,
-      structuralSignals
-    };
+    return { reportReadiness: "partial", reportReadinessReason: reason, ...base };
   }
   return {
     reportReadiness: "ready",
-    reportReadinessReason: "Ready for bounded analyst synthesis with no material structural or workflow caveats detected.",
-    readinessDrivers,
-    readinessRisks,
-    structuralSignals
+    ...base,
+    reportReadinessReason: "Ready for bounded analyst synthesis with no material structural or workflow caveats detected."
   };
 };
 const applyQualityReadinessAdjustment = (assessment, qualityHintsSummary, datasetSignalsCount, trustedCardsCount, includedCardsCount) => {
@@ -1610,7 +1566,7 @@ const sanitizeMemo = (role, bundle, rawMemo) => {
     )
   };
 };
-const generateAnalystMemoWithDiagnostics = async (role, bundle, settings, briefing) => {
+const generateAnalystMemoWithDiagnostics = async (role, bundle, settings, briefing, abortSignal) => {
   if (!isProviderConfigured(settings)) {
     return {
       memo: buildFallbackMemo(role, bundle, "No model provider is configured."),
@@ -1623,7 +1579,20 @@ const generateAnalystMemoWithDiagnostics = async (role, bundle, settings, briefi
   }
   try {
     const roleDefinition = getAnalystRoleDefinition(role);
-    const systemPrompt = `You are the ${roleDefinition.label}. Produce one bounded memo that stays inside the provided evidence bundle.`;
+    const systemPrompt = [
+      `You are the ${roleDefinition.label} in a bounded multi-analyst report workflow.`,
+      `Produce one structured memo that stays strictly inside the provided evidence bundle.`,
+      `Quality standards:`,
+      `- A finding is STRONG when it is backed by a card with business confidence >= 0.75 and the pattern accounts for a material share (>20%) of the total.`,
+      `- A finding is PRELIMINARY when evidence is sparse, caveated, or the pattern share is below 20%. Mark it as importance "medium" or "low".`,
+      `- If two signals conflict (e.g., revenue up but profit down), report both sides rather than choosing one. Use a caveat to flag the tension.`,
+      `- Downgrade any claim to a caveat or blocker if the supporting card has aggregation quality warnings or low business confidence.`,
+      `- Order your findings by business impact — lead with the insight that would most change a decision-maker's action.`,
+      `- Each finding must cite at least one evidence id from the EVIDENCE_CATALOG. Never cite an id that does not appear in the catalog.`,
+      `- Keep your memo bounded: prefer 2-4 findings, 0-3 blockers, and 1-4 recommended next checks.`,
+      `- Write concise, business-friendly prose. Avoid internal jargon, column names, enum values, or system terminology.`,
+      `- If the evidence bundle is too thin to support any finding, return an empty findings array and explain why in a blocker.`
+    ].join("\n");
     const promptContent = createAnalystMemoPrompt(roleDefinition, bundle, settings.language, briefing);
     const { model, modelId } = createProviderModel(settings, settings.complexModel);
     const messages = [
@@ -1631,12 +1600,12 @@ const generateAnalystMemoWithDiagnostics = async (role, bundle, settings, briefi
       { role: "user", content: promptContent }
     ];
     const result = await withTransientRetry(
-      (fb) => generateText({
+      (fb) => streamGenerateText({
         model: fb ?? model,
         messages,
         output: output_exports.object({ schema: jsonSchema(prepareSchemaForProvider(analystMemoSchema, settings.provider)) })
       }),
-      { settings, primaryModelId: modelId, label: "analystMemoGenerator" }
+      { settings, primaryModelId: modelId, label: "analystMemoGenerator", abortSignal }
     );
     const parsed = result.output !== void 0 ? result.output : robustlyParseJsonObject(result.text);
     return {
@@ -1648,6 +1617,7 @@ const generateAnalystMemoWithDiagnostics = async (role, bundle, settings, briefi
       }
     };
   } catch (error) {
+    if (isRuntimeAbortError(error, abortSignal)) throw error;
     const message = error instanceof Error ? error.message : "Unknown analyst memo generation failure.";
     console.error("Failed to generate analyst memo:", error);
     return {
@@ -1869,7 +1839,7 @@ const sanitizeForumSummary = (rawSummary, memos, bundle) => {
     )
   };
 };
-const generateForumSummaryWithDiagnostics = async (memos, bundle, settings, briefing) => {
+const generateForumSummaryWithDiagnostics = async (memos, bundle, settings, briefing, abortSignal) => {
   if (!isProviderConfigured(settings)) {
     return {
       forum: buildFallbackForumSummary(memos, bundle, "No model provider is configured."),
@@ -1881,7 +1851,20 @@ const generateForumSummaryWithDiagnostics = async (memos, bundle, settings, brie
     };
   }
   try {
-    const systemPrompt = "You are the bounded forum aggregator. Merge the analyst memos into a typed forum summary without inventing unsupported evidence.";
+    const systemPrompt = [
+      "You are the bounded forum aggregator in a multi-analyst report workflow.",
+      "Your job is to merge the analyst memos into one structured forum summary. Never invent evidence that does not appear in the memos or evidence bundle.",
+      "Quality standards:",
+      "- STRONG consensus: a finding is promoted to consensusFindings only when 2 or more analysts support it with overlapping evidence refs.",
+      "- WEAK consensus: if only 1 analyst supports a claim, include it only if it cites high-confidence evidence (business confidence >= 0.75). Otherwise, omit it or note it as a caveat.",
+      "- When analyst positions materially diverge on the same metric or topic, preserve the disagreement rather than forcing consensus. Use the disagreements array.",
+      "- The executiveSummary should read like a 2-3 sentence professional analyst briefing for senior management — lead with the most actionable insight, then the main risk.",
+      "- Order consensusFindings by business impact, not by analyst order.",
+      "- Each recommended action must be a single clear sentence starting with a verb. Order actions by urgency.",
+      '- If all memos have low confidence, set overallConfidence to "low" and explain why in the executiveSummary.',
+      '- Avoid technical jargon like "helper exposure", "narrative ineligible", "row expansion ratio", or "parser confidence" in any user-facing text.',
+      "- Keep the forum summary bounded: prefer 2-5 consensus findings, 0-3 disagreements, and 2-5 recommended actions."
+    ].join("\n");
     const promptContent = createForumSummaryPrompt(memos, bundle, settings.language, briefing);
     const { model, modelId } = createProviderModel(settings, settings.complexModel);
     const messages = [
@@ -1889,12 +1872,12 @@ const generateForumSummaryWithDiagnostics = async (memos, bundle, settings, brie
       { role: "user", content: promptContent }
     ];
     const result = await withTransientRetry(
-      (fb) => generateText({
+      (fb) => streamGenerateText({
         model: fb ?? model,
         messages,
         output: output_exports.object({ schema: jsonSchema(prepareSchemaForProvider(forumSummarySchema, settings.provider)) })
       }),
-      { settings, primaryModelId: modelId, label: "forumSummaryGenerator" }
+      { settings, primaryModelId: modelId, label: "forumSummaryGenerator", abortSignal }
     );
     const parsed = result.output !== void 0 ? result.output : robustlyParseJsonObject(result.text);
     return {
@@ -1906,6 +1889,7 @@ const generateForumSummaryWithDiagnostics = async (memos, bundle, settings, brie
       }
     };
   } catch (error) {
+    if (isRuntimeAbortError(error, abortSignal)) throw error;
     const message = error instanceof Error ? error.message : "Unknown forum summary generation failure.";
     console.error("Failed to generate forum summary:", error);
     return {
@@ -1976,6 +1960,16 @@ const validateReportChartPayload = (payload) => {
     if ((chartType === "pie" || chartType === "doughnut") && hasDuplicateNormalizedBuckets(labels)) {
       chartType = "bar";
       chartWarnings.push("Circular charts were downgraded because duplicate category labels were detected.");
+    }
+    if (chartType === "pie" || chartType === "doughnut") {
+      const total = payload.numericValues.reduce((sum, v) => sum + Math.abs(v), 0);
+      if (total > 0) {
+        const maxShare = Math.max(...payload.numericValues.map((v) => Math.abs(v))) / total;
+        if (maxShare > 0.95) {
+          chartType = "bar";
+          chartWarnings.push("Circular charts were downgraded because a single category accounts for over 95% of the total.");
+        }
+      }
     }
   }
   if (chartType === "line") {
@@ -2182,6 +2176,7 @@ const buildReportChartPayload = (card) => {
     groupByColumn: card.groupByColumn,
     displayLabels,
     labels: rows.map((entry) => entry.rawLabel),
+    numericValues,
     originalLabelCount: entries.length
   });
   return {
@@ -2277,6 +2272,10 @@ const buildBarColor = (value, index) => {
   const palette = value < 0 ? negativePalette : positivePalette;
   return palette[index % palette.length];
 };
+const cleanChartSubtitle = (valueColumn) => {
+  if (!valueColumn) return "Metric";
+  return valueColumn.replace(/^(sum_|total_|row_|count_)/i, "").replace(/[_-]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()).trim() || "Metric";
+};
 const renderBarChart = (payload) => {
   var _a;
   const labels = ((_a = payload.displayLabels) == null ? void 0 : _a.length) ? payload.displayLabels : payload.labels;
@@ -2296,7 +2295,7 @@ const renderBarChart = (payload) => {
   const valueRange = Math.max(1, maxValue - minValue);
   const zeroX = chartX + (0 - minValue) / valueRange * chartWidth;
   const maxGuideX = chartX + (maxValue - minValue) / valueRange * chartWidth;
-  const axisLabel = `${payload.valueColumn ?? "Metric"} by ${payload.groupByColumn ?? "Group"}`;
+  const axisLabel = `${cleanChartSubtitle(payload.valueColumn)} by ${payload.groupByColumn ?? "Group"}`;
   return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeXml(payload.title)}" xmlns="http://www.w3.org/2000/svg" style="font-family: Arial, Helvetica, sans-serif; font-size: 12px;">
   <rect x="0" y="0" width="${width}" height="${height}" rx="16" fill="#fffefb" />
   <text x="0" y="14" font-size="10" font-weight="700" letter-spacing="1.2" fill="#7a6f64">${escapeXml(axisLabel)}</text>
@@ -2329,7 +2328,7 @@ const renderLineChart = (payload) => {
   var _a;
   const labels = ((_a = payload.displayLabels) == null ? void 0 : _a.length) ? payload.displayLabels : payload.labels;
   const width = 860;
-  const height = 320;
+  const height = 334;
   const chartX = 58;
   const chartY = 36;
   const chartWidth = 712;
@@ -2347,14 +2346,14 @@ const renderLineChart = (payload) => {
   });
   return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeXml(payload.title)}" xmlns="http://www.w3.org/2000/svg" style="font-family: Arial, Helvetica, sans-serif; font-size: 12px;">
   <rect x="0" y="0" width="${width}" height="${height}" rx="16" fill="#fffefb" />
-  <text x="${chartX}" y="16" font-size="10" font-weight="700" letter-spacing="1.2" fill="#7a6f64">${escapeXml(`${payload.valueColumn ?? "Metric"} trend`)}</text>
+  <text x="${chartX}" y="16" font-size="10" font-weight="700" letter-spacing="1.2" fill="#7a6f64">${escapeXml(`${cleanChartSubtitle(payload.valueColumn)} trend`)}</text>
   <line x1="${chartX}" y1="${chartY + chartHeight}" x2="${chartX + chartWidth}" y2="${chartY + chartHeight}" stroke="#d9d0c5" stroke-width="1.2" />
   <line x1="${chartX}" y1="${chartY}" x2="${chartX}" y2="${chartY + chartHeight}" stroke="#d9d0c5" stroke-width="1.2" />
   ${isMixed ? `<line x1="${chartX}" y1="${zeroY}" x2="${chartX + chartWidth}" y2="${zeroY}" stroke="#cdbca8" stroke-width="1.2" stroke-dasharray="4 4" />` : ""}
   <polyline fill="none" stroke="#264f7d" stroke-width="2.5" points="${points.map((point) => `${point.x},${point.y}`).join(" ")}" />
   ${points.map((point, index) => `
     <circle cx="${point.x}" cy="${point.y}" r="4.5" fill="${buildBarColor(point.value, index)}" />
-    <text x="${point.x}" y="${chartY + chartHeight + 20}" text-anchor="middle" font-size="10.5" fill="#6b6156">${escapeXml(wrapLabel(point.label, 16, 1)[0])}</text>
+    ${wrapLabel(point.label, 20, 2).map((line, lineIndex) => `<text x="${point.x}" y="${chartY + chartHeight + 20 + lineIndex * 12}" text-anchor="middle" font-size="10.5" fill="#6b6156">${escapeXml(line)}</text>`).join("")}
     <text x="${point.x}" y="${point.y - 10}" text-anchor="middle" font-size="10.5" font-weight="700" fill="#1f1a14">${escapeXml(point.formattedValue)}</text>
   `).join("")}
 </svg>`;
@@ -2377,13 +2376,15 @@ const renderCircularChart = (payload, innerRadius) => {
   }).join("");
   return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeXml(payload.title)}" xmlns="http://www.w3.org/2000/svg" style="font-family: Arial, Helvetica, sans-serif; font-size: 12px;">
   <rect x="0" y="0" width="${width}" height="${height}" rx="16" fill="#fffefb" />
-  <text x="36" y="20" font-size="10" font-weight="700" letter-spacing="1.2" fill="#7a6f64">${escapeXml(`${payload.valueColumn ?? "Metric"} mix`)}</text>
+  <text x="36" y="20" font-size="10" font-weight="700" letter-spacing="1.2" fill="#7a6f64">${escapeXml(`${cleanChartSubtitle(payload.valueColumn)} mix`)}</text>
   ${arcs}
   <text x="${centerX}" y="${centerY - 4}" text-anchor="middle" font-size="10" fill="#7a6f64">Total</text>
   <text x="${centerX}" y="${centerY + 16}" text-anchor="middle" font-size="18" font-weight="700" fill="#1f1a14">${escapeXml(numberFormatter.format(total))}</text>
   ${labels.map((label, index) => {
+    if (payload.numericValues[index] === 0) return "";
     const lines = wrapLabel(label, 28, 2);
-    const y = 48 + index * 42;
+    const nonZeroIndex = payload.numericValues.slice(0, index).filter((v) => v !== 0).length;
+    const y = 48 + nonZeroIndex * 42;
     return `
     <rect x="366" y="${y}" width="12" height="12" rx="3" fill="${buildBarColor(payload.numericValues[index], index)}" />
     ${lines.map((line, lineIndex) => `
@@ -2393,6 +2394,11 @@ const renderCircularChart = (payload, innerRadius) => {
     `;
   }).join("")}
 </svg>`;
+};
+const renderFallbackSvg = (title, reason) => {
+  const safeTitle = escapeXml(title || "Chart");
+  const safeReason = escapeXml(reason || "Unable to render chart.");
+  return `<svg viewBox="0 0 860 120" role="img" aria-label="${safeTitle}" xmlns="http://www.w3.org/2000/svg" style="font-family: Arial, Helvetica, sans-serif; font-size: 13px;"><rect x="0" y="0" width="860" height="120" rx="12" fill="#faf8f4" stroke="#d0c8bd" stroke-width="1.5"/><text x="430" y="44" text-anchor="middle" font-size="13" font-weight="700" fill="#5a4e44">${safeTitle}</text><text x="430" y="72" text-anchor="middle" font-size="11" fill="#8a7d70">⚠ ${safeReason}</text><text x="430" y="94" text-anchor="middle" font-size="10" fill="#bbb0a4">Chart data could not be rendered — see the data table below.</text></svg>`;
 };
 const validateChartPayload = (payload) => {
   var _a, _b, _c;
@@ -2483,6 +2489,7 @@ const repairChartPayload = (payload) => {
     groupByColumn: payload.groupByColumn,
     displayLabels,
     labels,
+    numericValues,
     originalLabelCount: displayLabels.length
   });
   if (validation.chartType !== chartType) {
@@ -2511,11 +2518,6 @@ const repairChartPayload = (payload) => {
     payload: repairedPayload,
     changes
   };
-};
-const renderFallbackSvg = (title, reason) => {
-  const safeTitle = escapeXml(title || "Chart");
-  const safeReason = escapeXml(reason || "Unable to render chart.");
-  return `<svg viewBox="0 0 860 120" role="img" aria-label="${safeTitle}" xmlns="http://www.w3.org/2000/svg" style="font-family: Arial, Helvetica, sans-serif; font-size: 13px;"><rect x="0" y="0" width="860" height="120" rx="12" fill="#faf8f4" stroke="#d0c8bd" stroke-width="1.5"/><text x="430" y="44" text-anchor="middle" font-size="13" font-weight="700" fill="#5a4e44">${safeTitle}</text><text x="430" y="72" text-anchor="middle" font-size="11" fill="#8a7d70">⚠ ${safeReason}</text><text x="430" y="94" text-anchor="middle" font-size="10" fill="#bbb0a4">Chart data could not be rendered — see the data table below.</text></svg>`;
 };
 const normaliseChartType = (payload) => {
   const validation = validateReportChartPayload({
@@ -2733,6 +2735,7 @@ const COST_PATTERN$1 = /cost|expense|expenditure|spending|outflow/i;
 const COUNT_PATTERN$1 = /count|number|quantity|volume/i;
 const CURRENCY_DETECT_PATTERN = /\b(SGD|USD|EUR|GBP|JPY|CNY|MYR|HKD|AUD|CAD)\b/i;
 const CAVEAT_REWRITES = [
+  /* ── row expansion & structural normalization ──────────── */
   [
     /cleaned rows expanded [\d.]+x over raw rows/i,
     "Data preparation expanded the dataset from the original file, which may indicate structural normalization."
@@ -2741,13 +2744,80 @@ const CAVEAT_REWRITES = [
     /metadata\/header recovery signals suggest structural ambiguity/i,
     "The file structure required automated recovery, which may affect data precision."
   ],
+  /* ── validation & precheck ────────────────────────────── */
   [
     /sql precheck used a fallback path/i,
     "Some automated data validation checks required alternative approaches."
   ],
   [
+    /sql precheck (is )?blocked/i,
+    "Automated data validation was unable to complete, which may limit analysis confidence."
+  ],
+  [
+    /verification (status|outcome).*?(warning|fail)/i,
+    "Data verification flagged potential issues that may affect result accuracy."
+  ],
+  /* ── analyst disagreement ─────────────────────────────── */
+  [
     /open disagreements remain and should be reviewed/i,
     "Some analytical perspectives differ and should be reviewed before finalizing conclusions."
+  ],
+  /* ── parser & intake ──────────────────────────────────── */
+  [
+    /parser confidence.*(limited|low|reduced)/i,
+    "The file format was not fully recognized, which may affect how some values are interpreted."
+  ],
+  [
+    /intake gate.*(warning|caution|partial)/i,
+    "Initial data intake flagged items that may require manual review."
+  ],
+  /* ── column & data quality ────────────────────────────── */
+  [
+    /helper column.*unverified/i,
+    "Some auxiliary data columns have not been independently verified."
+  ],
+  [
+    /unclassified.*(share|portion|percentage|rate).*(\d+%|high|significant)/i,
+    "A significant portion of the data lacks category labels, which may affect distribution analysis."
+  ],
+  [
+    /null (values?|data|entries|records).*(\d+%|significant|high|many)/i,
+    "Missing values are present in the dataset and may affect the completeness of findings."
+  ],
+  /* ── aggregation & calculation ─────────────────────────── */
+  [
+    /aggregation quality (warning|flag|concern)/i,
+    "The method used to aggregate values may not fully represent the underlying data."
+  ],
+  [
+    /duplicate (labels?|rows?|entries|records).*detected/i,
+    "Duplicate entries were detected, which may inflate totals if not accounted for."
+  ],
+  /* ── workflow & preparation ────────────────────────────── */
+  [
+    /preparation (state|status).*(partial|incomplete|pending)/i,
+    "Data preparation did not fully complete, so some values may not reflect the final cleaned state."
+  ],
+  [
+    /workflow review remains manual/i,
+    "Some data quality checks were not automated and may need manual confirmation."
+  ],
+  [
+    /consistency (issues?|problems?|concerns?).*detected/i,
+    "Minor data consistency issues were found that could affect precision of certain figures."
+  ],
+  /* ── precheck & workflow status ────────────────────────── */
+  [
+    /sql precheck status is warning/i,
+    "Some automated data validation checks produced warnings that may warrant review."
+  ],
+  [
+    /workflow warnings remain unresolved/i,
+    "Data preparation flagged items that have not yet been resolved."
+  ],
+  [
+    /\d+ dataset caveat\(s\) remain active/i,
+    "Multiple data quality caveats are still active and should be reviewed before acting on the findings."
   ]
 ];
 const classifyMetricFromCard = (card) => {
@@ -2772,7 +2842,7 @@ const formatKpiValue = (value, currency) => {
   const formatted = abs >= 1e6 ? `${(value / 1e6).toFixed(1)}M` : abs >= 1e3 ? `${(value / 1e3).toFixed(0)}K` : value.toLocaleString(void 0, { maximumFractionDigits: 0 });
   return currency ? `${formatted} ${currency}` : formatted;
 };
-const GENERIC_VALUE_COLUMNS = /^(total_value|value|amount|sum|count|entry_count|total|qty)$/i;
+const GENERIC_VALUE_COLUMNS = /^(total_value|value|amount|sum|count|entry_count|total|qty|row_total|sum_\w+|total_\w+|po_qty)$/i;
 const buildMetricLabel = (card) => {
   const valueColumn = card.valueColumn ?? "";
   if (GENERIC_VALUE_COLUMNS.test(valueColumn)) {
@@ -2781,6 +2851,28 @@ const buildMetricLabel = (card) => {
   const clean = valueColumn.replace(/[_-]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()).trim();
   if (/^total\b/i.test(clean)) return clean;
   return `Total ${clean}`;
+};
+const buildKpiSupportingNote = (m, currency) => {
+  var _a;
+  const rows = ((_a = m.card.reportChartRows) == null ? void 0 : _a.length) ? m.card.reportChartRows : m.card.aggregatedDataSample;
+  if (!(rows == null ? void 0 : rows.length) || !m.card.valueColumn || m.groupCount <= 1) {
+    return `Aggregated across ${m.groupCount} ${m.groupLabel.toLowerCase()} categories.`;
+  }
+  let topLabel = "";
+  let topValue = 0;
+  for (const row of rows) {
+    const num = toNumericValue$1(row[m.card.valueColumn]);
+    if (num !== null && Math.abs(num) > Math.abs(topValue)) {
+      topValue = num;
+      topLabel = String(row[m.card.groupByColumn ?? ""] ?? "").trim();
+    }
+  }
+  if (!topLabel || m.total === 0) {
+    return `Aggregated across ${m.groupCount} ${m.groupLabel.toLowerCase()} categories.`;
+  }
+  const share = Math.round(Math.abs(topValue) / Math.abs(m.total) * 100);
+  const topFormatted = formatKpiValue(topValue, currency);
+  return `Top: ${topLabel} (${topFormatted}, ${share}% of total) across ${m.groupCount} categories.`;
 };
 const extractBusinessKpis = (cards, currency) => {
   var _a, _b, _c;
@@ -2808,7 +2900,7 @@ const extractBusinessKpis = (cards, currency) => {
   const kpis = metrics.slice(0, MAX_BUSINESS_KPIS - 1).map((m) => ({
     label: m.label,
     value: formatKpiValue(m.total, currency),
-    supportingNote: `Aggregated across ${m.groupCount} ${m.groupLabel.toLowerCase()} categories.`,
+    supportingNote: buildKpiSupportingNote(m, currency),
     tone: m.priority >= 3 ? "good" : "neutral",
     source: "card_aggregation"
   }));
@@ -3122,15 +3214,15 @@ const buildSummarySection$1 = (bundle, memos, forum) => {
   var _a, _b, _c;
   const executivePosition = normalizeReportNarrative(
     forum.executiveSummary || bundle.dataset.reportReadinessReason,
-    { maxSentences: 1, fallback: bundle.dataset.reportReadinessReason }
+    { maxSentences: 2, fallback: bundle.dataset.reportReadinessReason }
   );
   const topImplication = normalizeReportNarrative(
     ((_a = forum.consensusFindings[0]) == null ? void 0 : _a.claim) || ((_b = memos.find((memo) => memo.role === "business")) == null ? void 0 : _b.headline) || executivePosition,
-    { maxSentences: 1, fallback: executivePosition }
+    { maxSentences: 2, fallback: executivePosition }
   );
   const mainCaution = normalizeReportNarrative(
     forum.consensusFindings.flatMap((finding) => finding.caveats)[0] || ((_c = memos.find((memo) => memo.role === "risk")) == null ? void 0 : _c.headline) || bundle.dataset.reportReadinessReason,
-    { maxSentences: 1, fallback: bundle.dataset.reportReadinessReason }
+    { maxSentences: 2, fallback: bundle.dataset.reportReadinessReason }
   );
   return {
     title: "Executive Summary",
@@ -3236,122 +3328,9 @@ const buildReportIr = (bundle, memos, forum) => {
     }
   };
 };
-const printFormScript = 'var PrintForm = function() {\n  "use strict";\n  const TRUE_TOKENS = /* @__PURE__ */ new Set(["y", "yes", "true", "1"]);\n  const FALSE_TOKENS = /* @__PURE__ */ new Set(["n", "no", "false", "0"]);\n  function parseBooleanFlag(value, fallback) {\n    if (value === void 0 || value === null || value === "") return fallback;\n    if (typeof value === "boolean") return value;\n    if (typeof value === "number") return value !== 0;\n    const lowered = String(value).trim().toLowerCase();\n    if (TRUE_TOKENS.has(lowered)) return true;\n    if (FALSE_TOKENS.has(lowered)) return false;\n    return fallback;\n  }\n  function parseNumber(value, fallback) {\n    if (value === void 0 || value === null || value === "") return fallback;\n    const num = Number(value);\n    return Number.isFinite(num) ? num : fallback;\n  }\n  function parseString(value, fallback) {\n    if (value === void 0 || value === null || value === "") return fallback;\n    return String(value);\n  }\n  function normalizeOrientation(value) {\n    const token = String(value || "").trim().toLowerCase();\n    if (token === "landscape") return "landscape";\n    if (token === "portrait") return "portrait";\n    return "";\n  }\n  function normalizePaperSize(value) {\n    const token = String(value || "").trim();\n    if (!token) return "";\n    const upper = token.toUpperCase();\n    if (upper === "A4" || upper === "A5" || upper === "LETTER" || upper === "LEGAL") {\n      return upper;\n    }\n    if (upper === "US_LETTER" || upper === "USLETTER") return "LETTER";\n    if (upper === "US_LEGAL" || upper === "USLEGAL") return "LEGAL";\n    return "";\n  }\n  function mmToPx(mm, dpi) {\n    const mmValue = Number(mm);\n    const dpiValue = Number(dpi);\n    if (!Number.isFinite(mmValue) || !Number.isFinite(dpiValue) || dpiValue <= 0) return 0;\n    return Math.round(mmValue / 25.4 * dpiValue);\n  }\n  const PAPER_SIZES_MM = {\n    A4: { widthMm: 210, heightMm: 297 },\n    A5: { widthMm: 148, heightMm: 210 },\n    LETTER: { widthMm: 215.9, heightMm: 279.4 },\n    LEGAL: { widthMm: 215.9, heightMm: 355.6 }\n  };\n  function resolvePaperDimensions(options) {\n    const paperSize = normalizePaperSize(options && options.paperSize);\n    if (!paperSize) return null;\n    const preset = PAPER_SIZES_MM[paperSize];\n    if (!preset) return null;\n    const dpi = Number(options && options.dpi);\n    const width = mmToPx(preset.widthMm, dpi);\n    const height = mmToPx(preset.heightMm, dpi);\n    if (!width || !height) return null;\n    const orientation = normalizeOrientation(options && options.orientation) || "portrait";\n    if (orientation === "landscape") {\n      return { width: height, height: width };\n    }\n    return { width, height };\n  }\n  function normalizeHeight(value) {\n    const num = Number(value);\n    if (!Number.isFinite(num)) return 0;\n    const epsilon = 1e-6;\n    return Math.max(0, Math.ceil(num - epsilon));\n  }\n  function ensurePageNumberPlaceholder(element) {\n    if (!element) return null;\n    if (element.__pageNumberPlaceholder) {\n      return element.__pageNumberPlaceholder;\n    }\n    const doc = element.ownerDocument || (typeof document !== "undefined" ? document : null);\n    if (!doc) return null;\n    let container = element.querySelector("[data-page-number-container]");\n    if (!container) {\n      container = element.querySelector("td:last-child") || element.querySelector("td") || element;\n    }\n    const placeholder = doc.createElement("span");\n    placeholder.className = "printform_page_number_placeholder";\n    container.appendChild(placeholder);\n    element.__pageNumberPlaceholder = placeholder;\n    return placeholder;\n  }\n  function ensurePhysicalPageNumberPlaceholder(element) {\n    if (!element) return null;\n    if (element.__physicalPageNumberPlaceholder) {\n      return element.__physicalPageNumberPlaceholder;\n    }\n    const doc = element.ownerDocument || (typeof document !== "undefined" ? document : null);\n    if (!doc) return null;\n    let container = element.querySelector("[data-physical-page-number-container]");\n    if (!container) {\n      container = element.querySelector("td:last-child") || element.querySelector("td") || element;\n    }\n    const placeholder = doc.createElement("span");\n    placeholder.className = "printform_physical_page_number_placeholder";\n    container.appendChild(placeholder);\n    element.__physicalPageNumberPlaceholder = placeholder;\n    return placeholder;\n  }\n  function updatePageNumberContent(element, pageNumber, totalPages) {\n    if (!element) return;\n    const numberTargets = element.querySelectorAll("[data-page-number]");\n    if (numberTargets.length > 0) {\n      numberTargets.forEach(function(target) {\n        target.textContent = pageNumber;\n      });\n    }\n    const totalTargets = element.querySelectorAll("[data-page-total]");\n    const totalValue = totalPages !== void 0 && totalPages !== null ? totalPages : "";\n    if (totalTargets.length > 0) {\n      totalTargets.forEach(function(target) {\n        target.textContent = totalValue;\n      });\n    }\n    if (numberTargets.length === 0 && totalTargets.length === 0) {\n      const fallback = ensurePageNumberPlaceholder(element);\n      if (fallback) {\n        fallback.textContent = totalPages !== void 0 && totalPages !== null ? "Page " + pageNumber + " of " + totalPages : "Page " + pageNumber;\n      }\n    }\n  }\n  function updatePhysicalPageNumberContent(element, pageNumber, totalPages) {\n    if (!element) return;\n    const numberTargets = element.querySelectorAll("[data-physical-page-number]");\n    if (numberTargets.length > 0) {\n      numberTargets.forEach(function(target) {\n        target.textContent = pageNumber;\n      });\n    }\n    const totalTargets = element.querySelectorAll("[data-physical-page-total]");\n    const totalValue = totalPages !== void 0 && totalPages !== null ? totalPages : "";\n    if (totalTargets.length > 0) {\n      totalTargets.forEach(function(target) {\n        target.textContent = totalValue;\n      });\n    }\n    if (numberTargets.length === 0 && totalTargets.length === 0) {\n      const fallback = ensurePhysicalPageNumberPlaceholder(element);\n      if (fallback) {\n        fallback.textContent = totalPages !== void 0 && totalPages !== null ? "Sheet " + pageNumber + " of " + totalPages : "Sheet " + pageNumber;\n      }\n    }\n  }\n  const CONFIG_DESCRIPTORS = [\n    { key: "papersizeWidth", datasetKey: "papersizeWidth", legacyKey: "papersize_width", defaultValue: 750, parser: parseNumber },\n    { key: "papersizeHeight", datasetKey: "papersizeHeight", legacyKey: "papersize_height", defaultValue: 1050, parser: parseNumber },\n    { key: "paperSize", datasetKey: "paperSize", legacyKey: "paper_size", defaultValue: "", parser: parseString },\n    { key: "orientation", datasetKey: "orientation", legacyKey: "orientation", defaultValue: "portrait", parser: parseString },\n    { key: "dpi", datasetKey: "dpi", legacyKey: "dpi", defaultValue: 96, parser: parseNumber },\n    { key: "nUp", datasetKey: "nUp", legacyKey: "n_up", defaultValue: 1, parser: parseNumber },\n    {\n      key: "showLogicalPageNumber",\n      datasetKey: "showLogicalPageNumber",\n      legacyKey: "show_logical_page_number",\n      defaultValue: true,\n      parser: parseBooleanFlag\n    },\n    {\n      key: "showPhysicalPageNumber",\n      datasetKey: "showPhysicalPageNumber",\n      legacyKey: "show_physical_page_number",\n      defaultValue: false,\n      parser: parseBooleanFlag\n    },\n    {\n      key: "heightOfDummyRowItem",\n      datasetKey: "heightOfDummyRowItem",\n      legacyKey: "height_of_dummy_row_item",\n      defaultValue: 18,\n      parser: parseNumber\n    },\n    { key: "repeatHeader", datasetKey: "repeatHeader", legacyKey: "repeat_header", defaultValue: true, parser: parseBooleanFlag },\n    { key: "repeatDocinfo", datasetKey: "repeatDocinfo", legacyKey: "repeat_docinfo", defaultValue: true, parser: parseBooleanFlag },\n    { key: "repeatDocinfo002", datasetKey: "repeatDocinfo002", legacyKey: "repeat_docinfo002", defaultValue: true, parser: parseBooleanFlag },\n    { key: "repeatDocinfo003", datasetKey: "repeatDocinfo003", legacyKey: "repeat_docinfo003", defaultValue: true, parser: parseBooleanFlag },\n    { key: "repeatDocinfo004", datasetKey: "repeatDocinfo004", legacyKey: "repeat_docinfo004", defaultValue: true, parser: parseBooleanFlag },\n    { key: "repeatDocinfo005", datasetKey: "repeatDocinfo005", legacyKey: "repeat_docinfo005", defaultValue: true, parser: parseBooleanFlag },\n    { key: "repeatRowheader", datasetKey: "repeatRowheader", legacyKey: "repeat_rowheader", defaultValue: true, parser: parseBooleanFlag },\n    {\n      key: "repeatPtacRowheader",\n      datasetKey: "repeatPtacRowheader",\n      legacyKey: "repeat_ptac_rowheader",\n      defaultValue: true,\n      parser: parseBooleanFlag\n    },\n    { key: "repeatFooter", datasetKey: "repeatFooter", legacyKey: "repeat_footer", defaultValue: false, parser: parseBooleanFlag },\n    { key: "repeatFooter002", datasetKey: "repeatFooter002", legacyKey: "repeat_footer002", defaultValue: false, parser: parseBooleanFlag },\n    { key: "repeatFooter003", datasetKey: "repeatFooter003", legacyKey: "repeat_footer003", defaultValue: false, parser: parseBooleanFlag },\n    { key: "repeatFooter004", datasetKey: "repeatFooter004", legacyKey: "repeat_footer004", defaultValue: false, parser: parseBooleanFlag },\n    { key: "repeatFooter005", datasetKey: "repeatFooter005", legacyKey: "repeat_footer005", defaultValue: false, parser: parseBooleanFlag },\n    { key: "repeatFooterLogo", datasetKey: "repeatFooterLogo", legacyKey: "repeat_footer_logo", defaultValue: false, parser: parseBooleanFlag },\n    { key: "repeatFooterPagenum", datasetKey: "repeatFooterPagenum", legacyKey: "repeat_footer_pagenum", defaultValue: false, parser: parseBooleanFlag },\n    {\n      key: "fillPageHeightAfterFooter",\n      datasetKey: "fillPageHeightAfterFooter",\n      legacyKey: "fill_page_height_after_footer",\n      defaultValue: true,\n      parser: parseBooleanFlag\n    },\n    {\n      key: "insertDummyRowItemWhileFormatTable",\n      datasetKey: "insertDummyRowItemWhileFormatTable",\n      legacyKey: "insert_dummy_row_item_while_format_table",\n      defaultValue: true,\n      parser: parseBooleanFlag\n    },\n    {\n      key: "insertPtacDummyRowItems",\n      datasetKey: "insertPtacDummyRowItems",\n      legacyKey: "insert_ptac_dummy_row_items",\n      defaultValue: true,\n      parser: parseBooleanFlag\n    },\n    {\n      key: "insertDummyRowWhileFormatTable",\n      datasetKey: "insertDummyRowWhileFormatTable",\n      legacyKey: "insert_dummy_row_while_format_table",\n      defaultValue: false,\n      parser: parseBooleanFlag\n    },\n    {\n      key: "insertFooterSpacerWhileFormatTable",\n      datasetKey: "insertFooterSpacerWhileFormatTable",\n      legacyKey: "insert_footer_spacer_while_format_table",\n      defaultValue: true,\n      parser: parseBooleanFlag\n    },\n    {\n      key: "insertFooterSpacerWithDummyRowItemWhileFormatTable",\n      datasetKey: "insertFooterSpacerWithDummyRowItemWhileFormatTable",\n      legacyKey: "insert_footer_spacer_with_dummy_row_item_while_format_table",\n      defaultValue: true,\n      parser: parseBooleanFlag\n    },\n    {\n      key: "customDummyRowItemContent",\n      datasetKey: "customDummyRowItemContent",\n      legacyKey: "custom_dummy_row_item_content",\n      defaultValue: "",\n      parser: parseString\n    },\n    {\n      key: "customDummySpacerContent",\n      datasetKey: "customDummySpacerContent",\n      legacyKey: "custom_dummy_spacer_content",\n      defaultValue: "",\n      parser: parseString\n    },\n    { key: "debug", datasetKey: "debug", legacyKey: "debug_printform", defaultValue: false, parser: parseBooleanFlag }\n  ];\n  const DOCINFO_VARIANTS = [\n    { key: "docInfo", className: "pdocinfo", repeatFlag: "repeatDocinfo" },\n    { key: "docInfo002", className: "pdocinfo002", repeatFlag: "repeatDocinfo002" },\n    { key: "docInfo003", className: "pdocinfo003", repeatFlag: "repeatDocinfo003" },\n    { key: "docInfo004", className: "pdocinfo004", repeatFlag: "repeatDocinfo004" },\n    { key: "docInfo005", className: "pdocinfo005", repeatFlag: "repeatDocinfo005" }\n  ];\n  const FOOTER_VARIANTS = [\n    { key: "footer", className: "pfooter", repeatFlag: "repeatFooter" },\n    { key: "footer002", className: "pfooter002", repeatFlag: "repeatFooter002" },\n    { key: "footer003", className: "pfooter003", repeatFlag: "repeatFooter003" },\n    { key: "footer004", className: "pfooter004", repeatFlag: "repeatFooter004" },\n    { key: "footer005", className: "pfooter005", repeatFlag: "repeatFooter005" }\n  ];\n  const FOOTER_LOGO_VARIANT = { className: "pfooter_logo" };\n  const FOOTER_PAGENUM_VARIANT = { className: "pfooter_pagenum" };\n  const DEFAULT_CONFIG = CONFIG_DESCRIPTORS.reduce((accumulator, descriptor) => {\n    accumulator[descriptor.key] = descriptor.defaultValue;\n    return accumulator;\n  }, {});\n  function readConfigFromLegacy(descriptors) {\n    const source = typeof window !== "undefined" ? window : typeof globalThis !== "undefined" ? globalThis : {};\n    return descriptors.reduce((config, descriptor) => {\n      if (!descriptor.legacyKey) return config;\n      const value = source[descriptor.legacyKey];\n      if (value === void 0 || value === null || value === "") return config;\n      config[descriptor.key] = descriptor.parser(value, descriptor.defaultValue);\n      return config;\n    }, {});\n  }\n  function readConfigFromDataset(descriptors, dataset) {\n    const source = dataset || {};\n    return descriptors.reduce((config, descriptor) => {\n      if (!descriptor.datasetKey) return config;\n      if (!Object.prototype.hasOwnProperty.call(source, descriptor.datasetKey)) return config;\n      const value = source[descriptor.datasetKey];\n      if (value === void 0 || value === null || value === "") return config;\n      config[descriptor.key] = descriptor.parser(value, descriptor.defaultValue);\n      return config;\n    }, {});\n  }\n  function getLegacyConfig() {\n    return readConfigFromLegacy(CONFIG_DESCRIPTORS);\n  }\n  function getDatasetConfig(dataset) {\n    return readConfigFromDataset(CONFIG_DESCRIPTORS, dataset);\n  }\n  function resolveTemplateOverride(formEl, className, fallback) {\n    const template = formEl.querySelector(`template.${className}`);\n    if (template) {\n      return template.innerHTML.trim();\n    }\n    return fallback;\n  }\n  function getPrintformConfig(formEl, overrides = {}) {\n    const legacy = getLegacyConfig();\n    const datasetConfig = getDatasetConfig(formEl.dataset || {});\n    const merged = {\n      ...DEFAULT_CONFIG,\n      ...legacy,\n      ...datasetConfig,\n      ...overrides\n    };\n    merged.customDummyRowItemContent = resolveTemplateOverride(\n      formEl,\n      "custom-dummy-row-item-content",\n      overrides.customDummyRowItemContent !== void 0 ? overrides.customDummyRowItemContent : merged.customDummyRowItemContent\n    );\n    merged.customDummySpacerContent = resolveTemplateOverride(\n      formEl,\n      "custom-dummy-spacer-content",\n      overrides.customDummySpacerContent !== void 0 ? overrides.customDummySpacerContent : merged.customDummySpacerContent\n    );\n    merged.debug = parseBooleanFlag(merged.debug, DEFAULT_CONFIG.debug);\n    merged.nUp = parseNumber(merged.nUp, DEFAULT_CONFIG.nUp);\n    if (!Number.isFinite(merged.nUp) || merged.nUp < 1) {\n      merged.nUp = DEFAULT_CONFIG.nUp;\n    }\n    merged.nUp = Math.floor(merged.nUp);\n    merged.showLogicalPageNumber = parseBooleanFlag(merged.showLogicalPageNumber, DEFAULT_CONFIG.showLogicalPageNumber);\n    merged.showPhysicalPageNumber = parseBooleanFlag(merged.showPhysicalPageNumber, DEFAULT_CONFIG.showPhysicalPageNumber);\n    merged.papersizeWidth = parseNumber(merged.papersizeWidth, DEFAULT_CONFIG.papersizeWidth);\n    merged.papersizeHeight = parseNumber(merged.papersizeHeight, DEFAULT_CONFIG.papersizeHeight);\n    merged.paperSize = parseString(merged.paperSize, DEFAULT_CONFIG.paperSize);\n    merged.orientation = parseString(merged.orientation, DEFAULT_CONFIG.orientation);\n    merged.dpi = parseNumber(merged.dpi, DEFAULT_CONFIG.dpi);\n    if (!Number.isFinite(merged.dpi) || merged.dpi <= 0) merged.dpi = DEFAULT_CONFIG.dpi;\n    const overrideHas = (key) => Object.prototype.hasOwnProperty.call(overrides, key) && overrides[key] !== "";\n    const manualWidthProvided = Object.prototype.hasOwnProperty.call(legacy, "papersizeWidth") || Object.prototype.hasOwnProperty.call(datasetConfig, "papersizeWidth") || overrideHas("papersizeWidth");\n    const manualHeightProvided = Object.prototype.hasOwnProperty.call(legacy, "papersizeHeight") || Object.prototype.hasOwnProperty.call(datasetConfig, "papersizeHeight") || overrideHas("papersizeHeight");\n    if (!manualWidthProvided && !manualHeightProvided) {\n      const resolved = resolvePaperDimensions({ paperSize: merged.paperSize, orientation: merged.orientation, dpi: merged.dpi });\n      if (resolved) {\n        merged.papersizeWidth = resolved.width;\n        merged.papersizeHeight = resolved.height;\n      }\n    }\n    return merged;\n  }\n  const PADDT_CONFIG_DESCRIPTORS = [\n    { key: "repeatPaddt", datasetKey: "repeatPaddt", legacyKey: "repeat_paddt", defaultValue: true, parser: parseBooleanFlag },\n    { key: "insertPaddtDummyRowItems", datasetKey: "insertPaddtDummyRowItems", legacyKey: "insert_paddt_dummy_row_items", defaultValue: true, parser: parseBooleanFlag },\n    { key: "paddtMaxWordsPerSegment", datasetKey: "paddtMaxWordsPerSegment", legacyKey: "paddt_max_words_per_segment", defaultValue: 200, parser: parseNumber },\n    { key: "repeatPaddtRowheader", datasetKey: "repeatPaddtRowheader", legacyKey: "repeat_paddt_rowheader", defaultValue: true, parser: parseBooleanFlag },\n    { key: "paddtDebug", datasetKey: "paddtDebug", legacyKey: "paddt_debug", defaultValue: false, parser: parseBooleanFlag },\n    // PADDT-specific docinfo toggles (show/hide on PADDT pages only)\n    { key: "repeatPaddtDocinfo", datasetKey: "repeatPaddtDocinfo", legacyKey: "repeat_paddt_docinfo", defaultValue: true, parser: parseBooleanFlag },\n    { key: "repeatPaddtDocinfo002", datasetKey: "repeatPaddtDocinfo002", legacyKey: "repeat_paddt_docinfo002", defaultValue: true, parser: parseBooleanFlag },\n    { key: "repeatPaddtDocinfo003", datasetKey: "repeatPaddtDocinfo003", legacyKey: "repeat_paddt_docinfo003", defaultValue: true, parser: parseBooleanFlag },\n    { key: "repeatPaddtDocinfo004", datasetKey: "repeatPaddtDocinfo004", legacyKey: "repeat_paddt_docinfo004", defaultValue: true, parser: parseBooleanFlag },\n    { key: "repeatPaddtDocinfo005", datasetKey: "repeatPaddtDocinfo005", legacyKey: "repeat_paddt_docinfo005", defaultValue: true, parser: parseBooleanFlag }\n  ];\n  const DEFAULT_PADDT_CONFIG = PADDT_CONFIG_DESCRIPTORS.reduce(function(acc, d) {\n    acc[d.key] = d.defaultValue;\n    return acc;\n  }, {});\n  function getPaddtLegacyConfig() {\n    return readConfigFromLegacy(PADDT_CONFIG_DESCRIPTORS);\n  }\n  function getPaddtDatasetConfig(dataset) {\n    return readConfigFromDataset(PADDT_CONFIG_DESCRIPTORS, dataset);\n  }\n  function getPaddtConfig(formEl, overrides) {\n    overrides = overrides || {};\n    var legacy = getPaddtLegacyConfig();\n    var datasetConfig = getPaddtDatasetConfig(formEl && formEl.dataset || {});\n    var merged = {};\n    for (var k in DEFAULT_PADDT_CONFIG) {\n      if (Object.prototype.hasOwnProperty.call(DEFAULT_PADDT_CONFIG, k)) merged[k] = DEFAULT_PADDT_CONFIG[k];\n    }\n    for (var k1 in legacy) {\n      if (Object.prototype.hasOwnProperty.call(legacy, k1)) merged[k1] = legacy[k1];\n    }\n    for (var k2 in datasetConfig) {\n      if (Object.prototype.hasOwnProperty.call(datasetConfig, k2)) merged[k2] = datasetConfig[k2];\n    }\n    for (var k3 in overrides) {\n      if (Object.prototype.hasOwnProperty.call(overrides, k3)) merged[k3] = overrides[k3];\n    }\n    merged.paddtDebug = parseBooleanFlag(merged.paddtDebug, DEFAULT_PADDT_CONFIG.paddtDebug);\n    merged.paddtMaxWordsPerSegment = parseNumber(merged.paddtMaxWordsPerSegment, DEFAULT_PADDT_CONFIG.paddtMaxWordsPerSegment);\n    if (!Number.isFinite(merged.paddtMaxWordsPerSegment) || merged.paddtMaxWordsPerSegment <= 0) {\n      merged.paddtMaxWordsPerSegment = DEFAULT_PADDT_CONFIG.paddtMaxWordsPerSegment;\n    }\n    return merged;\n  }\n  function applyTableSizingReset(table) {\n    if (!table) return;\n    table.style.borderCollapse = "collapse";\n    table.style.borderSpacing = "0";\n    table.style.margin = "0";\n    table.style.padding = "0";\n    table.style.lineHeight = "0";\n    table.style.fontSize = "0";\n  }\n  function createDummyRowTable(config, height) {\n    const table = document.createElement("table");\n    table.className = "dummy_row";\n    table.setAttribute("width", `${config.papersizeWidth}px`);\n    table.setAttribute("cellspacing", "0");\n    table.setAttribute("cellpadding", "0");\n    applyTableSizingReset(table);\n    table.innerHTML = `<tr style="height:${normalizeHeight(height)}px;"><td style="border:0px solid black;padding:0;margin:0;line-height:0;font-size:0;"></td></tr>`;\n    return table;\n  }\n  function createDummyRowItemTable(config) {\n    const table = document.createElement("table");\n    table.className = "dummy_row_item";\n    table.setAttribute("width", `${config.papersizeWidth}px`);\n    table.setAttribute("cellspacing", "0");\n    table.setAttribute("cellpadding", "0");\n    applyTableSizingReset(table);\n    table.style.borderCollapse = "separate";\n    if (config.customDummyRowItemContent) {\n      table.innerHTML = config.customDummyRowItemContent;\n    } else {\n      table.innerHTML = `<tr style="height:${normalizeHeight(config.heightOfDummyRowItem)}px;"><td style="border:0px solid black;padding:0;margin:0;line-height:0;font-size:0;"></td></tr>`;\n    }\n    return table;\n  }\n  function appendDummyRowItems(config, target, diffHeight) {\n    const itemHeight = normalizeHeight(config.heightOfDummyRowItem);\n    const remaining = normalizeHeight(diffHeight);\n    if (itemHeight <= 0 || remaining <= 0) return;\n    const count = Math.floor(remaining / itemHeight);\n    for (let index = 0; index < count; index += 1) {\n      target.appendChild(createDummyRowItemTable(config));\n    }\n  }\n  function appendDummyRow(config, target, diffHeight) {\n    const remaining = normalizeHeight(diffHeight);\n    if (remaining <= 0) return;\n    target.appendChild(createDummyRowTable(config, remaining));\n  }\n  function applyDummyRowItemsStep(config, container, heightPerPage, currentHeight, debug) {\n    if (!config.insertDummyRowItemWhileFormatTable) {\n      if (debug) {\n        console.log(`[printform] applyDummyRowItemsStep: SKIPPED (insertDummyRowItemWhileFormatTable=false)`);\n      }\n      return normalizeHeight(currentHeight);\n    }\n    const remaining = normalizeHeight(heightPerPage - currentHeight);\n    if (debug) {\n      console.log(`[printform] applyDummyRowItemsStep:`);\n      console.log(`[printform]   heightPerPage: ${heightPerPage}px, currentHeight: ${currentHeight}px`);\n      console.log(`[printform]   remaining: ${remaining}px, itemHeight: ${config.heightOfDummyRowItem}px`);\n    }\n    if (remaining > 0) {\n      appendDummyRowItems(config, container, remaining);\n      const itemHeight = normalizeHeight(config.heightOfDummyRowItem);\n      if (itemHeight > 0) {\n        const count = Math.floor(remaining / itemHeight);\n        const remainder = normalizeHeight(remaining % itemHeight);\n        const newHeight = normalizeHeight(heightPerPage - remainder);\n        if (debug) {\n          console.log(`[printform]   inserted ${count} dummy_row_items (${count} x ${itemHeight}px = ${count * itemHeight}px)`);\n          console.log(`[printform]   remainder: ${remainder}px, newHeight: ${newHeight}px`);\n        }\n        return newHeight;\n      }\n    }\n    return normalizeHeight(currentHeight);\n  }\n  function applyDummyRowStep(config, container, heightPerPage, currentHeight, debug) {\n    if (!config.insertDummyRowWhileFormatTable) {\n      if (debug) {\n        console.log(`[printform] applyDummyRowStep: SKIPPED (insertDummyRowWhileFormatTable=false)`);\n      }\n      return normalizeHeight(currentHeight);\n    }\n    const remaining = normalizeHeight(heightPerPage - currentHeight);\n    if (debug) {\n      console.log(`[printform] applyDummyRowStep:`);\n      console.log(`[printform]   heightPerPage: ${heightPerPage}px, currentHeight: ${currentHeight}px`);\n      console.log(`[printform]   remaining: ${remaining}px`);\n    }\n    if (remaining > 0) {\n      appendDummyRow(config, container, remaining);\n      if (debug) {\n        console.log(`[printform]   inserted 1 dummy_row with height: ${remaining}px`);\n      }\n      return normalizeHeight(currentHeight + remaining);\n    }\n    return normalizeHeight(currentHeight);\n  }\n  function applyFooterSpacerWithDummyStep(config, container, heightPerPage, currentHeight, skipDummyRowItems, debug) {\n    if (!config.insertFooterSpacerWithDummyRowItemWhileFormatTable || skipDummyRowItems) {\n      if (debug) {\n        console.log(`[printform] applyFooterSpacerWithDummyStep: SKIPPED (flag=${config.insertFooterSpacerWithDummyRowItemWhileFormatTable}, skipDummy=${skipDummyRowItems})`);\n      }\n      return {\n        currentHeight: normalizeHeight(currentHeight),\n        skipFooterSpacer: false\n      };\n    }\n    const remaining = normalizeHeight(heightPerPage - currentHeight);\n    let workingHeight = normalizeHeight(currentHeight);\n    if (debug) {\n      console.log(`[printform] applyFooterSpacerWithDummyStep:`);\n      console.log(`[printform]   heightPerPage: ${heightPerPage}px, currentHeight: ${currentHeight}px`);\n      console.log(`[printform]   remaining: ${remaining}px`);\n    }\n    if (remaining > 0) {\n      appendDummyRowItems(config, container, remaining);\n      const itemHeight = normalizeHeight(config.heightOfDummyRowItem);\n      if (itemHeight > 0) {\n        const count = Math.floor(remaining / itemHeight);\n        const remainder = normalizeHeight(remaining % itemHeight);\n        workingHeight = normalizeHeight(heightPerPage - remainder);\n        if (debug) {\n          console.log(`[printform]   inserted ${count} spacer dummy_row_items, remainder: ${remainder}px`);\n        }\n      }\n    }\n    return {\n      currentHeight: workingHeight,\n      skipFooterSpacer: true\n    };\n  }\n  function applyFooterSpacerStep(config, container, heightPerPage, currentHeight, footerState, spacerTemplate, debug) {\n    if (!config.insertFooterSpacerWhileFormatTable) {\n      if (debug) {\n        console.log(`[printform] applyFooterSpacerStep: SKIPPED (insertFooterSpacerWhileFormatTable=false)`);\n      }\n      return;\n    }\n    const clone = spacerTemplate.cloneNode(true);\n    let remaining = normalizeHeight(heightPerPage - currentHeight);\n    const nonRepeating = footerState && footerState.nonRepeating ? normalizeHeight(footerState.nonRepeating) : 0;\n    if (nonRepeating > 0) {\n      remaining -= nonRepeating;\n    }\n    const spacerHeight = Math.max(0, remaining);\n    clone.style.height = `${spacerHeight}px`;\n    container.appendChild(clone);\n    if (debug) {\n      console.log(`[printform] applyFooterSpacerStep:`);\n      console.log(`[printform]   heightPerPage: ${heightPerPage}px, currentHeight: ${currentHeight}px`);\n      console.log(`[printform]   nonRepeatingFooter: ${nonRepeating}px`);\n      console.log(`[printform]   pfooter_spacer height: ${spacerHeight}px`);\n    }\n  }\n  function markAsProcessed(element, baseClass) {\n    if (!element || !baseClass) return;\n    if (element.classList.contains(`${baseClass}_processed`)) return;\n    element.classList.remove(baseClass);\n    element.classList.add(`${baseClass}_processed`);\n  }\n  function measureHeight(element) {\n    if (!element) return 0;\n    element.offsetHeight;\n    const rect = element.getBoundingClientRect ? element.getBoundingClientRect() : null;\n    const rectHeight = rect && Number.isFinite(rect.height) ? rect.height : 0;\n    let baseHeight = rectHeight > 0 ? rectHeight : element.offsetHeight;\n    if (baseHeight === 0) {\n      const originalDisplay = element.style.display;\n      const originalVisibility = element.style.visibility;\n      const originalPosition = element.style.position;\n      element.style.display = "block";\n      element.style.visibility = "hidden";\n      element.style.position = "absolute";\n      const tempRect = element.getBoundingClientRect ? element.getBoundingClientRect() : null;\n      const tempRectHeight = tempRect && Number.isFinite(tempRect.height) ? tempRect.height : 0;\n      baseHeight = tempRectHeight > 0 ? tempRectHeight : element.offsetHeight || 0;\n      element.style.display = originalDisplay;\n      element.style.visibility = originalVisibility;\n      element.style.position = originalPosition;\n    }\n    const view = element.ownerDocument && element.ownerDocument.defaultView || (typeof window !== "undefined" ? window : null);\n    if (!view || !view.getComputedStyle) {\n      return normalizeHeight(baseHeight);\n    }\n    const style = view.getComputedStyle(element);\n    const marginTop = Number.parseFloat(style.marginTop) || 0;\n    const marginBottom = Number.parseFloat(style.marginBottom) || 0;\n    return normalizeHeight(baseHeight + marginTop + marginBottom);\n  }\n  function measureHeightRaw(element) {\n    if (!element) return 0;\n    const rect = element.getBoundingClientRect ? element.getBoundingClientRect() : null;\n    const baseHeight = rect && Number.isFinite(rect.height) ? rect.height : element.offsetHeight || 0;\n    const view = element.ownerDocument && element.ownerDocument.defaultView || (typeof window !== "undefined" ? window : null);\n    if (!view || !view.getComputedStyle) {\n      return Number.isFinite(baseHeight) ? Math.max(0, baseHeight) : 0;\n    }\n    const style = view.getComputedStyle(element);\n    const marginTop = Number.parseFloat(style.marginTop) || 0;\n    const marginBottom = Number.parseFloat(style.marginBottom) || 0;\n    const total = baseHeight + marginTop + marginBottom;\n    return Number.isFinite(total) ? Math.max(0, total) : 0;\n  }\n  function createPageBreakDivider(extraClassNames) {\n    const div = document.createElement("div");\n    div.classList.add("div_page_break_before");\n    div.setAttribute("style", "page-break-before: always; font-size: 0pt; height: 0px;");\n    const globalScope2 = typeof window !== "undefined" ? window : globalThis;\n    const resolvedClassNames = typeof extraClassNames === "string" && extraClassNames.trim() ? extraClassNames : globalScope2 && typeof globalScope2.__printFormDividerClassAppend === "string" ? globalScope2.__printFormDividerClassAppend : "";\n    if (resolvedClassNames) {\n      resolvedClassNames.split(/\\s+/).filter(Boolean).forEach((className) => div.classList.add(className));\n    }\n    return div;\n  }\n  function appendClone(target, element, logFn, label) {\n    if (!element) return null;\n    const clone = element.cloneNode(true);\n    target.appendChild(clone);\n    if (logFn) logFn(`append ${label}`);\n    return clone;\n  }\n  function appendRowItem(target, element, logFn, index, label) {\n    if (!element) return null;\n    const clone = element.cloneNode(true);\n    target.appendChild(clone);\n    if (logFn) {\n      const resolvedLabel = label || "prowitem";\n      logFn(`append ${resolvedLabel} ${index}`);\n    }\n    return clone;\n  }\n  const DomHelpers = {\n    markAsProcessed,\n    measureHeight,\n    measureHeightRaw,\n    createPageBreakDivider,\n    appendClone,\n    appendRowItem,\n    createDummyRowTable\n  };\n  function buildDummySpacer(config, remaining, debug) {\n    if (config.customDummySpacerContent) {\n      const template = document.createElement("template");\n      template.innerHTML = config.customDummySpacerContent.trim();\n      const elements = Array.from(template.content.childNodes).filter((node) => node.nodeType === Node.ELEMENT_NODE);\n      if (elements.length === 1) {\n        const spacer2 = elements[0];\n        spacer2.classList.add("dummy_spacer");\n        spacer2.setAttribute("aria-hidden", "true");\n        if (spacer2.tagName !== "TABLE") {\n          spacer2.style.display = "block";\n        }\n        spacer2.style.width = "100%";\n        spacer2.style.height = `${remaining}px`;\n        spacer2.style.margin = "0";\n        spacer2.style.padding = "0";\n        return spacer2;\n      }\n      if (debug) {\n        console.log("[printform] customDummySpacerContent ignored: template must have exactly 1 root element.");\n      }\n    }\n    const spacer = document.createElement("div");\n    spacer.classList.add("dummy_spacer");\n    spacer.setAttribute("aria-hidden", "true");\n    if (spacer.tagName !== "TABLE") {\n      spacer.style.display = "block";\n    }\n    spacer.style.width = "100%";\n    spacer.style.height = `${remaining}px`;\n    spacer.style.margin = "0";\n    spacer.style.padding = "0";\n    return spacer;\n  }\n  function attachPageMethods(FormatterClass) {\n    FormatterClass.prototype.initializeOutputContainer = function initializeOutputContainer() {\n      const container = document.createElement("div");\n      container.classList.add("printform_formatter");\n      container.style.webkitTextSizeAdjust = "100%";\n      container.style.textSizeAdjust = "100%";\n      this.formEl.parentNode.insertBefore(container, this.formEl);\n      return container;\n    };\n    FormatterClass.prototype.initializePhysicalWrapper = function initializePhysicalWrapper(outputContainer) {\n      if (this.currentPhysicalWrapper) {\n        outputContainer.appendChild(DomHelpers.createPageBreakDivider());\n        this.currentPhysicalPage += 1;\n      } else {\n        this.currentPhysicalPage = 1;\n      }\n      const wrapper = document.createElement("div");\n      wrapper.classList.add("physical_page_wrapper");\n      wrapper.style.display = "flex";\n      wrapper.style.flexDirection = "column";\n      wrapper.style.alignItems = "flex-start";\n      wrapper.style.width = `${this.config.papersizeWidth}px`;\n      outputContainer.appendChild(wrapper);\n      this.currentPhysicalWrapper = wrapper;\n      this.pagesInCurrentPhysical = 0;\n      return wrapper;\n    };\n    FormatterClass.prototype.ensureCurrentPageContainer = function ensureCurrentPageContainer(outputContainer) {\n      if (!this.currentPhysicalWrapper) {\n        this.initializePhysicalWrapper(outputContainer);\n      }\n      if (!this.currentPageContainer) {\n        this.createNewLogicalPage(outputContainer);\n      }\n      return this.currentPageContainer;\n    };\n    FormatterClass.prototype.createNewLogicalPage = function createNewLogicalPage(outputContainer) {\n      if (!this.currentPhysicalWrapper || this.pagesInCurrentPhysical >= this.nUp) {\n        this.initializePhysicalWrapper(outputContainer);\n      }\n      const page = document.createElement("div");\n      page.classList.add("printform_page");\n      page.style.width = `${this.config.papersizeWidth}px`;\n      this.currentPhysicalWrapper.appendChild(page);\n      this.currentPageContainer = page;\n      this.pagesInCurrentPhysical += 1;\n      this.logicalPageToPhysicalPage[this.currentPage] = this.currentPhysicalPage;\n      return page;\n    };\n    FormatterClass.prototype.getCurrentPageContainer = function getCurrentPageContainer(outputContainer) {\n      return this.ensureCurrentPageContainer(outputContainer);\n    };\n    FormatterClass.prototype.finalizePageHeight = function finalizePageHeight(pageContainer) {\n      if (!pageContainer) return;\n      const configuredHeight = this.config.papersizeHeight;\n      const fillPageHeightAfterFooter = this.config.fillPageHeightAfterFooter !== false;\n      let appendedSpacerHeight = 0;\n      const formatPx = (value) => {\n        if (!Number.isFinite(value)) return "0";\n        return String(Math.round(value * 100) / 100);\n      };\n      if (fillPageHeightAfterFooter) {\n        const currentHeight = DomHelpers.measureHeightRaw(pageContainer);\n        const remaining = Math.max(0, configuredHeight - currentHeight);\n        if (remaining > 0.01) {\n          const spacer = buildDummySpacer(this.config, remaining, this.debug);\n          const footerSelectors = FOOTER_VARIANTS.map((variant) => `.${variant.className}_processed`).concat([\n            `.${FOOTER_LOGO_VARIANT.className}_processed`,\n            `.${FOOTER_PAGENUM_VARIANT.className}_processed`\n          ]);\n          const firstFooter = pageContainer.querySelector(footerSelectors.join(", "));\n          if (firstFooter && firstFooter.parentNode === pageContainer) {\n            pageContainer.insertBefore(spacer, firstFooter);\n          } else {\n            pageContainer.appendChild(spacer);\n          }\n          appendedSpacerHeight = remaining;\n        }\n      }\n      if (this.debug) {\n        console.log(`\n[printform] ========== PAGE HEIGHT CALCULATION ==========`);\n        console.log(`[printform] Configured page height: ${configuredHeight}px`);\n        console.log(`[printform] -------------------------------------------`);\n        const children = Array.from(pageContainer.children);\n        let cumulativeHeight = 0;\n        console.log(`[printform] Elements breakdown (${children.length} elements):`);\n        children.forEach((child, index) => {\n          const childHeight = DomHelpers.measureHeightRaw(child);\n          cumulativeHeight += childHeight;\n          const className = child.className || "(no class)";\n          const tagName = child.tagName.toLowerCase();\n          console.log(`[printform]   ${index + 1}. <${tagName}.${className}>`);\n          console.log(`[printform]      Height: ${formatPx(childHeight)}px`);\n          console.log(`[printform]      Cumulative: ${formatPx(cumulativeHeight)}px`);\n          console.log(`[printform]      Remaining: ${formatPx(Math.max(0, configuredHeight - cumulativeHeight))}px`);\n          if (childHeight > configuredHeight * 0.5) {\n            console.log(`[printform]      ⚠️  WARNING: Element height is > 50% of page height`);\n          }\n        });\n        console.log(`[printform] -------------------------------------------`);\n        console.log(`[printform] Total content height: ${formatPx(cumulativeHeight)}px`);\n        if (cumulativeHeight < configuredHeight) {\n          const shortfall = configuredHeight - cumulativeHeight;\n          console.log(`[printform] ✓ Content fits (${formatPx(shortfall)}px under limit)`);\n        } else if (cumulativeHeight > configuredHeight) {\n          const overflow = cumulativeHeight - configuredHeight;\n          console.log(`[printform] ⚠️  Content overflow (${formatPx(overflow)}px over limit)`);\n        } else {\n          console.log(`[printform] ✓ Perfect fit (exactly matches configured height)`);\n        }\n        if (appendedSpacerHeight > 0) {\n          console.log(`[printform] ✓ Final spacer appended: ${formatPx(appendedSpacerHeight)}px`);\n        }\n      }\n      if (this.debug) {\n        const actualHeight = DomHelpers.measureHeightRaw(pageContainer);\n        console.log(`[printform] -------------------------------------------`);\n        console.log(`[printform] Actual measured height: ${formatPx(actualHeight)}px`);\n        console.log(`[printform] ℹ️  Height NOT set - using natural content height`);\n        console.log(`[printform] ===============================================\n`);\n      }\n    };\n  }\n  const ROW_SELECTOR = ".prowitem, .ptac-rowitem, .paddt-rowitem";\n  const PTAC_MAX_WORDS_PER_SEGMENT = 200;\n  const PADDT_MAX_WORDS_PER_SEGMENT = 200;\n  function collectWordTokens(node) {\n    var tokens = [];\n    if (!node || !node.ownerDocument || !node.ownerDocument.createTreeWalker) {\n      return tokens;\n    }\n    var walker = node.ownerDocument.createTreeWalker(node, 4, null, false);\n    var current = walker.nextNode();\n    while (current) {\n      var text = current.nodeValue || "";\n      var regex = /\\S+/g;\n      var match = regex.exec(text);\n      while (match) {\n        tokens.push({\n          node: current,\n          start: match.index,\n          end: match.index + match[0].length\n        });\n        match = regex.exec(text);\n      }\n      current = walker.nextNode();\n    }\n    return tokens;\n  }\n  function buildChunkHtml(node, range) {\n    var clone = node.cloneNode(false);\n    clone.appendChild(range.cloneContents());\n    return clone.outerHTML || "";\n  }\n  function splitParagraphIntoHtmlChunks(node, maxWords) {\n    if (!node) {\n      return [];\n    }\n    if (!maxWords || maxWords <= 0) {\n      return [node.outerHTML || ""];\n    }\n    var text = (node.textContent || "").trim();\n    if (!text) {\n      return [node.outerHTML || ""];\n    }\n    if (!node.ownerDocument || !node.ownerDocument.createRange || !node.ownerDocument.createTreeWalker) {\n      return [node.outerHTML || ""];\n    }\n    var tokens = collectWordTokens(node);\n    if (tokens.length === 0) {\n      return [node.outerHTML || ""];\n    }\n    if (tokens.length <= maxWords) {\n      return [node.outerHTML || ""];\n    }\n    var chunks = [];\n    for (var startIndex = 0; startIndex < tokens.length; startIndex += maxWords) {\n      var endIndex = startIndex + maxWords - 1;\n      if (endIndex >= tokens.length) {\n        endIndex = tokens.length - 1;\n      }\n      var range = node.ownerDocument.createRange();\n      if (startIndex === 0) {\n        range.setStart(node, 0);\n      } else {\n        var startToken = tokens[startIndex];\n        range.setStart(startToken.node, startToken.start);\n      }\n      if (endIndex + 1 < tokens.length) {\n        var nextToken = tokens[endIndex + 1];\n        range.setEnd(nextToken.node, nextToken.start);\n      } else {\n        range.setEnd(node, node.childNodes.length);\n      }\n      chunks.push(buildChunkHtml(node, range));\n    }\n    return chunks;\n  }\n  function splitPaddtParagraphIntoHtmlChunks(node, maxWords) {\n    return splitParagraphIntoHtmlChunks(node, maxWords);\n  }\n  function attachSectionMethods(FormatterClass) {\n    FormatterClass.prototype.collectSections = function collectSections() {\n      this.expandPaddtSegments();\n      this.expandPtacSegments();\n      const docInfos = DOCINFO_VARIANTS.map((variant) => {\n        const element = this.formEl.querySelector(`.${variant.className}`);\n        if (!element) return null;\n        return {\n          key: variant.key,\n          className: variant.className,\n          repeatFlag: variant.repeatFlag,\n          element\n        };\n      }).filter(Boolean);\n      const footerVariants = FOOTER_VARIANTS.map((variant) => {\n        const element = this.formEl.querySelector(`.${variant.className}`);\n        if (!element) return null;\n        return {\n          key: variant.key,\n          className: variant.className,\n          repeatFlag: variant.repeatFlag,\n          element\n        };\n      }).filter(Boolean);\n      const allRows = Array.from(this.formEl.querySelectorAll(ROW_SELECTOR));\n      const paddtRows = allRows.filter((row) => this.isPaddtRow(row));\n      const mainRows = allRows.filter((row) => !this.isPaddtRow(row));\n      this.paddtRows = paddtRows;\n      return {\n        header: this.formEl.querySelector(".pheader"),\n        docInfos,\n        rowHeader: this.formEl.querySelector(".prowheader"),\n        footerVariants,\n        footerLogo: this.formEl.querySelector(`.${FOOTER_LOGO_VARIANT.className}`),\n        footerPagenum: this.formEl.querySelector(`.${FOOTER_PAGENUM_VARIANT.className}`),\n        rows: mainRows\n      };\n    };\n    FormatterClass.prototype.measureSections = function measureSections(sections) {\n      const heights = {\n        header: DomHelpers.measureHeight(sections.header),\n        docInfos: {},\n        rowHeader: DomHelpers.measureHeight(sections.rowHeader),\n        footerVariants: {},\n        footerLogo: DomHelpers.measureHeight(sections.footerLogo),\n        footerPagenum: DomHelpers.measureHeight(sections.footerPagenum)\n      };\n      sections.docInfos.forEach((docInfo) => {\n        heights.docInfos[docInfo.key] = DomHelpers.measureHeight(docInfo.element);\n      });\n      sections.footerVariants.forEach((footer) => {\n        heights.footerVariants[footer.key] = DomHelpers.measureHeight(footer.element);\n      });\n      return heights;\n    };\n    FormatterClass.prototype.markSectionsProcessed = function markSectionsProcessed(sections) {\n      DomHelpers.markAsProcessed(sections.header, "pheader");\n      sections.docInfos.forEach((docInfo) => {\n        DomHelpers.markAsProcessed(docInfo.element, docInfo.className);\n      });\n      DomHelpers.markAsProcessed(sections.rowHeader, "prowheader");\n      sections.footerVariants.forEach((footer) => {\n        DomHelpers.markAsProcessed(footer.element, footer.className);\n      });\n      DomHelpers.markAsProcessed(sections.footerLogo, FOOTER_LOGO_VARIANT.className);\n      DomHelpers.markAsProcessed(sections.footerPagenum, FOOTER_PAGENUM_VARIANT.className);\n    };\n    FormatterClass.prototype.createFooterSpacerTemplate = function createFooterSpacerTemplate() {\n      const spacer = document.createElement("div");\n      spacer.classList.add("pfooter_spacer", "paper_width");\n      spacer.style.height = "0px";\n      return spacer;\n    };\n  }\n  function attachRowTypeMethods(FormatterClass) {\n    FormatterClass.prototype.isPaddtRow = function isPaddtRow(row) {\n      if (!row) {\n        return false;\n      }\n      return row.classList.contains("paddt_segment") || row.classList.contains("paddt") || row.classList.contains("paddt-rowitem") || row.classList.contains("paddt-rowitem_processed");\n    };\n    FormatterClass.prototype.isPtacRow = function isPtacRow(row) {\n      if (!row) {\n        return false;\n      }\n      return row.classList.contains("ptac_segment") || row.classList.contains("ptac") || row.classList.contains("ptac-rowitem") || row.classList.contains("ptac-rowitem_processed");\n    };\n    FormatterClass.prototype.isSubtotalRow = function isSubtotalRow(row) {\n      if (!row) {\n        return false;\n      }\n      return row.classList.contains("prowitem_subtotal");\n    };\n    FormatterClass.prototype.isFooterRow = function isFooterRow(row) {\n      if (!row) {\n        return false;\n      }\n      return row.classList.contains("prowitem_footer");\n    };\n    FormatterClass.prototype.getRowBaseClass = function getRowBaseClass(row) {\n      if (!row) {\n        return "prowitem";\n      }\n      if (this.isPaddtRow(row)) return "paddt-rowitem";\n      return this.isPtacRow(row) ? "ptac-rowitem" : "prowitem";\n    };\n    FormatterClass.prototype.shouldSkipRowHeaderForRow = function shouldSkipRowHeaderForRow(row) {\n      if (!row) {\n        return false;\n      }\n      if (!this.config.repeatRowheader) {\n        return false;\n      }\n      if (row.classList.contains("without_prowheader") || row.classList.contains("tb_without_rowheader")) {\n        return true;\n      }\n      if (this.isPtacRow(row)) {\n        if (this.config.repeatPtacRowheader) return false;\n        return true;\n      }\n      if (this.isPaddtRow(row)) {\n        if (this.paddtConfig && this.paddtConfig.repeatPaddtRowheader) return false;\n        return true;\n      }\n      return false;\n    };\n    FormatterClass.prototype.shouldSkipDummyRowItemsForContext = function shouldSkipDummyRowItemsForContext(pageContext) {\n      return Boolean(\n        pageContext && (pageContext.isPtacPage && !this.config.insertPtacDummyRowItems || pageContext.isPaddtPage && !(this.paddtConfig && this.paddtConfig.insertPaddtDummyRowItems))\n      );\n    };\n  }\n  function attachPaddtSegmentMethods(FormatterClass) {\n    FormatterClass.prototype.expandPaddtSegments = function expandPaddtSegments() {\n      if (this.formEl.dataset.paddtExpanded === "true") {\n        return;\n      }\n      const paddtTables = Array.from(this.formEl.querySelectorAll(".paddt"));\n      if (paddtTables.length === 0) {\n        this.formEl.dataset.paddtExpanded = "true";\n        return;\n      }\n      var maxWords = this.paddtConfig && this.paddtConfig.paddtMaxWordsPerSegment || PADDT_MAX_WORDS_PER_SEGMENT;\n      paddtTables.forEach((paddtRoot) => {\n        if (!paddtRoot || paddtRoot.dataset.paddtSegment === "true") {\n          return;\n        }\n        const contentWrapper = paddtRoot.querySelector("td > div") || paddtRoot.querySelector("td");\n        if (!contentWrapper) {\n          paddtRoot.classList.add("paddt-rowitem", "paddt_segment");\n          paddtRoot.dataset.paddtSegment = "true";\n          return;\n        }\n        const allChildren = Array.from(contentWrapper.children);\n        if (allChildren.length === 0) {\n          paddtRoot.classList.add("paddt-rowitem", "paddt_segment");\n          paddtRoot.dataset.paddtSegment = "true";\n          return;\n        }\n        const segments = [];\n        allChildren.forEach((child) => {\n          if (child.tagName.toLowerCase() === "p") {\n            const chunks = splitPaddtParagraphIntoHtmlChunks(child, maxWords);\n            chunks.forEach((chunk) => segments.push(chunk));\n          } else {\n            segments.push(child.outerHTML);\n          }\n        });\n        if (segments.length === 0) {\n          paddtRoot.classList.add("paddt-rowitem", "paddt_segment");\n          paddtRoot.dataset.paddtSegment = "true";\n          return;\n        }\n        contentWrapper.innerHTML = segments[0];\n        paddtRoot.classList.add("paddt-rowitem", "paddt_segment");\n        paddtRoot.dataset.paddtSegment = "true";\n        var lastNode = paddtRoot;\n        for (var index = 1; index < segments.length; index += 1) {\n          const clone = paddtRoot.cloneNode(true);\n          clone.dataset.paddtSegment = "true";\n          const cloneWrapper = clone.querySelector("td > div") || clone.querySelector("td");\n          if (cloneWrapper) {\n            cloneWrapper.innerHTML = segments[index];\n          }\n          lastNode.parentNode.insertBefore(clone, lastNode.nextSibling);\n          lastNode = clone;\n        }\n      });\n      this.formEl.dataset.paddtExpanded = "true";\n    };\n  }\n  function attachPtacSegmentMethods(FormatterClass) {\n    FormatterClass.prototype.expandPtacSegments = function expandPtacSegments() {\n      if (this.formEl.dataset.ptacExpanded === "true") {\n        return;\n      }\n      const ptacTables = Array.from(this.formEl.querySelectorAll(".ptac"));\n      if (ptacTables.length === 0) {\n        this.formEl.dataset.ptacExpanded = "true";\n        return;\n      }\n      ptacTables.forEach((ptacRoot) => {\n        if (!ptacRoot || ptacRoot.dataset.ptacSegment === "true") {\n          return;\n        }\n        const contentWrapper = ptacRoot.querySelector("td > div") || ptacRoot.querySelector("td");\n        if (!contentWrapper) {\n          ptacRoot.classList.add("ptac-rowitem", "ptac_segment");\n          ptacRoot.dataset.ptacSegment = "true";\n          return;\n        }\n        const allChildren = Array.from(contentWrapper.children);\n        if (allChildren.length === 0) {\n          ptacRoot.classList.add("ptac-rowitem", "ptac_segment");\n          ptacRoot.dataset.ptacSegment = "true";\n          return;\n        }\n        const segments = [];\n        allChildren.forEach((child) => {\n          if (child.tagName.toLowerCase() === "p") {\n            const chunks = splitParagraphIntoHtmlChunks(child, PTAC_MAX_WORDS_PER_SEGMENT);\n            chunks.forEach((chunk) => segments.push(chunk));\n          } else {\n            segments.push(child.outerHTML);\n          }\n        });\n        if (segments.length === 0) {\n          ptacRoot.classList.add("ptac-rowitem", "ptac_segment");\n          ptacRoot.dataset.ptacSegment = "true";\n          return;\n        }\n        contentWrapper.innerHTML = segments[0];\n        ptacRoot.classList.add("ptac-rowitem", "ptac_segment");\n        ptacRoot.dataset.ptacSegment = "true";\n        var lastNode = ptacRoot;\n        for (var index = 1; index < segments.length; index += 1) {\n          const clone = ptacRoot.cloneNode(true);\n          clone.classList.remove("tb_page_break_before");\n          clone.dataset.ptacSegment = "true";\n          const cloneWrapper = clone.querySelector("td > div") || clone.querySelector("td");\n          if (cloneWrapper) {\n            cloneWrapper.innerHTML = segments[index];\n          }\n          lastNode.parentNode.insertBefore(clone, lastNode.nextSibling);\n          lastNode = clone;\n        }\n      });\n      this.formEl.dataset.ptacExpanded = "true";\n    };\n  }\n  function attachRenderingMethods(FormatterClass) {\n    FormatterClass.prototype.ensureFirstPageSections = function ensureFirstPageSections(container, sections, heights, logFn, skipRowHeader) {\n      let consumedHeight = 0;\n      if (sections.header) {\n        DomHelpers.appendClone(container, sections.header, logFn, "pheader");\n        if (!this.config.repeatHeader) {\n          consumedHeight += heights.header;\n        }\n      }\n      sections.docInfos.forEach((docInfo) => {\n        const clone = DomHelpers.appendClone(container, docInfo.element, logFn, docInfo.className);\n        this.registerPageNumberClone(clone);\n        if (!this.config[docInfo.repeatFlag]) {\n          consumedHeight += heights.docInfos[docInfo.key] || 0;\n        }\n      });\n      if (sections.rowHeader && !skipRowHeader) {\n        DomHelpers.appendClone(container, sections.rowHeader, logFn, "prowheader");\n        if (!this.config.repeatRowheader) {\n          consumedHeight += heights.rowHeader;\n        }\n      }\n      return consumedHeight;\n    };\n    FormatterClass.prototype.appendRepeatingSections = function appendRepeatingSections(container, sections, logFn, skipRowHeader) {\n      if (this.config.repeatHeader) {\n        DomHelpers.appendClone(container, sections.header, logFn, "pheader");\n      }\n      sections.docInfos.forEach((docInfo) => {\n        if (this.config[docInfo.repeatFlag]) {\n          const clone = DomHelpers.appendClone(container, docInfo.element, logFn, docInfo.className);\n          this.registerPageNumberClone(clone);\n        }\n      });\n      if (this.config.repeatRowheader && !skipRowHeader) {\n        DomHelpers.appendClone(container, sections.rowHeader, logFn, "prowheader");\n      }\n    };\n    FormatterClass.prototype.registerPageNumberClone = function registerPageNumberClone(node) {\n      if (!node) {\n        return false;\n      }\n      let registered = false;\n      if (this.showLogicalPageNumber) {\n        if (node.querySelector("[data-page-number], [data-page-total], [data-page-number-container]")) {\n          updatePageNumberContent(node, this.currentPage, null);\n          this.logicalPageNumberClones.push({ node, pageNumber: this.currentPage });\n          registered = true;\n        }\n      }\n      if (this.showPhysicalPageNumber) {\n        if (node.querySelector("[data-physical-page-number], [data-physical-page-total], [data-physical-page-number-container]")) {\n          const physicalPage = this.logicalPageToPhysicalPage[this.currentPage] || this.currentPhysicalPage || 1;\n          updatePhysicalPageNumberContent(node, physicalPage, null);\n          this.physicalPageNumberClones.push({ node, pageNumber: physicalPage });\n          registered = true;\n        }\n      }\n      return registered;\n    };\n    FormatterClass.prototype.appendRepeatingFooters = function appendRepeatingFooters(container, sections, logFn) {\n      sections.footerVariants.forEach((footer) => {\n        if (this.config[footer.repeatFlag]) {\n          DomHelpers.appendClone(container, footer.element, logFn, footer.className);\n        }\n      });\n      if (this.config.repeatFooterLogo) {\n        DomHelpers.appendClone(container, sections.footerLogo, logFn, FOOTER_LOGO_VARIANT.className);\n      }\n      if (this.config.repeatFooterPagenum) {\n        this.appendFooterPageNumber(container, sections, logFn);\n      }\n    };\n    FormatterClass.prototype.appendFinalFooters = function appendFinalFooters(container, sections, logFn) {\n      sections.footerVariants.forEach((footer) => {\n        DomHelpers.appendClone(container, footer.element, logFn, footer.className);\n      });\n      DomHelpers.appendClone(container, sections.footerLogo, logFn, FOOTER_LOGO_VARIANT.className);\n      this.appendFooterPageNumber(container, sections, logFn);\n    };\n    FormatterClass.prototype.appendFooterPageNumber = function appendFooterPageNumber(container, sections, logFn) {\n      if (!sections.footerPagenum) {\n        return;\n      }\n      const clone = sections.footerPagenum.cloneNode(true);\n      container.appendChild(clone);\n      this.registerPageNumberClone(clone);\n      if (logFn) {\n        logFn(`append ${FOOTER_PAGENUM_VARIANT.className} page ${this.currentPage}`);\n      }\n    };\n    FormatterClass.prototype.updatePageNumberTotals = function updatePageNumberTotals() {\n      if (!this.logicalPageNumberClones.length && !this.physicalPageNumberClones.length) {\n        return;\n      }\n      const totalLogicalPages = this.currentPage;\n      const totalPhysicalPages = this.currentPhysicalPage || 1;\n      this.logicalPageNumberClones.forEach((entry) => {\n        updatePageNumberContent(entry.node, entry.pageNumber, totalLogicalPages);\n      });\n      this.physicalPageNumberClones.forEach((entry) => {\n        updatePhysicalPageNumberContent(entry.node, entry.pageNumber, totalPhysicalPages);\n      });\n    };\n  }\n  function attachPaginationContextMethods(FormatterClass) {\n    FormatterClass.prototype.initializePageContext = function initializePageContext(heightPerPage) {\n      return {\n        baseLimit: heightPerPage,\n        limit: heightPerPage,\n        skipRowHeader: false,\n        isPtacPage: false,\n        isPaddtPage: false,\n        repeatingHeight: 0\n      };\n    };\n    FormatterClass.prototype.refreshPageContextForRow = function refreshPageContextForRow(pageContext, row, heights) {\n      if (!pageContext) {\n        return pageContext;\n      }\n      const skipRowHeader = this.shouldSkipRowHeaderForRow(row);\n      const rowHeaderHeight = heights.rowHeader || 0;\n      pageContext.skipRowHeader = skipRowHeader;\n      pageContext.isPtacPage = this.isPtacRow(row);\n      pageContext.isPaddtPage = this.isPaddtRow(row);\n      pageContext.limit = pageContext.baseLimit + (skipRowHeader ? rowHeaderHeight : 0);\n      return pageContext;\n    };\n    FormatterClass.prototype.computeRepeatingHeightForPage = function computeRepeatingHeightForPage(sections, heights, skipRowHeader) {\n      let total = 0;\n      if (this.config.repeatHeader && sections.header) {\n        total += heights.header || 0;\n      }\n      sections.docInfos.forEach((docInfo) => {\n        if (this.config[docInfo.repeatFlag]) {\n          total += heights.docInfos[docInfo.key] || 0;\n        }\n      });\n      if (this.config.repeatRowheader && sections.rowHeader && !skipRowHeader) {\n        total += heights.rowHeader || 0;\n      }\n      return normalizeHeight(total);\n    };\n    FormatterClass.prototype.measureContentHeight = function measureContentHeight(container, repeatingHeight) {\n      const total = DomHelpers.measureHeightRaw(container);\n      return normalizeHeight(total - (repeatingHeight || 0));\n    };\n  }\n  function attachPaginationDummyMethods(FormatterClass) {\n    FormatterClass.prototype.insertFooterDummyRows = function insertFooterDummyRows(container, pageContext, currentHeight, reservedHeight, footerLabel) {\n      const availableSpace = pageContext.limit - currentHeight - reservedHeight;\n      const dummyHeight = this.config.heightOfDummyRowItem || 27;\n      const numDummies = Math.floor(availableSpace / dummyHeight);\n      if (numDummies > 0 && this.debug) {\n        console.log(`[printform]   >> Inserting ${numDummies} dummy rows before ${footerLabel}`);\n      }\n      const defaultDummyContent = `<table cellpadding="0" cellspacing="0" border="0" style="width:100%;table-layout:fixed;" class="prowitem_dummy"><tr><td style="height:${dummyHeight}px;">&nbsp;</td></tr></table>`;\n      const dummyContent = this.config.customDummyRowItemContent || defaultDummyContent;\n      for (let i = 0; i < numDummies; i++) {\n        if (dummyContent) {\n          const dummyDiv = document.createElement("div");\n          dummyDiv.innerHTML = dummyContent;\n          let dummyNode = dummyDiv.firstElementChild;\n          if (!dummyNode) {\n            dummyDiv.innerHTML = `<div style="height:${dummyHeight}px" class="prowitem_dummy">&nbsp;</div>`;\n            dummyNode = dummyDiv.firstElementChild;\n          }\n          if (dummyNode) {\n            if (!dummyNode.classList.contains("prowitem_dummy")) {\n              dummyNode.classList.add("prowitem_dummy");\n            }\n            container.appendChild(dummyNode);\n          }\n        }\n      }\n      return this.measureContentHeight(container, pageContext.repeatingHeight);\n    };\n  }\n  function attachPaginationRenderMethods(FormatterClass) {\n    FormatterClass.prototype.renderRows = function renderRows(outputContainer, sections, heights, footerState, heightPerPage, footerSpacerTemplate, logFn) {\n      let currentHeight = 0;\n      const pageContext = this.initializePageContext(heightPerPage);\n      if (this.debug) {\n        console.log(`[printform] ===== renderRows START =====`);\n        console.log(`[printform] Total rows: ${sections.rows.length}, heightPerPage: ${heightPerPage}px`);\n      }\n      for (let index = 0; index < sections.rows.length; index++) {\n        const row = sections.rows[index];\n        const nextRow = sections.rows[index + 1];\n        const rowHeight = DomHelpers.measureHeight(row);\n        const baseClass = this.getRowBaseClass(row);\n        const isPtacRow = this.isPtacRow(row);\n        const isPaddtRow = this.isPaddtRow(row);\n        const isSubtotal = this.isSubtotalRow(row);\n        const isFooter = this.isFooterRow(row);\n        const hasFooterCombo = isSubtotal && nextRow && this.isFooterRow(nextRow);\n        const footerRow = hasFooterCombo ? nextRow : null;\n        const footerBaseClass = footerRow ? this.getRowBaseClass(footerRow) : null;\n        const footerHeight = footerRow ? DomHelpers.measureHeight(footerRow) : 0;\n        const comboHeight = rowHeight + footerHeight;\n        if (!rowHeight && (!hasFooterCombo || !footerHeight)) {\n          DomHelpers.markAsProcessed(row, baseClass);\n          if (hasFooterCombo) {\n            DomHelpers.markAsProcessed(footerRow, footerBaseClass);\n            index += 1;\n          }\n          continue;\n        }\n        if (currentHeight === 0) {\n          this.refreshPageContextForRow(pageContext, row, heights);\n          const container2 = this.getCurrentPageContainer(outputContainer);\n          this.ensureFirstPageSections(\n            container2,\n            sections,\n            heights,\n            logFn,\n            pageContext.skipRowHeader\n          );\n          pageContext.repeatingHeight = this.computeRepeatingHeightForPage(sections, heights, pageContext.skipRowHeader);\n          currentHeight = this.measureContentHeight(container2, pageContext.repeatingHeight);\n          if (this.debug) {\n            console.log(`[printform] Page ${this.currentPage} start: firstSectionHeight=${currentHeight}px, pageLimit=${pageContext.limit}px`);\n          }\n        }\n        DomHelpers.markAsProcessed(row, baseClass);\n        if (footerRow) {\n          DomHelpers.markAsProcessed(footerRow, footerBaseClass);\n        }\n        if (hasFooterCombo || isSubtotal || isFooter) {\n          const priorHeight2 = currentHeight;\n          const footerLabel = hasFooterCombo ? "subtotal+footer" : isSubtotal ? "subtotal" : "footer";\n          if (this.debug) {\n            console.log(`[printform]   >> ${footerLabel.toUpperCase()} ROW detected at row[${index}]`);\n          }\n          if (row.classList.contains("tb_page_break_before")) {\n            if (this.debug) {\n              console.log(`[printform]   >> PAGE BREAK (tb_page_break_before) at row[${index}]`);\n            }\n            const skipDummyRowItems3 = this.shouldSkipDummyRowItemsForContext(pageContext);\n            const nextSkipRowHeader2 = this.shouldSkipRowHeaderForRow(row);\n            currentHeight = this.prepareNextPage(\n              outputContainer,\n              sections,\n              logFn,\n              pageContext.limit,\n              currentHeight,\n              footerState,\n              footerSpacerTemplate,\n              nextSkipRowHeader2,\n              skipDummyRowItems3,\n              pageContext.repeatingHeight\n            );\n            this.refreshPageContextForRow(pageContext, row, heights);\n            const container3 = this.getCurrentPageContainer(outputContainer);\n            pageContext.repeatingHeight = this.computeRepeatingHeightForPage(sections, heights, pageContext.skipRowHeader);\n            currentHeight = this.measureContentHeight(container3, pageContext.repeatingHeight);\n          }\n          const container2 = this.getCurrentPageContainer(outputContainer);\n          const testClone = DomHelpers.appendRowItem(container2, row, null, index, baseClass);\n          const testFooterClone = footerRow ? DomHelpers.appendRowItem(container2, footerRow, null, index + 1, footerBaseClass) : null;\n          const testHeight = this.measureContentHeight(container2, pageContext.repeatingHeight);\n          if (testFooterClone && testFooterClone.parentNode === container2) {\n            container2.removeChild(testFooterClone);\n          }\n          if (testClone && testClone.parentNode === container2) {\n            container2.removeChild(testClone);\n          }\n          if (testHeight > pageContext.limit) {\n            if (this.debug) {\n              console.log(`[printform]   >> ${footerLabel.toUpperCase()} would overflow, moving to next page`);\n            }\n            const skipDummyRowItems3 = this.shouldSkipDummyRowItemsForContext(pageContext);\n            const nextSkipRowHeader2 = this.shouldSkipRowHeaderForRow(row);\n            currentHeight = this.prepareNextPage(\n              outputContainer,\n              sections,\n              logFn,\n              pageContext.limit,\n              priorHeight2,\n              footerState,\n              footerSpacerTemplate,\n              nextSkipRowHeader2,\n              skipDummyRowItems3,\n              pageContext.repeatingHeight\n            );\n            this.refreshPageContextForRow(pageContext, row, heights);\n            const nextContainer2 = this.getCurrentPageContainer(outputContainer);\n            pageContext.repeatingHeight = this.computeRepeatingHeightForPage(sections, heights, pageContext.skipRowHeader);\n            currentHeight = this.measureContentHeight(nextContainer2, pageContext.repeatingHeight);\n          }\n          const skipDummyRowItems2 = this.shouldSkipDummyRowItemsForContext(pageContext);\n          if (!skipDummyRowItems2) {\n            const currentContainer = this.getCurrentPageContainer(outputContainer);\n            const reservedHeight = footerRow ? comboHeight : rowHeight;\n            currentHeight = this.insertFooterDummyRows(currentContainer, pageContext, currentHeight, reservedHeight, footerLabel);\n          }\n          const finalContainer = this.getCurrentPageContainer(outputContainer);\n          DomHelpers.appendRowItem(finalContainer, row, null, index, baseClass);\n          if (footerRow) {\n            DomHelpers.appendRowItem(finalContainer, footerRow, null, index + 1, footerBaseClass);\n          }\n          if (logFn) {\n            logFn(`append ${footerLabel} ${index}`);\n          }\n          currentHeight = this.measureContentHeight(finalContainer, pageContext.repeatingHeight);\n          if (this.debug) {\n            console.log(`[printform]   ${footerLabel} row[${index}] added, currentHeight=${currentHeight}px`);\n          }\n          const footerIsPtac = footerRow ? this.isPtacRow(footerRow) : false;\n          const footerIsPaddt = footerRow ? this.isPaddtRow(footerRow) : false;\n          if (!isPtacRow && !footerIsPtac) {\n            pageContext.isPtacPage = false;\n          }\n          if (!isPaddtRow && !footerIsPaddt) {\n            pageContext.isPaddtPage = false;\n          }\n          if (hasFooterCombo) {\n            index += 1;\n          }\n          continue;\n        }\n        if (row.classList.contains("tb_page_break_before")) {\n          if (this.debug) {\n            console.log(`[printform]   >> PAGE BREAK (tb_page_break_before) at row[${index}]`);\n          }\n          const skipDummyRowItems2 = this.shouldSkipDummyRowItemsForContext(pageContext);\n          const nextSkipRowHeader2 = this.shouldSkipRowHeaderForRow(row);\n          currentHeight = this.prepareNextPage(\n            outputContainer,\n            sections,\n            logFn,\n            pageContext.limit,\n            currentHeight,\n            footerState,\n            footerSpacerTemplate,\n            nextSkipRowHeader2,\n            skipDummyRowItems2,\n            pageContext.repeatingHeight\n          );\n          this.refreshPageContextForRow(pageContext, row, heights);\n          const container2 = this.getCurrentPageContainer(outputContainer);\n          pageContext.repeatingHeight = this.computeRepeatingHeightForPage(sections, heights, pageContext.skipRowHeader);\n          currentHeight = this.measureContentHeight(container2, pageContext.repeatingHeight);\n          DomHelpers.appendRowItem(container2, row, null, index, baseClass);\n          if (logFn) {\n            const resolvedLabel = baseClass || "prowitem";\n            logFn(`append ${resolvedLabel} ${index}`);\n          }\n          currentHeight = this.measureContentHeight(container2, pageContext.repeatingHeight);\n          if (this.debug) {\n            console.log(`[printform] Page ${this.currentPage} start: currentHeight=${currentHeight}px, limit=${pageContext.limit}px`);\n          }\n          if (!isPtacRow) {\n            pageContext.isPtacPage = false;\n          }\n          if (!isPaddtRow) {\n            pageContext.isPaddtPage = false;\n          }\n          continue;\n        }\n        const container = this.getCurrentPageContainer(outputContainer);\n        const priorHeight = currentHeight;\n        const clone = DomHelpers.appendRowItem(container, row, null, index, baseClass);\n        const measuredHeight = this.measureContentHeight(container, pageContext.repeatingHeight);\n        if (this.debug) {\n          console.log(`[printform]   row[${index}] height=${rowHeight}px, currentHeight=${measuredHeight}px, limit=${pageContext.limit}px`);\n        }\n        if (measuredHeight <= pageContext.limit) {\n          if (logFn) {\n            const resolvedLabel = baseClass || "prowitem";\n            logFn(`append ${resolvedLabel} ${index}`);\n          }\n          currentHeight = measuredHeight;\n          if (!isPtacRow) {\n            pageContext.isPtacPage = false;\n          }\n          if (!isPaddtRow) {\n            pageContext.isPaddtPage = false;\n          }\n          continue;\n        }\n        if (clone && clone.parentNode === container) {\n          container.removeChild(clone);\n        }\n        if (this.debug) {\n          console.log(`[printform]   >> PAGE BREAK (overflow) at row[${index}]`);\n        }\n        const skipDummyRowItems = this.shouldSkipDummyRowItemsForContext(pageContext);\n        const nextSkipRowHeader = this.shouldSkipRowHeaderForRow(row);\n        currentHeight = this.prepareNextPage(\n          outputContainer,\n          sections,\n          logFn,\n          pageContext.limit,\n          priorHeight,\n          footerState,\n          footerSpacerTemplate,\n          nextSkipRowHeader,\n          skipDummyRowItems,\n          pageContext.repeatingHeight\n        );\n        this.refreshPageContextForRow(pageContext, row, heights);\n        const nextContainer = this.getCurrentPageContainer(outputContainer);\n        pageContext.repeatingHeight = this.computeRepeatingHeightForPage(sections, heights, pageContext.skipRowHeader);\n        currentHeight = this.measureContentHeight(nextContainer, pageContext.repeatingHeight);\n        DomHelpers.appendRowItem(nextContainer, row, null, index, baseClass);\n        if (logFn) {\n          const resolvedLabel = baseClass || "prowitem";\n          logFn(`append ${resolvedLabel} ${index}`);\n        }\n        currentHeight = this.measureContentHeight(nextContainer, pageContext.repeatingHeight);\n        if (this.debug) {\n          console.log(`[printform] Page ${this.currentPage} start: currentHeight=${currentHeight}px, limit=${pageContext.limit}px`);\n        }\n        if (!isPtacRow) {\n          pageContext.isPtacPage = false;\n        }\n        if (!isPaddtRow) {\n          pageContext.isPaddtPage = false;\n        }\n      }\n      if (this.debug) {\n        console.log(`[printform] ===== renderRows END (page ${this.currentPage}, finalHeight=${currentHeight}px) =====`);\n      }\n      return {\n        currentHeight,\n        pageLimit: pageContext.limit,\n        isPtacPage: pageContext.isPtacPage,\n        isPaddtPage: pageContext.isPaddtPage,\n        repeatingHeight: pageContext.repeatingHeight\n      };\n    };\n    FormatterClass.prototype.renderEmptyDocument = function renderEmptyDocument(outputContainer, sections, heights, heightPerPage, logFn) {\n      const container = this.getCurrentPageContainer(outputContainer);\n      const skipRowHeader = false;\n      if (this.debug) {\n        console.log(`[printform] ===== renderEmptyDocument START =====`);\n      }\n      this.ensureFirstPageSections(container, sections, heights, logFn, skipRowHeader);\n      const repeatingHeight = this.computeRepeatingHeightForPage(sections, heights, skipRowHeader);\n      const currentHeight = this.measureContentHeight(container, repeatingHeight);\n      if (this.debug) {\n        console.log(`[printform] Empty document currentHeight=${currentHeight}px, pageLimit=${heightPerPage}px`);\n        console.log(`[printform] ===== renderEmptyDocument END =====`);\n      }\n      return {\n        currentHeight,\n        pageLimit: heightPerPage,\n        isPtacPage: false,\n        isPaddtPage: false,\n        repeatingHeight\n      };\n    };\n  }\n  function attachPaginationSpacingMethods(FormatterClass) {\n    FormatterClass.prototype.prepareNextPage = function prepareNextPage(outputContainer, sections, logFn, pageLimit, currentHeight, footerState, spacerTemplate, skipRowHeader, skipDummyRowItems, repeatingHeight) {\n      const container = this.getCurrentPageContainer(outputContainer);\n      const filledHeight = this.applyRemainderSpacing(\n        container,\n        pageLimit,\n        currentHeight,\n        footerState,\n        spacerTemplate,\n        {\n          skipDummyRowItems,\n          repeatingHeight\n        }\n      );\n      this.appendRepeatingFooters(container, sections, logFn);\n      this.currentPage += 1;\n      this.currentPageContainer = null;\n      this.createNewLogicalPage(outputContainer);\n      const nextContainer = this.getCurrentPageContainer(outputContainer);\n      this.appendRepeatingSections(nextContainer, sections, logFn, skipRowHeader);\n      return filledHeight;\n    };\n    FormatterClass.prototype.applyRemainderSpacing = function applyRemainderSpacing(container, heightPerPage, currentHeight, footerState, spacerTemplate, options) {\n      const skipDummyRowItems = options && options.skipDummyRowItems;\n      const repeatingHeight = options && Number.isFinite(options.repeatingHeight) ? options.repeatingHeight : null;\n      const useCurrentHeight = options && options.useCurrentHeight === true;\n      let workingHeight = normalizeHeight(currentHeight);\n      if (repeatingHeight !== null && !useCurrentHeight) {\n        const measuredTotal = DomHelpers.measureHeightRaw(container);\n        workingHeight = normalizeHeight(measuredTotal - repeatingHeight);\n      }\n      if (this.debug) {\n        console.log(`[printform] ----- applyRemainderSpacing (page ${this.currentPage}) -----`);\n        console.log(`[printform]   heightPerPage: ${heightPerPage}px, currentHeight: ${currentHeight}px`);\n        console.log(`[printform]   skipDummyRowItems: ${skipDummyRowItems}`);\n      }\n      if (!skipDummyRowItems) {\n        workingHeight = applyDummyRowItemsStep(this.config, container, heightPerPage, workingHeight, this.debug);\n      }\n      workingHeight = applyDummyRowStep(this.config, container, heightPerPage, workingHeight, this.debug);\n      const spacerState = applyFooterSpacerWithDummyStep(\n        this.config,\n        container,\n        heightPerPage,\n        workingHeight,\n        skipDummyRowItems,\n        this.debug\n      );\n      workingHeight = spacerState.currentHeight;\n      if (!spacerState.skipFooterSpacer) {\n        applyFooterSpacerStep(\n          this.config,\n          container,\n          heightPerPage,\n          workingHeight,\n          footerState,\n          spacerTemplate,\n          this.debug\n        );\n      }\n      if (this.debug) {\n        console.log(`[printform]   finalHeight after spacing: ${workingHeight}px`);\n        console.log(`[printform] -----------------------------------------`);\n      }\n      return normalizeHeight(workingHeight);\n    };\n  }\n  function attachPaginationFinalizeMethods(FormatterClass) {\n    FormatterClass.prototype.computeHeightPerPage = function computeHeightPerPage(sections, heights) {\n      let available = this.config.papersizeHeight;\n      if (this.debug) {\n        console.log(`[printform] ===== computeHeightPerPage =====`);\n        console.log(`[printform] papersizeHeight (config): ${this.config.papersizeHeight}px`);\n        console.log(`[printform] papersizeWidth (config): ${this.config.papersizeWidth}px`);\n      }\n      if (this.config.repeatHeader && sections.header) {\n        if (this.debug) {\n          console.log(`[printform]   - repeatHeader: ${heights.header}px`);\n        }\n        available -= heights.header;\n      }\n      sections.docInfos.forEach((docInfo) => {\n        if (this.config[docInfo.repeatFlag]) {\n          const h = heights.docInfos[docInfo.key] || 0;\n          if (this.debug) {\n            console.log(`[printform]   - repeat ${docInfo.className}: ${h}px`);\n          }\n          available -= h;\n        }\n      });\n      if (this.config.repeatRowheader && sections.rowHeader) {\n        if (this.debug) {\n          console.log(`[printform]   - repeatRowheader: ${heights.rowHeader}px`);\n        }\n        available -= heights.rowHeader;\n      }\n      sections.footerVariants.forEach((footer) => {\n        if (this.config[footer.repeatFlag]) {\n          const h = heights.footerVariants[footer.key] || 0;\n          if (this.debug) {\n            console.log(`[printform]   - repeat ${footer.className}: ${h}px`);\n          }\n          available -= h;\n        }\n      });\n      if (this.config.repeatFooterLogo && sections.footerLogo) {\n        if (this.debug) {\n          console.log(`[printform]   - repeatFooterLogo: ${heights.footerLogo}px`);\n        }\n        available -= heights.footerLogo;\n      }\n      if (this.config.repeatFooterPagenum && sections.footerPagenum) {\n        const h = heights.footerPagenum || 0;\n        if (this.debug) {\n          console.log(`[printform]   - repeatFooterPagenum: ${h}px`);\n        }\n        available -= h;\n      }\n      if (this.debug) {\n        console.log(`[printform] heightPerPage (available for content): ${Math.max(0, available)}px`);\n        console.log(`[printform] ================================`);\n      }\n      return Math.max(0, available);\n    };\n    FormatterClass.prototype.computeFooterState = function computeFooterState(sections, heights) {\n      const footerLogoHeight = heights.footerLogo || 0;\n      const footerPagenumHeight = heights.footerPagenum || 0;\n      const totalFooterHeight = sections.footerVariants.reduce((sum, footer) => {\n        const height = heights.footerVariants[footer.key] || 0;\n        return sum + height;\n      }, 0);\n      const totalFinal = totalFooterHeight + footerLogoHeight + footerPagenumHeight;\n      const repeatingFooterHeight = sections.footerVariants.reduce((sum, footer) => {\n        const height = heights.footerVariants[footer.key] || 0;\n        return this.config[footer.repeatFlag] ? sum + height : sum;\n      }, 0);\n      let repeating = repeatingFooterHeight;\n      if (this.config.repeatFooterLogo) {\n        repeating += footerLogoHeight;\n      }\n      if (this.config.repeatFooterPagenum) {\n        repeating += footerPagenumHeight;\n      }\n      const nonRepeating = Math.max(0, totalFinal - repeating);\n      return {\n        totalFinal,\n        repeating,\n        nonRepeating\n      };\n    };\n    FormatterClass.prototype.finalizeDocument = function finalizeDocument(outputContainer, sections, heights, footerState, defaultHeightPerPage, renderState, spacerTemplate, logFn) {\n      const baseHeight = renderState ? renderState.currentHeight : 0;\n      const lastPageLimit = renderState && renderState.pageLimit ? renderState.pageLimit : defaultHeightPerPage;\n      const repeatingHeight = renderState && Number.isFinite(renderState.repeatingHeight) ? renderState.repeatingHeight : 0;\n      const skipDummyRowItems = Boolean(\n        renderState && (renderState.isPtacPage && !this.config.insertPtacDummyRowItems || renderState.isPaddtPage && !(this.paddtConfig && this.paddtConfig.insertPaddtDummyRowItems))\n      );\n      const allowance = footerState.totalFinal - footerState.repeating;\n      const heightWithFinalFooters = baseHeight + allowance;\n      if (heightWithFinalFooters <= lastPageLimit) {\n        const container2 = this.getCurrentPageContainer(outputContainer);\n        this.applyRemainderSpacing(\n          container2,\n          lastPageLimit,\n          heightWithFinalFooters,\n          footerState,\n          spacerTemplate,\n          {\n            skipDummyRowItems,\n            repeatingHeight,\n            useCurrentHeight: true\n          }\n        );\n        this.appendFinalFooters(container2, sections, logFn);\n        return;\n      }\n      this.prepareNextPage(\n        outputContainer,\n        sections,\n        logFn,\n        lastPageLimit,\n        baseHeight,\n        footerState,\n        spacerTemplate,\n        false,\n        skipDummyRowItems,\n        repeatingHeight\n      );\n      const finalPageStartHeight = allowance;\n      const container = this.getCurrentPageContainer(outputContainer);\n      const nextRepeatingHeight = this.computeRepeatingHeightForPage(sections, heights, false);\n      this.applyRemainderSpacing(\n        container,\n        defaultHeightPerPage,\n        finalPageStartHeight,\n        footerState,\n        spacerTemplate,\n        {\n          repeatingHeight: nextRepeatingHeight,\n          useCurrentHeight: true\n        }\n      );\n      this.appendFinalFooters(container, sections, logFn);\n    };\n  }\n  function safeSerialize(value) {\n    if (value === null) return "null";\n    if (value === void 0) return "undefined";\n    if (typeof value === "string") return value;\n    if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value);\n    if (value instanceof Error) {\n      const name = value.name || "Error";\n      const message = value.message || "";\n      return message ? `${name}: ${message}` : name;\n    }\n    try {\n      return JSON.stringify(value);\n    } catch {\n      try {\n        return String(value);\n      } catch {\n        return "[unserializable]";\n      }\n    }\n  }\n  function formatArgs(args) {\n    return Array.from(args).map(safeSerialize).join(" ");\n  }\n  function ensureDebugPanelStyle(doc) {\n    if (!doc || !doc.head) return;\n    const existing = doc.getElementById("printform-debug-panel-style");\n    if (existing) return;\n    const style = doc.createElement("style");\n    style.id = "printform-debug-panel-style";\n    style.textContent = `\n    [data-printform-debug-panel="true"]{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;border:1px solid #ddd;background:#fafafa;color:#111;padding:12px;margin:12px 0;max-width:100%;overflow:auto}\n    [data-printform-debug-panel="true"] .printform-debug-title{font-weight:700;margin-bottom:8px}\n    [data-printform-debug-panel="true"] .printform-debug-meta{font-size:12px;opacity:.85;line-height:1.4;margin-bottom:8px;white-space:pre-wrap}\n    [data-printform-debug-panel="true"] .printform-debug-actions{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}\n    [data-printform-debug-panel="true"] button{font:inherit;font-size:12px;padding:6px 10px;border:1px solid #bbb;background:#fff;border-radius:6px}\n    [data-printform-debug-panel="true"] button:active{transform:translateY(1px)}\n    [data-printform-debug-panel="true"] .printform-debug-status{font-size:12px;opacity:.8}\n    [data-printform-debug-panel="true"] pre{margin:0;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.35}\n    @media print{[data-printform-debug-panel="true"]{display:none!important}}\n  `.trim();\n    doc.head.appendChild(style);\n  }\n  async function copyTextToClipboard(view, text) {\n    if (!view) return { ok: false, method: "none" };\n    const nav = view.navigator;\n    if (nav && nav.clipboard && typeof nav.clipboard.writeText === "function") {\n      try {\n        await nav.clipboard.writeText(text);\n        return { ok: true, method: "navigator.clipboard.writeText" };\n      } catch {\n      }\n    }\n    const doc = view.document;\n    if (!doc) return { ok: false, method: "none" };\n    const textarea = doc.createElement("textarea");\n    textarea.value = text;\n    textarea.setAttribute("readonly", "true");\n    textarea.style.position = "fixed";\n    textarea.style.left = "-9999px";\n    textarea.style.top = "0";\n    doc.body.appendChild(textarea);\n    textarea.focus();\n    textarea.select();\n    try {\n      const ok = doc.execCommand && doc.execCommand("copy");\n      return { ok: Boolean(ok), method: "document.execCommand(copy)" };\n    } catch {\n      return { ok: false, method: "document.execCommand(copy)" };\n    } finally {\n      doc.body.removeChild(textarea);\n    }\n  }\n  function formatConfigSummary(config) {\n    if (!config) return "";\n    const pick = (key) => config && Object.prototype.hasOwnProperty.call(config, key) ? config[key] : void 0;\n    const parts = [\n      `papersizeWidth=${pick("papersizeWidth")}`,\n      `papersizeHeight=${pick("papersizeHeight")}`,\n      `paperSize=${pick("paperSize")}`,\n      `orientation=${pick("orientation")}`,\n      `dpi=${pick("dpi")}`,\n      `nUp=${pick("nUp")}`,\n      `repeatHeader=${pick("repeatHeader")}`,\n      `repeatRowheader=${pick("repeatRowheader")}`,\n      `repeatFooterLogo=${pick("repeatFooterLogo")}`,\n      `repeatFooterPagenum=${pick("repeatFooterPagenum")}`\n    ];\n    return parts.join(", ");\n  }\n  function createPrintformDebugSession({ enabled, formEl, config }) {\n    const doc = formEl && formEl.ownerDocument ? formEl.ownerDocument : null;\n    const view = doc && doc.defaultView ? doc.defaultView : null;\n    const startMs = Date.now();\n    const lines = [];\n    let installed = false;\n    let originals = null;\n    let removeErrorHandlers = null;\n    const pushLine = (level, args) => {\n      const delta = Date.now() - startMs;\n      const message = formatArgs(args);\n      lines.push(`+${delta}ms [${level}] ${message}`);\n    };\n    const addEventLine = (level, message) => {\n      const delta = Date.now() - startMs;\n      lines.push(`+${delta}ms [${level}] ${message}`);\n    };\n    const install = () => {\n      if (!enabled || installed || !view || !view.console) return;\n      installed = true;\n      const con = view.console;\n      originals = {\n        log: con.log,\n        info: con.info,\n        warn: con.warn,\n        error: con.error\n      };\n      const wrap = (level) => function wrappedConsoleMethod(...args) {\n        pushLine(level, args);\n        const original = originals && originals[level];\n        if (typeof original === "function") {\n          try {\n            original.apply(con, args);\n          } catch {\n          }\n        }\n      };\n      try {\n        con.log = wrap("log");\n        con.info = wrap("info");\n        con.warn = wrap("warn");\n        con.error = wrap("error");\n      } catch {\n        installed = false;\n        originals = null;\n        return;\n      }\n      const onError = (event) => {\n        const message = event && event.message ? event.message : "window.error";\n        addEventLine("error", message);\n      };\n      const onUnhandledRejection = (event) => {\n        const reason = event && event.reason ? safeSerialize(event.reason) : "unhandledrejection";\n        addEventLine("error", `unhandledrejection: ${reason}`);\n      };\n      if (typeof view.addEventListener === "function" && typeof view.removeEventListener === "function") {\n        view.addEventListener("error", onError);\n        view.addEventListener("unhandledrejection", onUnhandledRejection);\n        removeErrorHandlers = () => {\n          view.removeEventListener("error", onError);\n          view.removeEventListener("unhandledrejection", onUnhandledRejection);\n        };\n      }\n      try {\n        con.log("[printform] ===== DEBUG SESSION START =====");\n        con.log(`[printform] time: ${new Date(startMs).toISOString()}`);\n        if (view.navigator && view.navigator.userAgent) {\n          con.log(`[printform] userAgent: ${view.navigator.userAgent}`);\n        }\n        if (typeof view.devicePixelRatio === "number") {\n          con.log(`[printform] devicePixelRatio: ${view.devicePixelRatio}`);\n        }\n        if (typeof view.innerWidth === "number" && typeof view.innerHeight === "number") {\n          con.log(`[printform] viewport: ${view.innerWidth}x${view.innerHeight}`);\n        }\n        if (view.visualViewport) {\n          con.log(`[printform] visualViewport: ${safeSerialize({ width: view.visualViewport.width, height: view.visualViewport.height, scale: view.visualViewport.scale })}`);\n        }\n        con.log(`[printform] config: ${formatConfigSummary(config)}`);\n      } catch {\n      }\n    };\n    const uninstall = () => {\n      if (!installed || !view || !view.console) return;\n      const con = view.console;\n      if (removeErrorHandlers) {\n        try {\n          removeErrorHandlers();\n        } catch {\n        }\n      }\n      if (originals) {\n        con.log = originals.log;\n        con.info = originals.info;\n        con.warn = originals.warn;\n        con.error = originals.error;\n      }\n    };\n    const markEnd = (details) => {\n      if (!enabled || !installed || !view || !view.console) return;\n      const con = view.console;\n      try {\n        con.log("[printform] ===== DEBUG SESSION END =====");\n        if (details && typeof details === "object") {\n          con.log(`[printform] debugSummary: ${safeSerialize(details)}`);\n        }\n      } catch {\n      }\n    };\n    const getText = () => lines.join("\\n");\n    const appendPanel = (outputContainer, details) => {\n      if (!enabled || !doc || !outputContainer) return;\n      ensureDebugPanelStyle(doc);\n      const panel = doc.createElement("div");\n      panel.setAttribute("data-printform-debug-panel", "true");\n      const title = doc.createElement("div");\n      title.className = "printform-debug-title";\n      title.textContent = "PrintForm Debug (data-debug=y)";\n      panel.appendChild(title);\n      const meta = doc.createElement("div");\n      meta.className = "printform-debug-meta";\n      const pageCount = details && Number.isFinite(details.pageCount) ? details.pageCount : null;\n      const formId = formEl && formEl.id ? `#${formEl.id}` : "";\n      const formClass = formEl && typeof formEl.className === "string" ? `.${formEl.className.split(/\\s+/).filter(Boolean).join(".")}` : "";\n      const formLabel = formId || formClass ? `${formId}${formClass}` : "(no id/class)";\n      meta.textContent = [\n        `form: ${formLabel}`,\n        pageCount !== null ? `pages: ${pageCount}` : null,\n        `config: ${formatConfigSummary(config)}`\n      ].filter(Boolean).join("\\n");\n      panel.appendChild(meta);\n      const actions = doc.createElement("div");\n      actions.className = "printform-debug-actions";\n      const copyButton = doc.createElement("button");\n      copyButton.type = "button";\n      copyButton.textContent = "Copy all logs";\n      actions.appendChild(copyButton);\n      const status = doc.createElement("span");\n      status.className = "printform-debug-status";\n      status.textContent = "";\n      actions.appendChild(status);\n      panel.appendChild(actions);\n      const pre = doc.createElement("pre");\n      pre.textContent = getText();\n      panel.appendChild(pre);\n      copyButton.addEventListener("click", async () => {\n        const text = getText();\n        const result = await copyTextToClipboard(view, text);\n        status.textContent = result.ok ? `copied (${result.method})` : `copy failed (${result.method})`;\n      });\n      outputContainer.appendChild(panel);\n    };\n    return {\n      install,\n      markEnd,\n      uninstall,\n      appendPanel,\n      getText\n    };\n  }\n  class PrintFormFormatter {\n    constructor(formEl, config) {\n      this.formEl = formEl;\n      this.config = config;\n      this.debug = Boolean(config.debug);\n      this.nUp = Math.max(1, Math.floor(Number(config.nUp || 1)));\n      this.showLogicalPageNumber = config.showLogicalPageNumber !== false;\n      this.showPhysicalPageNumber = Boolean(config.showPhysicalPageNumber);\n      this.paddtConfig = getPaddtConfig(formEl, {});\n      this.paddtDebug = Boolean(this.paddtConfig.paddtDebug);\n      this.currentPage = 1;\n      this.currentPhysicalPage = 0;\n      this.pagesInCurrentPhysical = 0;\n      this.currentPhysicalWrapper = null;\n      this.currentPageContainer = null;\n      this.logicalPageNumberClones = [];\n      this.physicalPageNumberClones = [];\n      this.logicalPageToPhysicalPage = [];\n      if (this.debug) {\n        console.log(`[printform] ===== PrintFormFormatter initialized =====`);\n        console.log(`[printform] debug mode: ON`);\n        console.log(`[printform] config.debug raw value: ${config.debug}`);\n      }\n    }\n    log(message) {\n      if (this.debug) {\n        console.log(`[printform] ${message}`);\n      }\n    }\n    format() {\n      const debugSession = createPrintformDebugSession({\n        enabled: this.debug,\n        formEl: this.formEl,\n        config: this.config\n      });\n      debugSession.install();\n      const logFn = this.debug ? this.log.bind(this) : null;\n      try {\n        const container = this.initializeOutputContainer();\n        this.ensureCurrentPageContainer(container);\n        const sections = this.collectSections();\n        const heights = this.measureSections(sections);\n        const footerSpacerTemplate = this.createFooterSpacerTemplate();\n        this.markSectionsProcessed(sections);\n        const footerState = this.computeFooterState(sections, heights);\n        const heightPerPage = this.computeHeightPerPage(sections, heights);\n        const renderState = sections.rows.length ? this.renderRows(\n          container,\n          sections,\n          heights,\n          footerState,\n          heightPerPage,\n          footerSpacerTemplate,\n          logFn\n        ) : this.renderEmptyDocument(\n          container,\n          sections,\n          heights,\n          heightPerPage,\n          logFn\n        );\n        this.finalizeDocument(\n          container,\n          sections,\n          heights,\n          footerState,\n          heightPerPage,\n          renderState,\n          footerSpacerTemplate,\n          logFn\n        );\n        if (this.paddtRows && this.paddtRows.length) {\n          this.currentPage += 1;\n          this.currentPageContainer = null;\n          this.initializePhysicalWrapper(container);\n          this.createNewLogicalPage(container);\n          var paddtDocinfoFlags = {\n            docInfo: this.paddtConfig.repeatPaddtDocinfo,\n            docInfo002: this.paddtConfig.repeatPaddtDocinfo002,\n            docInfo003: this.paddtConfig.repeatPaddtDocinfo003,\n            docInfo004: this.paddtConfig.repeatPaddtDocinfo004,\n            docInfo005: this.paddtConfig.repeatPaddtDocinfo005\n          };\n          var paddtDocInfos = sections.docInfos.filter(function(di) {\n            var flag = paddtDocinfoFlags[di.key];\n            return flag === void 0 ? true : !!flag;\n          });\n          const paddtSections = {\n            header: sections.header,\n            docInfos: paddtDocInfos,\n            rowHeader: sections.rowHeader,\n            // 不包含业务 footer（如 pfooter/pfooter002...），仅保留 logo 与页码\n            footerVariants: [],\n            footerLogo: sections.footerLogo,\n            footerPagenum: sections.footerPagenum,\n            rows: this.paddtRows\n          };\n          const paddtFooterState = this.computeFooterState(paddtSections, heights);\n          const paddtHeightPerPage = this.computeHeightPerPage(paddtSections, heights);\n          const paddtRenderState = this.renderRows(\n            container,\n            paddtSections,\n            heights,\n            paddtFooterState,\n            paddtHeightPerPage,\n            footerSpacerTemplate,\n            logFn\n          );\n          this.finalizeDocument(\n            container,\n            paddtSections,\n            heights,\n            paddtFooterState,\n            paddtHeightPerPage,\n            paddtRenderState,\n            footerSpacerTemplate,\n            logFn\n          );\n        }\n        this.updatePageNumberTotals();\n        const allPages = container.querySelectorAll(".printform_page");\n        if (this.debug) {\n          console.log(`[printform] Finalizing heights for ${allPages.length} pages...`);\n        }\n        allPages.forEach((page, index) => {\n          this.finalizePageHeight(page);\n          if (this.debug) {\n            const heightStyle = page.style.height || "(auto)";\n            console.log(`[printform]   Page ${index + 1}: height style = ${heightStyle}`);\n          }\n        });\n        debugSession.markEnd({ pageCount: allPages.length });\n        debugSession.appendPanel(container, { pageCount: allPages.length });\n        container.classList.remove("printform_formatter");\n        container.classList.add("printform_formatter_processed");\n        this.formEl.remove();\n        return container;\n      } finally {\n        debugSession.uninstall();\n      }\n    }\n  }\n  attachPageMethods(PrintFormFormatter);\n  attachSectionMethods(PrintFormFormatter);\n  attachRowTypeMethods(PrintFormFormatter);\n  attachPaddtSegmentMethods(PrintFormFormatter);\n  attachPtacSegmentMethods(PrintFormFormatter);\n  attachRenderingMethods(PrintFormFormatter);\n  attachPaginationContextMethods(PrintFormFormatter);\n  attachPaginationDummyMethods(PrintFormFormatter);\n  attachPaginationRenderMethods(PrintFormFormatter);\n  attachPaginationSpacingMethods(PrintFormFormatter);\n  attachPaginationFinalizeMethods(PrintFormFormatter);\n  function isMobileDevice() {\n    const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";\n    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);\n  }\n  function getDeviceDelay() {\n    return isMobileDevice() ? 50 : 1;\n  }\n  function withDividerClassAppend(globalScope2, classAppend, fn) {\n    const prior = globalScope2.__printFormDividerClassAppend;\n    globalScope2.__printFormDividerClassAppend = typeof classAppend === "string" ? classAppend : "";\n    try {\n      return fn();\n    } finally {\n      if (prior === void 0) {\n        delete globalScope2.__printFormDividerClassAppend;\n      } else {\n        globalScope2.__printFormDividerClassAppend = prior;\n      }\n    }\n  }\n  function pauseInMilliseconds(time) {\n    return new Promise((resolve, reject) => {\n      if (typeof time === "number" && time > 0) {\n        setTimeout(resolve, time);\n      } else {\n        reject(new Error("Invalid time value"));\n      }\n    });\n  }\n  async function formatAllPrintForms(overrides = {}) {\n    const globalScope2 = typeof window !== "undefined" ? window : globalThis;\n    if (globalScope2.__printFormProcessing) {\n      return;\n    }\n    if (!overrides.force && globalScope2.__printFormProcessed) {\n      return;\n    }\n    globalScope2.__printFormProcessing = true;\n    try {\n      const doc = globalScope2.document;\n      if (!doc) return;\n      const forms = Array.from(doc.querySelectorAll(".printform"));\n      for (let index = 0; index < forms.length; index += 1) {\n        const formEl = forms[index];\n        const perFormOverrides = { ...overrides };\n        if (perFormOverrides.divPageBreakBeforeClassAppend === void 0 && formEl && formEl.dataset) {\n          const datasetValue = formEl.dataset.divPageBreakBeforeClassAppend;\n          if (typeof datasetValue === "string" && datasetValue.trim()) {\n            perFormOverrides.divPageBreakBeforeClassAppend = datasetValue.trim();\n          }\n        }\n        const dividerClassAppend = perFormOverrides.divPageBreakBeforeClassAppend;\n        const config = getPrintformConfig(formEl, perFormOverrides);\n        try {\n          await pauseInMilliseconds(getDeviceDelay());\n        } catch (error) {\n          console.error("pauseInMilliseconds error", error);\n        }\n        try {\n          const formatted = withDividerClassAppend(globalScope2, dividerClassAppend, () => {\n            const formatter = new PrintFormFormatter(formEl, config);\n            return formatter.format();\n          });\n          if (index > 0 && formatted && formatted.parentNode) {\n            formatted.parentNode.insertBefore(DomHelpers.createPageBreakDivider(dividerClassAppend), formatted);\n          }\n        } catch (error) {\n          console.error("printform format error", error);\n        }\n      }\n      globalScope2.__printFormProcessed = true;\n    } finally {\n      globalScope2.__printFormProcessing = false;\n    }\n  }\n  function formatSinglePrintForm(formEl, overrides = {}) {\n    const globalScope2 = typeof window !== "undefined" ? window : globalThis;\n    const perFormOverrides = { ...overrides };\n    if (perFormOverrides.divPageBreakBeforeClassAppend === void 0 && formEl && formEl.dataset) {\n      const datasetValue = formEl.dataset.divPageBreakBeforeClassAppend;\n      if (typeof datasetValue === "string" && datasetValue.trim()) {\n        perFormOverrides.divPageBreakBeforeClassAppend = datasetValue.trim();\n      }\n    }\n    const dividerClassAppend = perFormOverrides.divPageBreakBeforeClassAppend;\n    const config = getPrintformConfig(formEl, perFormOverrides);\n    return withDividerClassAppend(globalScope2, dividerClassAppend, () => {\n      const formatter = new PrintFormFormatter(formEl, config);\n      return formatter.format();\n    });\n  }\n  const api = {\n    formatAll: formatAllPrintForms,\n    format: formatSinglePrintForm,\n    DEFAULT_CONFIG,\n    DEFAULT_PADDT_CONFIG\n  };\n  const globalScope = typeof window !== "undefined" ? window : null;\n  if (globalScope) {\n    if (globalScope.__printFormScriptLoaded__) {\n      globalScope.PrintForm = globalScope.PrintForm || api;\n    } else {\n      globalScope.__printFormScriptLoaded__ = true;\n      globalScope.PrintForm = globalScope.PrintForm || {};\n      Object.assign(globalScope.PrintForm, api);\n      const doc = globalScope.document;\n      if (doc && doc.addEventListener) {\n        let ensureReadyAndFormat = function() {\n          const isMobile = isMobileDevice();\n          const delay = isMobile ? 150 : 50;\n          if (doc.readyState === "complete") {\n            setTimeout(() => {\n              formatAllPrintForms();\n            }, delay);\n          } else {\n            globalScope.addEventListener("load", () => {\n              setTimeout(() => {\n                formatAllPrintForms();\n              }, delay);\n            });\n          }\n        };\n        doc.addEventListener("DOMContentLoaded", ensureReadyAndFormat);\n      }\n    }\n  }\n  return api;\n}();\n';
-const getShellText = (language) => {
-  if (language === "Mandarin") {
-    return {
-      viewer: "分析报告查看器",
-      exportPdf: "导出 PDF",
-      close: "关闭",
-      preparedBy: "由 AI 分析生成",
-      reportId: "报告 ID",
-      readiness: "可交付性",
-      confidence: "置信度",
-      generated: "生成时间",
-      documentMap: "文档导航",
-      contents: "目录",
-      managementSummary: "管理摘要",
-      overallPosition: "总体结论",
-      topBusinessImplication: "主要业务含义",
-      mainCaution: "主要注意事项",
-      deliveryReadiness: "交付就绪度",
-      whyThisRating: "为何是这个评级",
-      support: "支持信号",
-      risks: "风险信号",
-      structuralRiskSignals: "结构性风险信号",
-      boardSnapshot: "管理层快照",
-      kpiSnapshot: "KPI 快照",
-      decisionEvidence: "决策证据",
-      keyFindings: "关键发现",
-      decisionGuardrails: "风险与限制",
-      recommendedActions: "建议动作",
-      whatToDoNext: "下一步",
-      traceability: "可追溯性",
-      whatItShows: "图表说明",
-      whyItMatters: "业务意义",
-      caveat: "注意事项",
-      openQuestions: "未决分歧",
-      appendixHighlights: "附录亮点",
-      evidenceCatalog: "证据目录",
-      excludedEvidence: "已排除证据",
-      warningBannerTitle: "此报告可生成，但必须带风险提示使用。",
-      warningBannerPrefix: "生成原因",
-      excludedCount: "已排除证据数",
-      keyFinding: "关键发现",
-      dataTable: "数据表",
-      chart: "图表",
-      evidenceReferences: "证据引用数",
-      topExcludedItem: "主要排除项",
-      preparationVerification: "准备与校验",
-      workflowStatus: "工作流状态",
-      datasetShape: "数据形态",
-      generationBlockers: "生成阻塞项",
-      primaryVisualSupport: "该数值来自当前选用图表中的主要指标。",
-      supportingDetailAvailable: "更具体的说明已在下方关键发现中呈现。"
-    };
-  }
-  return {
-    viewer: "Analyst Report Viewer",
-    exportPdf: "Export PDF",
-    close: "Close",
-    preparedBy: "Prepared by AI Analysis",
-    reportId: "Report ID",
-    readiness: "Readiness",
-    confidence: "Confidence",
-    generated: "Generated",
-    documentMap: "Document Map",
-    contents: "Contents",
-    managementSummary: "Management Summary",
-    overallPosition: "Overall Position",
-    topBusinessImplication: "Top Business Implication",
-    mainCaution: "Main Caution",
-    deliveryReadiness: "Delivery Readiness",
-    whyThisRating: "Why this rating",
-    support: "Support",
-    risks: "Risks",
-    structuralRiskSignals: "Structural risk signals",
-    boardSnapshot: "Board Snapshot",
-    kpiSnapshot: "KPI Snapshot",
-    decisionEvidence: "Decision Evidence",
-    keyFindings: "Key Findings",
-    decisionGuardrails: "Decision Guardrails",
-    recommendedActions: "Recommended Actions",
-    whatToDoNext: "What To Do Next",
-    traceability: "Traceability",
-    whatItShows: "What it shows",
-    whyItMatters: "Why it matters",
-    caveat: "Caveat",
-    openQuestions: "Open Questions",
-    appendixHighlights: "Appendix Highlights",
-    evidenceCatalog: "Evidence Catalog",
-    excludedEvidence: "Excluded Evidence",
-    warningBannerTitle: "This report is deliverable only with explicit caveats.",
-    warningBannerPrefix: "Generation reason",
-    excludedCount: "Excluded evidence",
-    keyFinding: "Key Finding",
-    dataTable: "Data table",
-    chart: "Chart",
-    evidenceReferences: "Evidence references",
-    topExcludedItem: "Top excluded item",
-    preparationVerification: "Preparation & Verification",
-    workflowStatus: "Workflow status",
-    datasetShape: "Dataset shape",
-    generationBlockers: "Generation blockers",
-    primaryVisualSupport: "Primary value highlighted by the selected visual.",
-    supportingDetailAvailable: "Supporting detail is summarized in the finding cards below."
-  };
-};
-const REASON_CODE_LABELS = {
-  narrative_ineligible: "Not suitable for narrative reporting",
-  helper_exposure: "Contains helper/system columns",
-  low_business_confidence: "Low business meaning confidence",
-  aggregation_quality_warning: "Aggregation quality concern",
-  fallback_plan: "Generated from fallback plan"
-};
-const humanizeReasonCode = (code) => REASON_CODE_LABELS[code] ?? titleCase$1(code.replace(/_/g, " "));
-const titleCase$1 = (value) => value.split(/[_\s]+/).filter(Boolean).map((token) => token.charAt(0).toUpperCase() + token.slice(1)).join(" ");
+const printFormScript = 'var PrintForm = function() {\n  "use strict";\n  const TRUE_TOKENS = /* @__PURE__ */ new Set(["y", "yes", "true", "1"]);\n  const FALSE_TOKENS = /* @__PURE__ */ new Set(["n", "no", "false", "0"]);\n  function parseBooleanFlag(value, fallback) {\n    if (value === void 0 || value === null || value === "") return fallback;\n    if (typeof value === "boolean") return value;\n    if (typeof value === "number") return value !== 0;\n    const lowered = String(value).trim().toLowerCase();\n    if (TRUE_TOKENS.has(lowered)) return true;\n    if (FALSE_TOKENS.has(lowered)) return false;\n    return fallback;\n  }\n  function parseNumber(value, fallback) {\n    if (value === void 0 || value === null || value === "") return fallback;\n    const num = Number(value);\n    return Number.isFinite(num) ? num : fallback;\n  }\n  function parseString(value, fallback) {\n    if (value === void 0 || value === null || value === "") return fallback;\n    return String(value);\n  }\n  function normalizeOrientation(value) {\n    const token = String(value || "").trim().toLowerCase();\n    if (token === "landscape") return "landscape";\n    if (token === "portrait") return "portrait";\n    return "";\n  }\n  function normalizePaperSize(value) {\n    const token = String(value || "").trim();\n    if (!token) return "";\n    const upper = token.toUpperCase();\n    if (upper === "A4" || upper === "A5" || upper === "LETTER" || upper === "LEGAL") {\n      return upper;\n    }\n    if (upper === "US_LETTER" || upper === "USLETTER") return "LETTER";\n    if (upper === "US_LEGAL" || upper === "USLEGAL") return "LEGAL";\n    return "";\n  }\n  function mmToPx(mm, dpi) {\n    const mmValue = Number(mm);\n    const dpiValue = Number(dpi);\n    if (!Number.isFinite(mmValue) || !Number.isFinite(dpiValue) || dpiValue <= 0) return 0;\n    return Math.round(mmValue / 25.4 * dpiValue);\n  }\n  const PAPER_SIZES_MM = {\n    A4: { widthMm: 210, heightMm: 297 },\n    A5: { widthMm: 148, heightMm: 210 },\n    LETTER: { widthMm: 215.9, heightMm: 279.4 },\n    LEGAL: { widthMm: 215.9, heightMm: 355.6 }\n  };\n  function resolvePaperDimensions(options) {\n    const paperSize = normalizePaperSize(options && options.paperSize);\n    if (!paperSize) return null;\n    const preset = PAPER_SIZES_MM[paperSize];\n    if (!preset) return null;\n    const dpi = Number(options && options.dpi);\n    const width = mmToPx(preset.widthMm, dpi);\n    const height = mmToPx(preset.heightMm, dpi);\n    if (!width || !height) return null;\n    const orientation = normalizeOrientation(options && options.orientation) || "portrait";\n    if (orientation === "landscape") {\n      return { width: height, height: width };\n    }\n    return { width, height };\n  }\n  function normalizeHeight(value) {\n    const num = Number(value);\n    if (!Number.isFinite(num)) return 0;\n    const epsilon = 1e-6;\n    return Math.max(0, Math.ceil(num - epsilon));\n  }\n  function ensurePageNumberPlaceholder(element) {\n    if (!element) return null;\n    if (element.__pageNumberPlaceholder) {\n      return element.__pageNumberPlaceholder;\n    }\n    const doc = element.ownerDocument || (typeof document !== "undefined" ? document : null);\n    if (!doc) return null;\n    let container = element.querySelector("[data-page-number-container]");\n    if (!container) {\n      container = element.querySelector("td:last-child") || element.querySelector("td") || element;\n    }\n    const placeholder = doc.createElement("span");\n    placeholder.className = "printform_page_number_placeholder";\n    container.appendChild(placeholder);\n    element.__pageNumberPlaceholder = placeholder;\n    return placeholder;\n  }\n  function ensurePhysicalPageNumberPlaceholder(element) {\n    if (!element) return null;\n    if (element.__physicalPageNumberPlaceholder) {\n      return element.__physicalPageNumberPlaceholder;\n    }\n    const doc = element.ownerDocument || (typeof document !== "undefined" ? document : null);\n    if (!doc) return null;\n    let container = element.querySelector("[data-physical-page-number-container]");\n    if (!container) {\n      container = element.querySelector("td:last-child") || element.querySelector("td") || element;\n    }\n    const placeholder = doc.createElement("span");\n    placeholder.className = "printform_physical_page_number_placeholder";\n    container.appendChild(placeholder);\n    element.__physicalPageNumberPlaceholder = placeholder;\n    return placeholder;\n  }\n  function updatePageNumberContent(element, pageNumber, totalPages) {\n    if (!element) return;\n    const numberTargets = element.querySelectorAll("[data-page-number]");\n    if (numberTargets.length > 0) {\n      numberTargets.forEach(function(target) {\n        target.textContent = pageNumber;\n      });\n    }\n    const totalTargets = element.querySelectorAll("[data-page-total]");\n    const totalValue = totalPages !== void 0 && totalPages !== null ? totalPages : "";\n    if (totalTargets.length > 0) {\n      totalTargets.forEach(function(target) {\n        target.textContent = totalValue;\n      });\n    }\n    if (numberTargets.length === 0 && totalTargets.length === 0) {\n      const fallback = ensurePageNumberPlaceholder(element);\n      if (fallback) {\n        fallback.textContent = totalPages !== void 0 && totalPages !== null ? "Page " + pageNumber + " of " + totalPages : "Page " + pageNumber;\n      }\n    }\n  }\n  function updatePhysicalPageNumberContent(element, pageNumber, totalPages) {\n    if (!element) return;\n    const numberTargets = element.querySelectorAll("[data-physical-page-number]");\n    if (numberTargets.length > 0) {\n      numberTargets.forEach(function(target) {\n        target.textContent = pageNumber;\n      });\n    }\n    const totalTargets = element.querySelectorAll("[data-physical-page-total]");\n    const totalValue = totalPages !== void 0 && totalPages !== null ? totalPages : "";\n    if (totalTargets.length > 0) {\n      totalTargets.forEach(function(target) {\n        target.textContent = totalValue;\n      });\n    }\n    if (numberTargets.length === 0 && totalTargets.length === 0) {\n      const fallback = ensurePhysicalPageNumberPlaceholder(element);\n      if (fallback) {\n        fallback.textContent = totalPages !== void 0 && totalPages !== null ? "Sheet " + pageNumber + " of " + totalPages : "Sheet " + pageNumber;\n      }\n    }\n  }\n  const CONFIG_DESCRIPTORS = [\n    { key: "papersizeWidth", datasetKey: "papersizeWidth", legacyKey: "papersize_width", defaultValue: 750, parser: parseNumber },\n    { key: "papersizeHeight", datasetKey: "papersizeHeight", legacyKey: "papersize_height", defaultValue: 1050, parser: parseNumber },\n    { key: "paperSize", datasetKey: "paperSize", legacyKey: "paper_size", defaultValue: "", parser: parseString },\n    { key: "orientation", datasetKey: "orientation", legacyKey: "orientation", defaultValue: "portrait", parser: parseString },\n    { key: "dpi", datasetKey: "dpi", legacyKey: "dpi", defaultValue: 96, parser: parseNumber },\n    { key: "nUp", datasetKey: "nUp", legacyKey: "n_up", defaultValue: 1, parser: parseNumber },\n    {\n      key: "showLogicalPageNumber",\n      datasetKey: "showLogicalPageNumber",\n      legacyKey: "show_logical_page_number",\n      defaultValue: true,\n      parser: parseBooleanFlag\n    },\n    {\n      key: "showPhysicalPageNumber",\n      datasetKey: "showPhysicalPageNumber",\n      legacyKey: "show_physical_page_number",\n      defaultValue: false,\n      parser: parseBooleanFlag\n    },\n    {\n      key: "heightOfDummyRowItem",\n      datasetKey: "heightOfDummyRowItem",\n      legacyKey: "height_of_dummy_row_item",\n      defaultValue: 18,\n      parser: parseNumber\n    },\n    { key: "repeatHeader", datasetKey: "repeatHeader", legacyKey: "repeat_header", defaultValue: true, parser: parseBooleanFlag },\n    { key: "repeatDocinfo", datasetKey: "repeatDocinfo", legacyKey: "repeat_docinfo", defaultValue: true, parser: parseBooleanFlag },\n    { key: "repeatDocinfo002", datasetKey: "repeatDocinfo002", legacyKey: "repeat_docinfo002", defaultValue: true, parser: parseBooleanFlag },\n    { key: "repeatDocinfo003", datasetKey: "repeatDocinfo003", legacyKey: "repeat_docinfo003", defaultValue: true, parser: parseBooleanFlag },\n    { key: "repeatDocinfo004", datasetKey: "repeatDocinfo004", legacyKey: "repeat_docinfo004", defaultValue: true, parser: parseBooleanFlag },\n    { key: "repeatDocinfo005", datasetKey: "repeatDocinfo005", legacyKey: "repeat_docinfo005", defaultValue: true, parser: parseBooleanFlag },\n    { key: "repeatRowheader", datasetKey: "repeatRowheader", legacyKey: "repeat_rowheader", defaultValue: true, parser: parseBooleanFlag },\n    {\n      key: "repeatPtacRowheader",\n      datasetKey: "repeatPtacRowheader",\n      legacyKey: "repeat_ptac_rowheader",\n      defaultValue: true,\n      parser: parseBooleanFlag\n    },\n    { key: "repeatFooter", datasetKey: "repeatFooter", legacyKey: "repeat_footer", defaultValue: false, parser: parseBooleanFlag },\n    { key: "repeatFooter002", datasetKey: "repeatFooter002", legacyKey: "repeat_footer002", defaultValue: false, parser: parseBooleanFlag },\n    { key: "repeatFooter003", datasetKey: "repeatFooter003", legacyKey: "repeat_footer003", defaultValue: false, parser: parseBooleanFlag },\n    { key: "repeatFooter004", datasetKey: "repeatFooter004", legacyKey: "repeat_footer004", defaultValue: false, parser: parseBooleanFlag },\n    { key: "repeatFooter005", datasetKey: "repeatFooter005", legacyKey: "repeat_footer005", defaultValue: false, parser: parseBooleanFlag },\n    { key: "repeatFooterLogo", datasetKey: "repeatFooterLogo", legacyKey: "repeat_footer_logo", defaultValue: false, parser: parseBooleanFlag },\n    { key: "repeatFooterPagenum", datasetKey: "repeatFooterPagenum", legacyKey: "repeat_footer_pagenum", defaultValue: false, parser: parseBooleanFlag },\n    {\n      key: "fillPageHeightAfterFooter",\n      datasetKey: "fillPageHeightAfterFooter",\n      legacyKey: "fill_page_height_after_footer",\n      defaultValue: true,\n      parser: parseBooleanFlag\n    },\n    {\n      key: "insertDummyRowItemWhileFormatTable",\n      datasetKey: "insertDummyRowItemWhileFormatTable",\n      legacyKey: "insert_dummy_row_item_while_format_table",\n      defaultValue: true,\n      parser: parseBooleanFlag\n    },\n    {\n      key: "insertPtacDummyRowItems",\n      datasetKey: "insertPtacDummyRowItems",\n      legacyKey: "insert_ptac_dummy_row_items",\n      defaultValue: true,\n      parser: parseBooleanFlag\n    },\n    {\n      key: "insertDummyRowWhileFormatTable",\n      datasetKey: "insertDummyRowWhileFormatTable",\n      legacyKey: "insert_dummy_row_while_format_table",\n      defaultValue: false,\n      parser: parseBooleanFlag\n    },\n    {\n      key: "insertFooterSpacerWhileFormatTable",\n      datasetKey: "insertFooterSpacerWhileFormatTable",\n      legacyKey: "insert_footer_spacer_while_format_table",\n      defaultValue: true,\n      parser: parseBooleanFlag\n    },\n    {\n      key: "insertFooterSpacerWithDummyRowItemWhileFormatTable",\n      datasetKey: "insertFooterSpacerWithDummyRowItemWhileFormatTable",\n      legacyKey: "insert_footer_spacer_with_dummy_row_item_while_format_table",\n      defaultValue: true,\n      parser: parseBooleanFlag\n    },\n    {\n      key: "customDummyRowItemContent",\n      datasetKey: "customDummyRowItemContent",\n      legacyKey: "custom_dummy_row_item_content",\n      defaultValue: "",\n      parser: parseString\n    },\n    {\n      key: "customDummySpacerContent",\n      datasetKey: "customDummySpacerContent",\n      legacyKey: "custom_dummy_spacer_content",\n      defaultValue: "",\n      parser: parseString\n    },\n    { key: "debug", datasetKey: "debug", legacyKey: "debug_printform", defaultValue: false, parser: parseBooleanFlag }\n  ];\n  const DOCINFO_VARIANTS = [\n    { key: "docInfo", className: "pdocinfo", repeatFlag: "repeatDocinfo" },\n    { key: "docInfo002", className: "pdocinfo002", repeatFlag: "repeatDocinfo002" },\n    { key: "docInfo003", className: "pdocinfo003", repeatFlag: "repeatDocinfo003" },\n    { key: "docInfo004", className: "pdocinfo004", repeatFlag: "repeatDocinfo004" },\n    { key: "docInfo005", className: "pdocinfo005", repeatFlag: "repeatDocinfo005" }\n  ];\n  const FOOTER_VARIANTS = [\n    { key: "footer", className: "pfooter", repeatFlag: "repeatFooter" },\n    { key: "footer002", className: "pfooter002", repeatFlag: "repeatFooter002" },\n    { key: "footer003", className: "pfooter003", repeatFlag: "repeatFooter003" },\n    { key: "footer004", className: "pfooter004", repeatFlag: "repeatFooter004" },\n    { key: "footer005", className: "pfooter005", repeatFlag: "repeatFooter005" }\n  ];\n  const FOOTER_LOGO_VARIANT = { className: "pfooter_logo" };\n  const FOOTER_PAGENUM_VARIANT = { className: "pfooter_pagenum" };\n  const DEFAULT_CONFIG = CONFIG_DESCRIPTORS.reduce((accumulator, descriptor) => {\n    accumulator[descriptor.key] = descriptor.defaultValue;\n    return accumulator;\n  }, {});\n  function readConfigFromLegacy(descriptors) {\n    const source = typeof window !== "undefined" ? window : typeof globalThis !== "undefined" ? globalThis : {};\n    return descriptors.reduce((config, descriptor) => {\n      if (!descriptor.legacyKey) return config;\n      const value = source[descriptor.legacyKey];\n      if (value === void 0 || value === null || value === "") return config;\n      config[descriptor.key] = descriptor.parser(value, descriptor.defaultValue);\n      return config;\n    }, {});\n  }\n  function readConfigFromDataset(descriptors, dataset) {\n    const source = dataset || {};\n    return descriptors.reduce((config, descriptor) => {\n      if (!descriptor.datasetKey) return config;\n      if (!Object.prototype.hasOwnProperty.call(source, descriptor.datasetKey)) return config;\n      const value = source[descriptor.datasetKey];\n      if (value === void 0 || value === null || value === "") return config;\n      config[descriptor.key] = descriptor.parser(value, descriptor.defaultValue);\n      return config;\n    }, {});\n  }\n  function getLegacyConfig() {\n    return readConfigFromLegacy(CONFIG_DESCRIPTORS);\n  }\n  function getDatasetConfig(dataset) {\n    return readConfigFromDataset(CONFIG_DESCRIPTORS, dataset);\n  }\n  function resolveTemplateOverride(formEl, className, fallback) {\n    const template = formEl.querySelector(`template.${className}`);\n    if (template) {\n      return template.innerHTML.trim();\n    }\n    return fallback;\n  }\n  function getPrintformConfig(formEl, overrides = {}) {\n    const legacy = getLegacyConfig();\n    const datasetConfig = getDatasetConfig(formEl.dataset || {});\n    const merged = {\n      ...DEFAULT_CONFIG,\n      ...legacy,\n      ...datasetConfig,\n      ...overrides\n    };\n    merged.customDummyRowItemContent = resolveTemplateOverride(\n      formEl,\n      "custom-dummy-row-item-content",\n      overrides.customDummyRowItemContent !== void 0 ? overrides.customDummyRowItemContent : merged.customDummyRowItemContent\n    );\n    merged.customDummySpacerContent = resolveTemplateOverride(\n      formEl,\n      "custom-dummy-spacer-content",\n      overrides.customDummySpacerContent !== void 0 ? overrides.customDummySpacerContent : merged.customDummySpacerContent\n    );\n    merged.debug = parseBooleanFlag(merged.debug, DEFAULT_CONFIG.debug);\n    merged.nUp = parseNumber(merged.nUp, DEFAULT_CONFIG.nUp);\n    if (!Number.isFinite(merged.nUp) || merged.nUp < 1) {\n      merged.nUp = DEFAULT_CONFIG.nUp;\n    }\n    merged.nUp = Math.floor(merged.nUp);\n    merged.showLogicalPageNumber = parseBooleanFlag(merged.showLogicalPageNumber, DEFAULT_CONFIG.showLogicalPageNumber);\n    merged.showPhysicalPageNumber = parseBooleanFlag(merged.showPhysicalPageNumber, DEFAULT_CONFIG.showPhysicalPageNumber);\n    merged.papersizeWidth = parseNumber(merged.papersizeWidth, DEFAULT_CONFIG.papersizeWidth);\n    merged.papersizeHeight = parseNumber(merged.papersizeHeight, DEFAULT_CONFIG.papersizeHeight);\n    merged.paperSize = parseString(merged.paperSize, DEFAULT_CONFIG.paperSize);\n    merged.orientation = parseString(merged.orientation, DEFAULT_CONFIG.orientation);\n    merged.dpi = parseNumber(merged.dpi, DEFAULT_CONFIG.dpi);\n    if (!Number.isFinite(merged.dpi) || merged.dpi <= 0) merged.dpi = DEFAULT_CONFIG.dpi;\n    const overrideHas = (key) => Object.prototype.hasOwnProperty.call(overrides, key) && overrides[key] !== "";\n    const manualWidthProvided = Object.prototype.hasOwnProperty.call(legacy, "papersizeWidth") || Object.prototype.hasOwnProperty.call(datasetConfig, "papersizeWidth") || overrideHas("papersizeWidth");\n    const manualHeightProvided = Object.prototype.hasOwnProperty.call(legacy, "papersizeHeight") || Object.prototype.hasOwnProperty.call(datasetConfig, "papersizeHeight") || overrideHas("papersizeHeight");\n    if (!manualWidthProvided && !manualHeightProvided) {\n      const resolved = resolvePaperDimensions({ paperSize: merged.paperSize, orientation: merged.orientation, dpi: merged.dpi });\n      if (resolved) {\n        merged.papersizeWidth = resolved.width;\n        merged.papersizeHeight = resolved.height;\n      }\n    }\n    return merged;\n  }\n  const PADDT_CONFIG_DESCRIPTORS = [\n    { key: "repeatPaddt", datasetKey: "repeatPaddt", legacyKey: "repeat_paddt", defaultValue: true, parser: parseBooleanFlag },\n    { key: "insertPaddtDummyRowItems", datasetKey: "insertPaddtDummyRowItems", legacyKey: "insert_paddt_dummy_row_items", defaultValue: true, parser: parseBooleanFlag },\n    { key: "paddtMaxWordsPerSegment", datasetKey: "paddtMaxWordsPerSegment", legacyKey: "paddt_max_words_per_segment", defaultValue: 200, parser: parseNumber },\n    { key: "repeatPaddtRowheader", datasetKey: "repeatPaddtRowheader", legacyKey: "repeat_paddt_rowheader", defaultValue: true, parser: parseBooleanFlag },\n    { key: "paddtDebug", datasetKey: "paddtDebug", legacyKey: "paddt_debug", defaultValue: false, parser: parseBooleanFlag },\n    // PADDT-specific docinfo toggles (show/hide on PADDT pages only)\n    { key: "repeatPaddtDocinfo", datasetKey: "repeatPaddtDocinfo", legacyKey: "repeat_paddt_docinfo", defaultValue: true, parser: parseBooleanFlag },\n    { key: "repeatPaddtDocinfo002", datasetKey: "repeatPaddtDocinfo002", legacyKey: "repeat_paddt_docinfo002", defaultValue: true, parser: parseBooleanFlag },\n    { key: "repeatPaddtDocinfo003", datasetKey: "repeatPaddtDocinfo003", legacyKey: "repeat_paddt_docinfo003", defaultValue: true, parser: parseBooleanFlag },\n    { key: "repeatPaddtDocinfo004", datasetKey: "repeatPaddtDocinfo004", legacyKey: "repeat_paddt_docinfo004", defaultValue: true, parser: parseBooleanFlag },\n    { key: "repeatPaddtDocinfo005", datasetKey: "repeatPaddtDocinfo005", legacyKey: "repeat_paddt_docinfo005", defaultValue: true, parser: parseBooleanFlag }\n  ];\n  const DEFAULT_PADDT_CONFIG = PADDT_CONFIG_DESCRIPTORS.reduce(function(acc, d) {\n    acc[d.key] = d.defaultValue;\n    return acc;\n  }, {});\n  function getPaddtLegacyConfig() {\n    return readConfigFromLegacy(PADDT_CONFIG_DESCRIPTORS);\n  }\n  function getPaddtDatasetConfig(dataset) {\n    return readConfigFromDataset(PADDT_CONFIG_DESCRIPTORS, dataset);\n  }\n  function getPaddtConfig(formEl, overrides) {\n    overrides = overrides || {};\n    var legacy = getPaddtLegacyConfig();\n    var datasetConfig = getPaddtDatasetConfig(formEl && formEl.dataset || {});\n    var merged = {};\n    for (var k in DEFAULT_PADDT_CONFIG) {\n      if (Object.prototype.hasOwnProperty.call(DEFAULT_PADDT_CONFIG, k)) merged[k] = DEFAULT_PADDT_CONFIG[k];\n    }\n    for (var k1 in legacy) {\n      if (Object.prototype.hasOwnProperty.call(legacy, k1)) merged[k1] = legacy[k1];\n    }\n    for (var k2 in datasetConfig) {\n      if (Object.prototype.hasOwnProperty.call(datasetConfig, k2)) merged[k2] = datasetConfig[k2];\n    }\n    for (var k3 in overrides) {\n      if (Object.prototype.hasOwnProperty.call(overrides, k3)) merged[k3] = overrides[k3];\n    }\n    merged.paddtDebug = parseBooleanFlag(merged.paddtDebug, DEFAULT_PADDT_CONFIG.paddtDebug);\n    merged.paddtMaxWordsPerSegment = parseNumber(merged.paddtMaxWordsPerSegment, DEFAULT_PADDT_CONFIG.paddtMaxWordsPerSegment);\n    if (!Number.isFinite(merged.paddtMaxWordsPerSegment) || merged.paddtMaxWordsPerSegment <= 0) {\n      merged.paddtMaxWordsPerSegment = DEFAULT_PADDT_CONFIG.paddtMaxWordsPerSegment;\n    }\n    return merged;\n  }\n  function applyTableSizingReset(table) {\n    if (!table) return;\n    table.style.borderCollapse = "collapse";\n    table.style.borderSpacing = "0";\n    table.style.margin = "0";\n    table.style.padding = "0";\n    table.style.lineHeight = "0";\n    table.style.fontSize = "0";\n  }\n  function createDummyRowTable(config, height) {\n    const table = document.createElement("table");\n    table.className = "dummy_row";\n    table.setAttribute("width", `${config.papersizeWidth}px`);\n    table.setAttribute("cellspacing", "0");\n    table.setAttribute("cellpadding", "0");\n    applyTableSizingReset(table);\n    table.innerHTML = `<tr style="height:${normalizeHeight(height)}px;"><td style="border:0px solid black;padding:0;margin:0;line-height:0;font-size:0;"></td></tr>`;\n    return table;\n  }\n  function createDummyRowItemTable(config) {\n    const table = document.createElement("table");\n    table.className = "dummy_row_item";\n    table.setAttribute("width", `${config.papersizeWidth}px`);\n    table.setAttribute("cellspacing", "0");\n    table.setAttribute("cellpadding", "0");\n    applyTableSizingReset(table);\n    table.style.borderCollapse = "separate";\n    if (config.customDummyRowItemContent) {\n      table.innerHTML = config.customDummyRowItemContent;\n    } else {\n      table.innerHTML = `<tr style="height:${normalizeHeight(config.heightOfDummyRowItem)}px;"><td style="border:0px solid black;padding:0;margin:0;line-height:0;font-size:0;"></td></tr>`;\n    }\n    return table;\n  }\n  function appendDummyRowItems(config, target, diffHeight) {\n    const itemHeight = normalizeHeight(config.heightOfDummyRowItem);\n    const remaining = normalizeHeight(diffHeight);\n    if (itemHeight <= 0 || remaining <= 0) return;\n    const count = Math.floor(remaining / itemHeight);\n    for (let index = 0; index < count; index += 1) {\n      target.appendChild(createDummyRowItemTable(config));\n    }\n  }\n  function appendDummyRow(config, target, diffHeight) {\n    const remaining = normalizeHeight(diffHeight);\n    if (remaining <= 0) return;\n    target.appendChild(createDummyRowTable(config, remaining));\n  }\n  function applyDummyRowItemsStep(config, container, heightPerPage, currentHeight, debug) {\n    if (!config.insertDummyRowItemWhileFormatTable) {\n      if (debug) {\n        console.log(`[printform] applyDummyRowItemsStep: SKIPPED (insertDummyRowItemWhileFormatTable=false)`);\n      }\n      return normalizeHeight(currentHeight);\n    }\n    const remaining = normalizeHeight(heightPerPage - currentHeight);\n    if (debug) {\n      console.log(`[printform] applyDummyRowItemsStep:`);\n      console.log(`[printform]   heightPerPage: ${heightPerPage}px, currentHeight: ${currentHeight}px`);\n      console.log(`[printform]   remaining: ${remaining}px, itemHeight: ${config.heightOfDummyRowItem}px`);\n    }\n    if (remaining > 0) {\n      appendDummyRowItems(config, container, remaining);\n      const itemHeight = normalizeHeight(config.heightOfDummyRowItem);\n      if (itemHeight > 0) {\n        const count = Math.floor(remaining / itemHeight);\n        const remainder = normalizeHeight(remaining % itemHeight);\n        const newHeight = normalizeHeight(heightPerPage - remainder);\n        if (debug) {\n          console.log(`[printform]   inserted ${count} dummy_row_items (${count} x ${itemHeight}px = ${count * itemHeight}px)`);\n          console.log(`[printform]   remainder: ${remainder}px, newHeight: ${newHeight}px`);\n        }\n        return newHeight;\n      }\n    }\n    return normalizeHeight(currentHeight);\n  }\n  function applyDummyRowStep(config, container, heightPerPage, currentHeight, debug) {\n    if (!config.insertDummyRowWhileFormatTable) {\n      if (debug) {\n        console.log(`[printform] applyDummyRowStep: SKIPPED (insertDummyRowWhileFormatTable=false)`);\n      }\n      return normalizeHeight(currentHeight);\n    }\n    const remaining = normalizeHeight(heightPerPage - currentHeight);\n    if (debug) {\n      console.log(`[printform] applyDummyRowStep:`);\n      console.log(`[printform]   heightPerPage: ${heightPerPage}px, currentHeight: ${currentHeight}px`);\n      console.log(`[printform]   remaining: ${remaining}px`);\n    }\n    if (remaining > 0) {\n      appendDummyRow(config, container, remaining);\n      if (debug) {\n        console.log(`[printform]   inserted 1 dummy_row with height: ${remaining}px`);\n      }\n      return normalizeHeight(currentHeight + remaining);\n    }\n    return normalizeHeight(currentHeight);\n  }\n  function applyFooterSpacerWithDummyStep(config, container, heightPerPage, currentHeight, skipDummyRowItems, debug) {\n    if (!config.insertFooterSpacerWithDummyRowItemWhileFormatTable || skipDummyRowItems) {\n      if (debug) {\n        console.log(`[printform] applyFooterSpacerWithDummyStep: SKIPPED (flag=${config.insertFooterSpacerWithDummyRowItemWhileFormatTable}, skipDummy=${skipDummyRowItems})`);\n      }\n      return {\n        currentHeight: normalizeHeight(currentHeight),\n        skipFooterSpacer: false\n      };\n    }\n    const remaining = normalizeHeight(heightPerPage - currentHeight);\n    let workingHeight = normalizeHeight(currentHeight);\n    if (debug) {\n      console.log(`[printform] applyFooterSpacerWithDummyStep:`);\n      console.log(`[printform]   heightPerPage: ${heightPerPage}px, currentHeight: ${currentHeight}px`);\n      console.log(`[printform]   remaining: ${remaining}px`);\n    }\n    if (remaining > 0) {\n      appendDummyRowItems(config, container, remaining);\n      const itemHeight = normalizeHeight(config.heightOfDummyRowItem);\n      if (itemHeight > 0) {\n        const count = Math.floor(remaining / itemHeight);\n        const remainder = normalizeHeight(remaining % itemHeight);\n        workingHeight = normalizeHeight(heightPerPage - remainder);\n        if (debug) {\n          console.log(`[printform]   inserted ${count} spacer dummy_row_items, remainder: ${remainder}px`);\n        }\n      }\n    }\n    return {\n      currentHeight: workingHeight,\n      skipFooterSpacer: true\n    };\n  }\n  function applyFooterSpacerStep(config, container, heightPerPage, currentHeight, footerState, spacerTemplate, debug) {\n    if (!config.insertFooterSpacerWhileFormatTable) {\n      if (debug) {\n        console.log(`[printform] applyFooterSpacerStep: SKIPPED (insertFooterSpacerWhileFormatTable=false)`);\n      }\n      return;\n    }\n    const clone = spacerTemplate.cloneNode(true);\n    let remaining = normalizeHeight(heightPerPage - currentHeight);\n    const nonRepeating = footerState && footerState.nonRepeating ? normalizeHeight(footerState.nonRepeating) : 0;\n    if (nonRepeating > 0) {\n      remaining -= nonRepeating;\n    }\n    const spacerHeight = Math.max(0, remaining);\n    clone.style.height = `${spacerHeight}px`;\n    container.appendChild(clone);\n    if (debug) {\n      console.log(`[printform] applyFooterSpacerStep:`);\n      console.log(`[printform]   heightPerPage: ${heightPerPage}px, currentHeight: ${currentHeight}px`);\n      console.log(`[printform]   nonRepeatingFooter: ${nonRepeating}px`);\n      console.log(`[printform]   pfooter_spacer height: ${spacerHeight}px`);\n    }\n  }\n  function markAsProcessed(element, baseClass) {\n    if (!element || !baseClass) return;\n    if (element.classList.contains(`${baseClass}_processed`)) return;\n    element.classList.remove(baseClass);\n    element.classList.add(`${baseClass}_processed`);\n  }\n  function measureHeight(element) {\n    if (!element) return 0;\n    element.offsetHeight;\n    const rect = element.getBoundingClientRect ? element.getBoundingClientRect() : null;\n    const rectHeight = rect && Number.isFinite(rect.height) ? rect.height : 0;\n    let baseHeight = rectHeight > 0 ? rectHeight : element.offsetHeight;\n    if (baseHeight === 0) {\n      const originalDisplay = element.style.display;\n      const originalVisibility = element.style.visibility;\n      const originalPosition = element.style.position;\n      element.style.display = "block";\n      element.style.visibility = "hidden";\n      element.style.position = "absolute";\n      const tempRect = element.getBoundingClientRect ? element.getBoundingClientRect() : null;\n      const tempRectHeight = tempRect && Number.isFinite(tempRect.height) ? tempRect.height : 0;\n      baseHeight = tempRectHeight > 0 ? tempRectHeight : element.offsetHeight || 0;\n      element.style.display = originalDisplay;\n      element.style.visibility = originalVisibility;\n      element.style.position = originalPosition;\n    }\n    const view = element.ownerDocument && element.ownerDocument.defaultView || (typeof window !== "undefined" ? window : null);\n    if (!view || !view.getComputedStyle) {\n      return normalizeHeight(baseHeight);\n    }\n    const style = view.getComputedStyle(element);\n    const marginTop = Number.parseFloat(style.marginTop) || 0;\n    const marginBottom = Number.parseFloat(style.marginBottom) || 0;\n    return normalizeHeight(baseHeight + marginTop + marginBottom);\n  }\n  function measureHeightRaw(element) {\n    if (!element) return 0;\n    const rect = element.getBoundingClientRect ? element.getBoundingClientRect() : null;\n    const baseHeight = rect && Number.isFinite(rect.height) ? rect.height : element.offsetHeight || 0;\n    const view = element.ownerDocument && element.ownerDocument.defaultView || (typeof window !== "undefined" ? window : null);\n    if (!view || !view.getComputedStyle) {\n      return Number.isFinite(baseHeight) ? Math.max(0, baseHeight) : 0;\n    }\n    const style = view.getComputedStyle(element);\n    const marginTop = Number.parseFloat(style.marginTop) || 0;\n    const marginBottom = Number.parseFloat(style.marginBottom) || 0;\n    const total = baseHeight + marginTop + marginBottom;\n    return Number.isFinite(total) ? Math.max(0, total) : 0;\n  }\n  function createPageBreakDivider(extraClassNames) {\n    const div = document.createElement("div");\n    div.classList.add("div_page_break_before");\n    div.setAttribute("style", "page-break-before: always; font-size: 0pt; height: 0px;");\n    const globalScope2 = typeof window !== "undefined" ? window : globalThis;\n    const resolvedClassNames = typeof extraClassNames === "string" && extraClassNames.trim() ? extraClassNames : globalScope2 && typeof globalScope2.__printFormDividerClassAppend === "string" ? globalScope2.__printFormDividerClassAppend : "";\n    if (resolvedClassNames) {\n      resolvedClassNames.split(/\\s+/).filter(Boolean).forEach((className) => div.classList.add(className));\n    }\n    return div;\n  }\n  function appendClone(target, element, logFn, label) {\n    if (!element) return null;\n    const clone = element.cloneNode(true);\n    target.appendChild(clone);\n    if (logFn) logFn(`append ${label}`);\n    return clone;\n  }\n  function appendRowItem(target, element, logFn, index, label) {\n    if (!element) return null;\n    const clone = element.cloneNode(true);\n    target.appendChild(clone);\n    if (logFn) {\n      const resolvedLabel = label || "prowitem";\n      logFn(`append ${resolvedLabel} ${index}`);\n    }\n    return clone;\n  }\n  const DomHelpers = {\n    markAsProcessed,\n    measureHeight,\n    measureHeightRaw,\n    createPageBreakDivider,\n    appendClone,\n    appendRowItem,\n    createDummyRowTable\n  };\n  function buildDummySpacer(config, remaining, debug) {\n    if (config.customDummySpacerContent) {\n      const template = document.createElement("template");\n      template.innerHTML = config.customDummySpacerContent.trim();\n      const elements = Array.from(template.content.childNodes).filter((node) => node.nodeType === Node.ELEMENT_NODE);\n      if (elements.length === 1) {\n        const spacer2 = elements[0];\n        spacer2.classList.add("dummy_spacer");\n        spacer2.setAttribute("aria-hidden", "true");\n        if (spacer2.tagName !== "TABLE") {\n          spacer2.style.display = "block";\n        }\n        spacer2.style.width = "100%";\n        spacer2.style.height = `${remaining}px`;\n        spacer2.style.margin = "0";\n        spacer2.style.padding = "0";\n        return spacer2;\n      }\n      if (debug) {\n        console.log("[printform] customDummySpacerContent ignored: template must have exactly 1 root element.");\n      }\n    }\n    const spacer = document.createElement("div");\n    spacer.classList.add("dummy_spacer");\n    spacer.setAttribute("aria-hidden", "true");\n    if (spacer.tagName !== "TABLE") {\n      spacer.style.display = "block";\n    }\n    spacer.style.width = "100%";\n    spacer.style.height = `${remaining}px`;\n    spacer.style.margin = "0";\n    spacer.style.padding = "0";\n    return spacer;\n  }\n  function attachPageMethods(FormatterClass) {\n    FormatterClass.prototype.initializeOutputContainer = function initializeOutputContainer() {\n      const container = document.createElement("div");\n      container.classList.add("printform_formatter");\n      container.style.webkitTextSizeAdjust = "100%";\n      container.style.textSizeAdjust = "100%";\n      this.formEl.parentNode.insertBefore(container, this.formEl);\n      return container;\n    };\n    FormatterClass.prototype.initializePhysicalWrapper = function initializePhysicalWrapper(outputContainer) {\n      if (this.currentPhysicalWrapper) {\n        outputContainer.appendChild(DomHelpers.createPageBreakDivider());\n        this.currentPhysicalPage += 1;\n      } else {\n        this.currentPhysicalPage = 1;\n      }\n      const wrapper = document.createElement("div");\n      wrapper.classList.add("physical_page_wrapper");\n      wrapper.style.display = "flex";\n      wrapper.style.flexDirection = "column";\n      wrapper.style.alignItems = "flex-start";\n      wrapper.style.width = `${this.config.papersizeWidth}px`;\n      outputContainer.appendChild(wrapper);\n      this.currentPhysicalWrapper = wrapper;\n      this.pagesInCurrentPhysical = 0;\n      return wrapper;\n    };\n    FormatterClass.prototype.ensureCurrentPageContainer = function ensureCurrentPageContainer(outputContainer) {\n      if (!this.currentPhysicalWrapper) {\n        this.initializePhysicalWrapper(outputContainer);\n      }\n      if (!this.currentPageContainer) {\n        this.createNewLogicalPage(outputContainer);\n      }\n      return this.currentPageContainer;\n    };\n    FormatterClass.prototype.createNewLogicalPage = function createNewLogicalPage(outputContainer) {\n      if (!this.currentPhysicalWrapper || this.pagesInCurrentPhysical >= this.nUp) {\n        this.initializePhysicalWrapper(outputContainer);\n      }\n      const page = document.createElement("div");\n      page.classList.add("printform_page");\n      page.style.width = `${this.config.papersizeWidth}px`;\n      this.currentPhysicalWrapper.appendChild(page);\n      this.currentPageContainer = page;\n      this.pagesInCurrentPhysical += 1;\n      this.logicalPageToPhysicalPage[this.currentPage] = this.currentPhysicalPage;\n      return page;\n    };\n    FormatterClass.prototype.getCurrentPageContainer = function getCurrentPageContainer(outputContainer) {\n      return this.ensureCurrentPageContainer(outputContainer);\n    };\n    FormatterClass.prototype.finalizePageHeight = function finalizePageHeight(pageContainer) {\n      if (!pageContainer) return;\n      const configuredHeight = this.config.papersizeHeight;\n      const fillPageHeightAfterFooter = this.config.fillPageHeightAfterFooter !== false;\n      let appendedSpacerHeight = 0;\n      const formatPx = (value) => {\n        if (!Number.isFinite(value)) return "0";\n        return String(Math.round(value * 100) / 100);\n      };\n      if (fillPageHeightAfterFooter) {\n        const currentHeight = DomHelpers.measureHeightRaw(pageContainer);\n        const remaining = Math.max(0, configuredHeight - currentHeight);\n        if (remaining > 0.01) {\n          const spacer = buildDummySpacer(this.config, remaining, this.debug);\n          const footerSelectors = FOOTER_VARIANTS.map((variant) => `.${variant.className}_processed`).concat([\n            `.${FOOTER_LOGO_VARIANT.className}_processed`,\n            `.${FOOTER_PAGENUM_VARIANT.className}_processed`\n          ]);\n          const firstFooter = pageContainer.querySelector(footerSelectors.join(", "));\n          if (firstFooter && firstFooter.parentNode === pageContainer) {\n            pageContainer.insertBefore(spacer, firstFooter);\n          } else {\n            pageContainer.appendChild(spacer);\n          }\n          appendedSpacerHeight = remaining;\n        }\n      }\n      if (this.debug) {\n        console.log(`\n[printform] ========== PAGE HEIGHT CALCULATION ==========`);\n        console.log(`[printform] Configured page height: ${configuredHeight}px`);\n        console.log(`[printform] -------------------------------------------`);\n        const children = Array.from(pageContainer.children);\n        let cumulativeHeight = 0;\n        console.log(`[printform] Elements breakdown (${children.length} elements):`);\n        children.forEach((child, index) => {\n          const childHeight = DomHelpers.measureHeightRaw(child);\n          cumulativeHeight += childHeight;\n          const className = child.className || "(no class)";\n          const tagName = child.tagName.toLowerCase();\n          console.log(`[printform]   ${index + 1}. <${tagName}.${className}>`);\n          console.log(`[printform]      Height: ${formatPx(childHeight)}px`);\n          console.log(`[printform]      Cumulative: ${formatPx(cumulativeHeight)}px`);\n          console.log(`[printform]      Remaining: ${formatPx(Math.max(0, configuredHeight - cumulativeHeight))}px`);\n          if (childHeight > configuredHeight * 0.5) {\n            console.log(`[printform]      ⚠️  WARNING: Element height is > 50% of page height`);\n          }\n        });\n        console.log(`[printform] -------------------------------------------`);\n        console.log(`[printform] Total content height: ${formatPx(cumulativeHeight)}px`);\n        if (cumulativeHeight < configuredHeight) {\n          const shortfall = configuredHeight - cumulativeHeight;\n          console.log(`[printform] ✓ Content fits (${formatPx(shortfall)}px under limit)`);\n        } else if (cumulativeHeight > configuredHeight) {\n          const overflow = cumulativeHeight - configuredHeight;\n          console.log(`[printform] ⚠️  Content overflow (${formatPx(overflow)}px over limit)`);\n        } else {\n          console.log(`[printform] ✓ Perfect fit (exactly matches configured height)`);\n        }\n        if (appendedSpacerHeight > 0) {\n          console.log(`[printform] ✓ Final spacer appended: ${formatPx(appendedSpacerHeight)}px`);\n        }\n      }\n      if (this.debug) {\n        const actualHeight = DomHelpers.measureHeightRaw(pageContainer);\n        console.log(`[printform] -------------------------------------------`);\n        console.log(`[printform] Actual measured height: ${formatPx(actualHeight)}px`);\n        console.log(`[printform] ℹ️  Height NOT set - using natural content height`);\n        console.log(`[printform] ===============================================\n`);\n      }\n    };\n  }\n  const ROW_SELECTOR = ".prowitem, .ptac-rowitem, .paddt-rowitem";\n  const PTAC_MAX_WORDS_PER_SEGMENT = 200;\n  const PADDT_MAX_WORDS_PER_SEGMENT = 200;\n  function collectWordTokens(node) {\n    var tokens = [];\n    if (!node || !node.ownerDocument || !node.ownerDocument.createTreeWalker) {\n      return tokens;\n    }\n    var walker = node.ownerDocument.createTreeWalker(node, 4, null, false);\n    var current = walker.nextNode();\n    while (current) {\n      var text = current.nodeValue || "";\n      var regex = /\\S+/g;\n      var match = regex.exec(text);\n      while (match) {\n        tokens.push({\n          node: current,\n          start: match.index,\n          end: match.index + match[0].length\n        });\n        match = regex.exec(text);\n      }\n      current = walker.nextNode();\n    }\n    return tokens;\n  }\n  function buildChunkHtml(node, range) {\n    var clone = node.cloneNode(false);\n    clone.appendChild(range.cloneContents());\n    return clone.outerHTML || "";\n  }\n  function splitParagraphIntoHtmlChunks(node, maxWords) {\n    if (!node) {\n      return [];\n    }\n    if (!maxWords || maxWords <= 0) {\n      return [node.outerHTML || ""];\n    }\n    var text = (node.textContent || "").trim();\n    if (!text) {\n      return [node.outerHTML || ""];\n    }\n    if (!node.ownerDocument || !node.ownerDocument.createRange || !node.ownerDocument.createTreeWalker) {\n      return [node.outerHTML || ""];\n    }\n    var tokens = collectWordTokens(node);\n    if (tokens.length === 0) {\n      return [node.outerHTML || ""];\n    }\n    if (tokens.length <= maxWords) {\n      return [node.outerHTML || ""];\n    }\n    var chunks = [];\n    for (var startIndex = 0; startIndex < tokens.length; startIndex += maxWords) {\n      var endIndex = startIndex + maxWords - 1;\n      if (endIndex >= tokens.length) {\n        endIndex = tokens.length - 1;\n      }\n      var range = node.ownerDocument.createRange();\n      if (startIndex === 0) {\n        range.setStart(node, 0);\n      } else {\n        var startToken = tokens[startIndex];\n        range.setStart(startToken.node, startToken.start);\n      }\n      if (endIndex + 1 < tokens.length) {\n        var nextToken = tokens[endIndex + 1];\n        range.setEnd(nextToken.node, nextToken.start);\n      } else {\n        range.setEnd(node, node.childNodes.length);\n      }\n      chunks.push(buildChunkHtml(node, range));\n    }\n    return chunks;\n  }\n  function splitPaddtParagraphIntoHtmlChunks(node, maxWords) {\n    return splitParagraphIntoHtmlChunks(node, maxWords);\n  }\n  function attachSectionMethods(FormatterClass) {\n    FormatterClass.prototype.collectSections = function collectSections() {\n      this.expandPaddtSegments();\n      this.expandPtacSegments();\n      const docInfos = DOCINFO_VARIANTS.map((variant) => {\n        const element = this.formEl.querySelector(`.${variant.className}`);\n        if (!element) return null;\n        return {\n          key: variant.key,\n          className: variant.className,\n          repeatFlag: variant.repeatFlag,\n          element\n        };\n      }).filter(Boolean);\n      const footerVariants = FOOTER_VARIANTS.map((variant) => {\n        const element = this.formEl.querySelector(`.${variant.className}`);\n        if (!element) return null;\n        return {\n          key: variant.key,\n          className: variant.className,\n          repeatFlag: variant.repeatFlag,\n          element\n        };\n      }).filter(Boolean);\n      const allRows = Array.from(this.formEl.querySelectorAll(ROW_SELECTOR));\n      const paddtRows = allRows.filter((row) => this.isPaddtRow(row));\n      const mainRows = allRows.filter((row) => !this.isPaddtRow(row));\n      this.paddtRows = paddtRows;\n      return {\n        header: this.formEl.querySelector(".pheader"),\n        docInfos,\n        rowHeader: this.formEl.querySelector(".prowheader"),\n        footerVariants,\n        footerLogo: this.formEl.querySelector(`.${FOOTER_LOGO_VARIANT.className}`),\n        footerPagenum: this.formEl.querySelector(`.${FOOTER_PAGENUM_VARIANT.className}`),\n        rows: mainRows\n      };\n    };\n    FormatterClass.prototype.measureSections = function measureSections(sections) {\n      const heights = {\n        header: DomHelpers.measureHeight(sections.header),\n        docInfos: {},\n        rowHeader: DomHelpers.measureHeight(sections.rowHeader),\n        footerVariants: {},\n        footerLogo: DomHelpers.measureHeight(sections.footerLogo),\n        footerPagenum: DomHelpers.measureHeight(sections.footerPagenum)\n      };\n      sections.docInfos.forEach((docInfo) => {\n        heights.docInfos[docInfo.key] = DomHelpers.measureHeight(docInfo.element);\n      });\n      sections.footerVariants.forEach((footer) => {\n        heights.footerVariants[footer.key] = DomHelpers.measureHeight(footer.element);\n      });\n      return heights;\n    };\n    FormatterClass.prototype.markSectionsProcessed = function markSectionsProcessed(sections) {\n      DomHelpers.markAsProcessed(sections.header, "pheader");\n      sections.docInfos.forEach((docInfo) => {\n        DomHelpers.markAsProcessed(docInfo.element, docInfo.className);\n      });\n      DomHelpers.markAsProcessed(sections.rowHeader, "prowheader");\n      sections.footerVariants.forEach((footer) => {\n        DomHelpers.markAsProcessed(footer.element, footer.className);\n      });\n      DomHelpers.markAsProcessed(sections.footerLogo, FOOTER_LOGO_VARIANT.className);\n      DomHelpers.markAsProcessed(sections.footerPagenum, FOOTER_PAGENUM_VARIANT.className);\n    };\n    FormatterClass.prototype.createFooterSpacerTemplate = function createFooterSpacerTemplate() {\n      const spacer = document.createElement("div");\n      spacer.classList.add("pfooter_spacer", "paper_width");\n      spacer.style.height = "0px";\n      return spacer;\n    };\n  }\n  function attachRowTypeMethods(FormatterClass) {\n    FormatterClass.prototype.isPaddtRow = function isPaddtRow(row) {\n      if (!row) {\n        return false;\n      }\n      return row.classList.contains("paddt_segment") || row.classList.contains("paddt") || row.classList.contains("paddt-rowitem") || row.classList.contains("paddt-rowitem_processed");\n    };\n    FormatterClass.prototype.isPtacRow = function isPtacRow(row) {\n      if (!row) {\n        return false;\n      }\n      return row.classList.contains("ptac_segment") || row.classList.contains("ptac") || row.classList.contains("ptac-rowitem") || row.classList.contains("ptac-rowitem_processed");\n    };\n    FormatterClass.prototype.isSubtotalRow = function isSubtotalRow(row) {\n      if (!row) {\n        return false;\n      }\n      return row.classList.contains("prowitem_subtotal");\n    };\n    FormatterClass.prototype.isFooterRow = function isFooterRow(row) {\n      if (!row) {\n        return false;\n      }\n      return row.classList.contains("prowitem_footer");\n    };\n    FormatterClass.prototype.getRowBaseClass = function getRowBaseClass(row) {\n      if (!row) {\n        return "prowitem";\n      }\n      if (this.isPaddtRow(row)) return "paddt-rowitem";\n      return this.isPtacRow(row) ? "ptac-rowitem" : "prowitem";\n    };\n    FormatterClass.prototype.shouldSkipRowHeaderForRow = function shouldSkipRowHeaderForRow(row) {\n      if (!row) {\n        return false;\n      }\n      if (!this.config.repeatRowheader) {\n        return false;\n      }\n      if (row.classList.contains("without_prowheader") || row.classList.contains("tb_without_rowheader")) {\n        return true;\n      }\n      if (this.isPtacRow(row)) {\n        if (this.config.repeatPtacRowheader) return false;\n        return true;\n      }\n      if (this.isPaddtRow(row)) {\n        if (this.paddtConfig && this.paddtConfig.repeatPaddtRowheader) return false;\n        return true;\n      }\n      return false;\n    };\n    FormatterClass.prototype.shouldSkipDummyRowItemsForContext = function shouldSkipDummyRowItemsForContext(pageContext) {\n      return Boolean(\n        pageContext && (pageContext.isPtacPage && !this.config.insertPtacDummyRowItems || pageContext.isPaddtPage && !(this.paddtConfig && this.paddtConfig.insertPaddtDummyRowItems))\n      );\n    };\n  }\n  function attachPaddtSegmentMethods(FormatterClass) {\n    FormatterClass.prototype.expandPaddtSegments = function expandPaddtSegments() {\n      if (this.formEl.dataset.paddtExpanded === "true") {\n        return;\n      }\n      const paddtTables = Array.from(this.formEl.querySelectorAll(".paddt"));\n      if (paddtTables.length === 0) {\n        this.formEl.dataset.paddtExpanded = "true";\n        return;\n      }\n      var maxWords = this.paddtConfig && this.paddtConfig.paddtMaxWordsPerSegment || PADDT_MAX_WORDS_PER_SEGMENT;\n      paddtTables.forEach((paddtRoot) => {\n        if (!paddtRoot || paddtRoot.dataset.paddtSegment === "true") {\n          return;\n        }\n        const contentWrapper = paddtRoot.querySelector("td > div") || paddtRoot.querySelector("td");\n        if (!contentWrapper) {\n          paddtRoot.classList.add("paddt-rowitem", "paddt_segment");\n          paddtRoot.dataset.paddtSegment = "true";\n          return;\n        }\n        const allChildren = Array.from(contentWrapper.children);\n        if (allChildren.length === 0) {\n          paddtRoot.classList.add("paddt-rowitem", "paddt_segment");\n          paddtRoot.dataset.paddtSegment = "true";\n          return;\n        }\n        const segments = [];\n        allChildren.forEach((child) => {\n          if (child.tagName.toLowerCase() === "p") {\n            const chunks = splitPaddtParagraphIntoHtmlChunks(child, maxWords);\n            chunks.forEach((chunk) => segments.push(chunk));\n          } else {\n            segments.push(child.outerHTML);\n          }\n        });\n        if (segments.length === 0) {\n          paddtRoot.classList.add("paddt-rowitem", "paddt_segment");\n          paddtRoot.dataset.paddtSegment = "true";\n          return;\n        }\n        contentWrapper.innerHTML = segments[0];\n        paddtRoot.classList.add("paddt-rowitem", "paddt_segment");\n        paddtRoot.dataset.paddtSegment = "true";\n        var lastNode = paddtRoot;\n        for (var index = 1; index < segments.length; index += 1) {\n          const clone = paddtRoot.cloneNode(true);\n          clone.dataset.paddtSegment = "true";\n          const cloneWrapper = clone.querySelector("td > div") || clone.querySelector("td");\n          if (cloneWrapper) {\n            cloneWrapper.innerHTML = segments[index];\n          }\n          lastNode.parentNode.insertBefore(clone, lastNode.nextSibling);\n          lastNode = clone;\n        }\n      });\n      this.formEl.dataset.paddtExpanded = "true";\n    };\n  }\n  function attachPtacSegmentMethods(FormatterClass) {\n    FormatterClass.prototype.expandPtacSegments = function expandPtacSegments() {\n      if (this.formEl.dataset.ptacExpanded === "true") {\n        return;\n      }\n      const ptacTables = Array.from(this.formEl.querySelectorAll(".ptac"));\n      if (ptacTables.length === 0) {\n        this.formEl.dataset.ptacExpanded = "true";\n        return;\n      }\n      ptacTables.forEach((ptacRoot) => {\n        if (!ptacRoot || ptacRoot.dataset.ptacSegment === "true") {\n          return;\n        }\n        const contentWrapper = ptacRoot.querySelector("td > div") || ptacRoot.querySelector("td");\n        if (!contentWrapper) {\n          ptacRoot.classList.add("ptac-rowitem", "ptac_segment");\n          ptacRoot.dataset.ptacSegment = "true";\n          return;\n        }\n        const allChildren = Array.from(contentWrapper.children);\n        if (allChildren.length === 0) {\n          ptacRoot.classList.add("ptac-rowitem", "ptac_segment");\n          ptacRoot.dataset.ptacSegment = "true";\n          return;\n        }\n        const segments = [];\n        allChildren.forEach((child) => {\n          if (child.tagName.toLowerCase() === "p") {\n            const chunks = splitParagraphIntoHtmlChunks(child, PTAC_MAX_WORDS_PER_SEGMENT);\n            chunks.forEach((chunk) => segments.push(chunk));\n          } else {\n            segments.push(child.outerHTML);\n          }\n        });\n        if (segments.length === 0) {\n          ptacRoot.classList.add("ptac-rowitem", "ptac_segment");\n          ptacRoot.dataset.ptacSegment = "true";\n          return;\n        }\n        contentWrapper.innerHTML = segments[0];\n        ptacRoot.classList.add("ptac-rowitem", "ptac_segment");\n        ptacRoot.dataset.ptacSegment = "true";\n        var lastNode = ptacRoot;\n        for (var index = 1; index < segments.length; index += 1) {\n          const clone = ptacRoot.cloneNode(true);\n          clone.classList.remove("tb_page_break_before");\n          clone.dataset.ptacSegment = "true";\n          const cloneWrapper = clone.querySelector("td > div") || clone.querySelector("td");\n          if (cloneWrapper) {\n            cloneWrapper.innerHTML = segments[index];\n          }\n          lastNode.parentNode.insertBefore(clone, lastNode.nextSibling);\n          lastNode = clone;\n        }\n      });\n      this.formEl.dataset.ptacExpanded = "true";\n    };\n  }\n  function attachRenderingMethods(FormatterClass) {\n    FormatterClass.prototype.ensureFirstPageSections = function ensureFirstPageSections(container, sections, heights, logFn, skipRowHeader) {\n      let consumedHeight = 0;\n      if (sections.header) {\n        DomHelpers.appendClone(container, sections.header, logFn, "pheader");\n        if (!this.config.repeatHeader) {\n          consumedHeight += heights.header;\n        }\n      }\n      sections.docInfos.forEach((docInfo) => {\n        const clone = DomHelpers.appendClone(container, docInfo.element, logFn, docInfo.className);\n        this.registerPageNumberClone(clone);\n        if (!this.config[docInfo.repeatFlag]) {\n          consumedHeight += heights.docInfos[docInfo.key] || 0;\n        }\n      });\n      if (sections.rowHeader && !skipRowHeader) {\n        DomHelpers.appendClone(container, sections.rowHeader, logFn, "prowheader");\n        if (!this.config.repeatRowheader) {\n          consumedHeight += heights.rowHeader;\n        }\n      }\n      return consumedHeight;\n    };\n    FormatterClass.prototype.appendRepeatingSections = function appendRepeatingSections(container, sections, logFn, skipRowHeader) {\n      if (this.config.repeatHeader) {\n        DomHelpers.appendClone(container, sections.header, logFn, "pheader");\n      }\n      sections.docInfos.forEach((docInfo) => {\n        if (this.config[docInfo.repeatFlag]) {\n          const clone = DomHelpers.appendClone(container, docInfo.element, logFn, docInfo.className);\n          this.registerPageNumberClone(clone);\n        }\n      });\n      if (this.config.repeatRowheader && !skipRowHeader) {\n        DomHelpers.appendClone(container, sections.rowHeader, logFn, "prowheader");\n      }\n    };\n    FormatterClass.prototype.registerPageNumberClone = function registerPageNumberClone(node) {\n      if (!node) {\n        return false;\n      }\n      let registered = false;\n      if (this.showLogicalPageNumber) {\n        if (node.querySelector("[data-page-number], [data-page-total], [data-page-number-container]")) {\n          updatePageNumberContent(node, this.currentPage, null);\n          this.logicalPageNumberClones.push({ node, pageNumber: this.currentPage });\n          registered = true;\n        }\n      }\n      if (this.showPhysicalPageNumber) {\n        if (node.querySelector("[data-physical-page-number], [data-physical-page-total], [data-physical-page-number-container]")) {\n          const physicalPage = this.logicalPageToPhysicalPage[this.currentPage] || this.currentPhysicalPage || 1;\n          updatePhysicalPageNumberContent(node, physicalPage, null);\n          this.physicalPageNumberClones.push({ node, pageNumber: physicalPage });\n          registered = true;\n        }\n      }\n      return registered;\n    };\n    FormatterClass.prototype.appendRepeatingFooters = function appendRepeatingFooters(container, sections, logFn) {\n      sections.footerVariants.forEach((footer) => {\n        if (this.config[footer.repeatFlag]) {\n          DomHelpers.appendClone(container, footer.element, logFn, footer.className);\n        }\n      });\n      if (this.config.repeatFooterLogo) {\n        DomHelpers.appendClone(container, sections.footerLogo, logFn, FOOTER_LOGO_VARIANT.className);\n      }\n      if (this.config.repeatFooterPagenum) {\n        this.appendFooterPageNumber(container, sections, logFn);\n      }\n    };\n    FormatterClass.prototype.appendFinalFooters = function appendFinalFooters(container, sections, logFn) {\n      sections.footerVariants.forEach((footer) => {\n        DomHelpers.appendClone(container, footer.element, logFn, footer.className);\n      });\n      DomHelpers.appendClone(container, sections.footerLogo, logFn, FOOTER_LOGO_VARIANT.className);\n      this.appendFooterPageNumber(container, sections, logFn);\n    };\n    FormatterClass.prototype.appendFooterPageNumber = function appendFooterPageNumber(container, sections, logFn) {\n      if (!sections.footerPagenum) {\n        return;\n      }\n      const clone = sections.footerPagenum.cloneNode(true);\n      container.appendChild(clone);\n      this.registerPageNumberClone(clone);\n      if (logFn) {\n        logFn(`append ${FOOTER_PAGENUM_VARIANT.className} page ${this.currentPage}`);\n      }\n    };\n    FormatterClass.prototype.updatePageNumberTotals = function updatePageNumberTotals() {\n      if (!this.logicalPageNumberClones.length && !this.physicalPageNumberClones.length) {\n        return;\n      }\n      const totalLogicalPages = this.currentPage;\n      const totalPhysicalPages = this.currentPhysicalPage || 1;\n      this.logicalPageNumberClones.forEach((entry) => {\n        updatePageNumberContent(entry.node, entry.pageNumber, totalLogicalPages);\n      });\n      this.physicalPageNumberClones.forEach((entry) => {\n        updatePhysicalPageNumberContent(entry.node, entry.pageNumber, totalPhysicalPages);\n      });\n    };\n  }\n  function attachPaginationContextMethods(FormatterClass) {\n    FormatterClass.prototype.initializePageContext = function initializePageContext(heightPerPage) {\n      return {\n        baseLimit: heightPerPage,\n        limit: heightPerPage,\n        skipRowHeader: false,\n        isPtacPage: false,\n        isPaddtPage: false,\n        repeatingHeight: 0\n      };\n    };\n    FormatterClass.prototype.refreshPageContextForRow = function refreshPageContextForRow(pageContext, row, heights) {\n      if (!pageContext) {\n        return pageContext;\n      }\n      const skipRowHeader = this.shouldSkipRowHeaderForRow(row);\n      const rowHeaderHeight = heights.rowHeader || 0;\n      pageContext.skipRowHeader = skipRowHeader;\n      pageContext.isPtacPage = this.isPtacRow(row);\n      pageContext.isPaddtPage = this.isPaddtRow(row);\n      pageContext.limit = pageContext.baseLimit + (skipRowHeader ? rowHeaderHeight : 0);\n      return pageContext;\n    };\n    FormatterClass.prototype.computeRepeatingHeightForPage = function computeRepeatingHeightForPage(sections, heights, skipRowHeader) {\n      let total = 0;\n      if (this.config.repeatHeader && sections.header) {\n        total += heights.header || 0;\n      }\n      sections.docInfos.forEach((docInfo) => {\n        if (this.config[docInfo.repeatFlag]) {\n          total += heights.docInfos[docInfo.key] || 0;\n        }\n      });\n      if (this.config.repeatRowheader && sections.rowHeader && !skipRowHeader) {\n        total += heights.rowHeader || 0;\n      }\n      return normalizeHeight(total);\n    };\n    FormatterClass.prototype.measureContentHeight = function measureContentHeight(container, repeatingHeight) {\n      const total = DomHelpers.measureHeightRaw(container);\n      return normalizeHeight(total - (repeatingHeight || 0));\n    };\n  }\n  function attachPaginationDummyMethods(FormatterClass) {\n    FormatterClass.prototype.insertFooterDummyRows = function insertFooterDummyRows(container, pageContext, currentHeight, reservedHeight, footerLabel) {\n      const availableSpace = pageContext.limit - currentHeight - reservedHeight;\n      const dummyHeight = this.config.heightOfDummyRowItem || 27;\n      const numDummies = Math.floor(availableSpace / dummyHeight);\n      if (numDummies > 0 && this.debug) {\n        console.log(`[printform]   >> Inserting ${numDummies} dummy rows before ${footerLabel}`);\n      }\n      const defaultDummyContent = `<table cellpadding="0" cellspacing="0" border="0" style="width:100%;table-layout:fixed;" class="prowitem_dummy"><tr><td style="height:${dummyHeight}px;">&nbsp;</td></tr></table>`;\n      const dummyContent = this.config.customDummyRowItemContent || defaultDummyContent;\n      for (let i = 0; i < numDummies; i++) {\n        if (dummyContent) {\n          const dummyDiv = document.createElement("div");\n          dummyDiv.innerHTML = dummyContent;\n          let dummyNode = dummyDiv.firstElementChild;\n          if (!dummyNode) {\n            dummyDiv.innerHTML = `<div style="height:${dummyHeight}px" class="prowitem_dummy">&nbsp;</div>`;\n            dummyNode = dummyDiv.firstElementChild;\n          }\n          if (dummyNode) {\n            if (!dummyNode.classList.contains("prowitem_dummy")) {\n              dummyNode.classList.add("prowitem_dummy");\n            }\n            container.appendChild(dummyNode);\n          }\n        }\n      }\n      return this.measureContentHeight(container, pageContext.repeatingHeight);\n    };\n  }\n  function attachPaginationRenderMethods(FormatterClass) {\n    FormatterClass.prototype.renderRows = function renderRows(outputContainer, sections, heights, footerState, heightPerPage, footerSpacerTemplate, logFn) {\n      let currentHeight = 0;\n      const pageContext = this.initializePageContext(heightPerPage);\n      if (this.debug) {\n        console.log(`[printform] ===== renderRows START =====`);\n        console.log(`[printform] Total rows: ${sections.rows.length}, heightPerPage: ${heightPerPage}px`);\n      }\n      for (let index = 0; index < sections.rows.length; index++) {\n        const row = sections.rows[index];\n        const nextRow = sections.rows[index + 1];\n        const rowHeight = DomHelpers.measureHeight(row);\n        const baseClass = this.getRowBaseClass(row);\n        const isPtacRow = this.isPtacRow(row);\n        const isPaddtRow = this.isPaddtRow(row);\n        const isSubtotal = this.isSubtotalRow(row);\n        const isFooter = this.isFooterRow(row);\n        const hasFooterCombo = isSubtotal && nextRow && this.isFooterRow(nextRow);\n        const footerRow = hasFooterCombo ? nextRow : null;\n        const footerBaseClass = footerRow ? this.getRowBaseClass(footerRow) : null;\n        const footerHeight = footerRow ? DomHelpers.measureHeight(footerRow) : 0;\n        const comboHeight = rowHeight + footerHeight;\n        if (!rowHeight && (!hasFooterCombo || !footerHeight)) {\n          DomHelpers.markAsProcessed(row, baseClass);\n          if (hasFooterCombo) {\n            DomHelpers.markAsProcessed(footerRow, footerBaseClass);\n            index += 1;\n          }\n          continue;\n        }\n        if (currentHeight === 0) {\n          this.refreshPageContextForRow(pageContext, row, heights);\n          const container2 = this.getCurrentPageContainer(outputContainer);\n          this.ensureFirstPageSections(\n            container2,\n            sections,\n            heights,\n            logFn,\n            pageContext.skipRowHeader\n          );\n          pageContext.repeatingHeight = this.computeRepeatingHeightForPage(sections, heights, pageContext.skipRowHeader);\n          currentHeight = this.measureContentHeight(container2, pageContext.repeatingHeight);\n          if (this.debug) {\n            console.log(`[printform] Page ${this.currentPage} start: firstSectionHeight=${currentHeight}px, pageLimit=${pageContext.limit}px`);\n          }\n        }\n        DomHelpers.markAsProcessed(row, baseClass);\n        if (footerRow) {\n          DomHelpers.markAsProcessed(footerRow, footerBaseClass);\n        }\n        if (hasFooterCombo || isSubtotal || isFooter) {\n          const priorHeight2 = currentHeight;\n          const footerLabel = hasFooterCombo ? "subtotal+footer" : isSubtotal ? "subtotal" : "footer";\n          if (this.debug) {\n            console.log(`[printform]   >> ${footerLabel.toUpperCase()} ROW detected at row[${index}]`);\n          }\n          if (row.classList.contains("tb_page_break_before")) {\n            if (this.debug) {\n              console.log(`[printform]   >> PAGE BREAK (tb_page_break_before) at row[${index}]`);\n            }\n            const skipDummyRowItems3 = this.shouldSkipDummyRowItemsForContext(pageContext);\n            const nextSkipRowHeader2 = this.shouldSkipRowHeaderForRow(row);\n            currentHeight = this.prepareNextPage(\n              outputContainer,\n              sections,\n              logFn,\n              pageContext.limit,\n              currentHeight,\n              footerState,\n              footerSpacerTemplate,\n              nextSkipRowHeader2,\n              skipDummyRowItems3,\n              pageContext.repeatingHeight\n            );\n            this.refreshPageContextForRow(pageContext, row, heights);\n            const container3 = this.getCurrentPageContainer(outputContainer);\n            pageContext.repeatingHeight = this.computeRepeatingHeightForPage(sections, heights, pageContext.skipRowHeader);\n            currentHeight = this.measureContentHeight(container3, pageContext.repeatingHeight);\n          }\n          const container2 = this.getCurrentPageContainer(outputContainer);\n          const testClone = DomHelpers.appendRowItem(container2, row, null, index, baseClass);\n          const testFooterClone = footerRow ? DomHelpers.appendRowItem(container2, footerRow, null, index + 1, footerBaseClass) : null;\n          const testHeight = this.measureContentHeight(container2, pageContext.repeatingHeight);\n          if (testFooterClone && testFooterClone.parentNode === container2) {\n            container2.removeChild(testFooterClone);\n          }\n          if (testClone && testClone.parentNode === container2) {\n            container2.removeChild(testClone);\n          }\n          if (testHeight > pageContext.limit) {\n            if (this.debug) {\n              console.log(`[printform]   >> ${footerLabel.toUpperCase()} would overflow, moving to next page`);\n            }\n            const skipDummyRowItems3 = this.shouldSkipDummyRowItemsForContext(pageContext);\n            const nextSkipRowHeader2 = this.shouldSkipRowHeaderForRow(row);\n            currentHeight = this.prepareNextPage(\n              outputContainer,\n              sections,\n              logFn,\n              pageContext.limit,\n              priorHeight2,\n              footerState,\n              footerSpacerTemplate,\n              nextSkipRowHeader2,\n              skipDummyRowItems3,\n              pageContext.repeatingHeight\n            );\n            this.refreshPageContextForRow(pageContext, row, heights);\n            const nextContainer2 = this.getCurrentPageContainer(outputContainer);\n            pageContext.repeatingHeight = this.computeRepeatingHeightForPage(sections, heights, pageContext.skipRowHeader);\n            currentHeight = this.measureContentHeight(nextContainer2, pageContext.repeatingHeight);\n          }\n          const skipDummyRowItems2 = this.shouldSkipDummyRowItemsForContext(pageContext);\n          if (!skipDummyRowItems2) {\n            const currentContainer = this.getCurrentPageContainer(outputContainer);\n            const reservedHeight = footerRow ? comboHeight : rowHeight;\n            currentHeight = this.insertFooterDummyRows(currentContainer, pageContext, currentHeight, reservedHeight, footerLabel);\n          }\n          const finalContainer = this.getCurrentPageContainer(outputContainer);\n          DomHelpers.appendRowItem(finalContainer, row, null, index, baseClass);\n          if (footerRow) {\n            DomHelpers.appendRowItem(finalContainer, footerRow, null, index + 1, footerBaseClass);\n          }\n          if (logFn) {\n            logFn(`append ${footerLabel} ${index}`);\n          }\n          currentHeight = this.measureContentHeight(finalContainer, pageContext.repeatingHeight);\n          if (this.debug) {\n            console.log(`[printform]   ${footerLabel} row[${index}] added, currentHeight=${currentHeight}px`);\n          }\n          const footerIsPtac = footerRow ? this.isPtacRow(footerRow) : false;\n          const footerIsPaddt = footerRow ? this.isPaddtRow(footerRow) : false;\n          if (!isPtacRow && !footerIsPtac) {\n            pageContext.isPtacPage = false;\n          }\n          if (!isPaddtRow && !footerIsPaddt) {\n            pageContext.isPaddtPage = false;\n          }\n          if (hasFooterCombo) {\n            index += 1;\n          }\n          continue;\n        }\n        if (row.classList.contains("tb_page_break_before")) {\n          if (this.debug) {\n            console.log(`[printform]   >> PAGE BREAK (tb_page_break_before) at row[${index}]`);\n          }\n          const skipDummyRowItems2 = this.shouldSkipDummyRowItemsForContext(pageContext);\n          const nextSkipRowHeader2 = this.shouldSkipRowHeaderForRow(row);\n          currentHeight = this.prepareNextPage(\n            outputContainer,\n            sections,\n            logFn,\n            pageContext.limit,\n            currentHeight,\n            footerState,\n            footerSpacerTemplate,\n            nextSkipRowHeader2,\n            skipDummyRowItems2,\n            pageContext.repeatingHeight\n          );\n          this.refreshPageContextForRow(pageContext, row, heights);\n          const container2 = this.getCurrentPageContainer(outputContainer);\n          pageContext.repeatingHeight = this.computeRepeatingHeightForPage(sections, heights, pageContext.skipRowHeader);\n          currentHeight = this.measureContentHeight(container2, pageContext.repeatingHeight);\n          DomHelpers.appendRowItem(container2, row, null, index, baseClass);\n          if (logFn) {\n            const resolvedLabel = baseClass || "prowitem";\n            logFn(`append ${resolvedLabel} ${index}`);\n          }\n          currentHeight = this.measureContentHeight(container2, pageContext.repeatingHeight);\n          if (this.debug) {\n            console.log(`[printform] Page ${this.currentPage} start: currentHeight=${currentHeight}px, limit=${pageContext.limit}px`);\n          }\n          if (!isPtacRow) {\n            pageContext.isPtacPage = false;\n          }\n          if (!isPaddtRow) {\n            pageContext.isPaddtPage = false;\n          }\n          continue;\n        }\n        const container = this.getCurrentPageContainer(outputContainer);\n        const priorHeight = currentHeight;\n        const clone = DomHelpers.appendRowItem(container, row, null, index, baseClass);\n        const measuredHeight = this.measureContentHeight(container, pageContext.repeatingHeight);\n        if (this.debug) {\n          console.log(`[printform]   row[${index}] height=${rowHeight}px, currentHeight=${measuredHeight}px, limit=${pageContext.limit}px`);\n        }\n        if (measuredHeight <= pageContext.limit) {\n          if (logFn) {\n            const resolvedLabel = baseClass || "prowitem";\n            logFn(`append ${resolvedLabel} ${index}`);\n          }\n          currentHeight = measuredHeight;\n          if (!isPtacRow) {\n            pageContext.isPtacPage = false;\n          }\n          if (!isPaddtRow) {\n            pageContext.isPaddtPage = false;\n          }\n          continue;\n        }\n        if (clone && clone.parentNode === container) {\n          container.removeChild(clone);\n        }\n        if (this.debug) {\n          console.log(`[printform]   >> PAGE BREAK (overflow) at row[${index}]`);\n        }\n        const skipDummyRowItems = this.shouldSkipDummyRowItemsForContext(pageContext);\n        const nextSkipRowHeader = this.shouldSkipRowHeaderForRow(row);\n        currentHeight = this.prepareNextPage(\n          outputContainer,\n          sections,\n          logFn,\n          pageContext.limit,\n          priorHeight,\n          footerState,\n          footerSpacerTemplate,\n          nextSkipRowHeader,\n          skipDummyRowItems,\n          pageContext.repeatingHeight\n        );\n        this.refreshPageContextForRow(pageContext, row, heights);\n        const nextContainer = this.getCurrentPageContainer(outputContainer);\n        pageContext.repeatingHeight = this.computeRepeatingHeightForPage(sections, heights, pageContext.skipRowHeader);\n        currentHeight = this.measureContentHeight(nextContainer, pageContext.repeatingHeight);\n        DomHelpers.appendRowItem(nextContainer, row, null, index, baseClass);\n        if (logFn) {\n          const resolvedLabel = baseClass || "prowitem";\n          logFn(`append ${resolvedLabel} ${index}`);\n        }\n        currentHeight = this.measureContentHeight(nextContainer, pageContext.repeatingHeight);\n        if (this.debug) {\n          console.log(`[printform] Page ${this.currentPage} start: currentHeight=${currentHeight}px, limit=${pageContext.limit}px`);\n        }\n        if (!isPtacRow) {\n          pageContext.isPtacPage = false;\n        }\n        if (!isPaddtRow) {\n          pageContext.isPaddtPage = false;\n        }\n      }\n      if (this.debug) {\n        console.log(`[printform] ===== renderRows END (page ${this.currentPage}, finalHeight=${currentHeight}px) =====`);\n      }\n      return {\n        currentHeight,\n        pageLimit: pageContext.limit,\n        isPtacPage: pageContext.isPtacPage,\n        isPaddtPage: pageContext.isPaddtPage,\n        repeatingHeight: pageContext.repeatingHeight\n      };\n    };\n    FormatterClass.prototype.renderEmptyDocument = function renderEmptyDocument(outputContainer, sections, heights, heightPerPage, logFn) {\n      const container = this.getCurrentPageContainer(outputContainer);\n      const skipRowHeader = false;\n      if (this.debug) {\n        console.log(`[printform] ===== renderEmptyDocument START =====`);\n      }\n      this.ensureFirstPageSections(container, sections, heights, logFn, skipRowHeader);\n      const repeatingHeight = this.computeRepeatingHeightForPage(sections, heights, skipRowHeader);\n      const currentHeight = this.measureContentHeight(container, repeatingHeight);\n      if (this.debug) {\n        console.log(`[printform] Empty document currentHeight=${currentHeight}px, pageLimit=${heightPerPage}px`);\n        console.log(`[printform] ===== renderEmptyDocument END =====`);\n      }\n      return {\n        currentHeight,\n        pageLimit: heightPerPage,\n        isPtacPage: false,\n        isPaddtPage: false,\n        repeatingHeight\n      };\n    };\n  }\n  function attachPaginationSpacingMethods(FormatterClass) {\n    FormatterClass.prototype.prepareNextPage = function prepareNextPage(outputContainer, sections, logFn, pageLimit, currentHeight, footerState, spacerTemplate, skipRowHeader, skipDummyRowItems, repeatingHeight) {\n      const container = this.getCurrentPageContainer(outputContainer);\n      const filledHeight = this.applyRemainderSpacing(\n        container,\n        pageLimit,\n        currentHeight,\n        footerState,\n        spacerTemplate,\n        {\n          skipDummyRowItems,\n          repeatingHeight\n        }\n      );\n      this.appendRepeatingFooters(container, sections, logFn);\n      this.currentPage += 1;\n      this.currentPageContainer = null;\n      this.createNewLogicalPage(outputContainer);\n      const nextContainer = this.getCurrentPageContainer(outputContainer);\n      this.appendRepeatingSections(nextContainer, sections, logFn, skipRowHeader);\n      return filledHeight;\n    };\n    FormatterClass.prototype.applyRemainderSpacing = function applyRemainderSpacing(container, heightPerPage, currentHeight, footerState, spacerTemplate, options) {\n      const skipDummyRowItems = options && options.skipDummyRowItems;\n      const repeatingHeight = options && Number.isFinite(options.repeatingHeight) ? options.repeatingHeight : null;\n      const useCurrentHeight = options && options.useCurrentHeight === true;\n      let workingHeight = normalizeHeight(currentHeight);\n      if (repeatingHeight !== null && !useCurrentHeight) {\n        const measuredTotal = DomHelpers.measureHeightRaw(container);\n        workingHeight = normalizeHeight(measuredTotal - repeatingHeight);\n      }\n      if (this.debug) {\n        console.log(`[printform] ----- applyRemainderSpacing (page ${this.currentPage}) -----`);\n        console.log(`[printform]   heightPerPage: ${heightPerPage}px, currentHeight: ${currentHeight}px`);\n        console.log(`[printform]   skipDummyRowItems: ${skipDummyRowItems}`);\n      }\n      if (!skipDummyRowItems) {\n        workingHeight = applyDummyRowItemsStep(this.config, container, heightPerPage, workingHeight, this.debug);\n      }\n      workingHeight = applyDummyRowStep(this.config, container, heightPerPage, workingHeight, this.debug);\n      const spacerState = applyFooterSpacerWithDummyStep(\n        this.config,\n        container,\n        heightPerPage,\n        workingHeight,\n        skipDummyRowItems,\n        this.debug\n      );\n      workingHeight = spacerState.currentHeight;\n      if (!spacerState.skipFooterSpacer) {\n        applyFooterSpacerStep(\n          this.config,\n          container,\n          heightPerPage,\n          workingHeight,\n          footerState,\n          spacerTemplate,\n          this.debug\n        );\n      }\n      if (this.debug) {\n        console.log(`[printform]   finalHeight after spacing: ${workingHeight}px`);\n        console.log(`[printform] -----------------------------------------`);\n      }\n      return normalizeHeight(workingHeight);\n    };\n  }\n  function attachPaginationFinalizeMethods(FormatterClass) {\n    FormatterClass.prototype.computeHeightPerPage = function computeHeightPerPage(sections, heights) {\n      let available = this.config.papersizeHeight;\n      if (this.debug) {\n        console.log(`[printform] ===== computeHeightPerPage =====`);\n        console.log(`[printform] papersizeHeight (config): ${this.config.papersizeHeight}px`);\n        console.log(`[printform] papersizeWidth (config): ${this.config.papersizeWidth}px`);\n      }\n      if (this.config.repeatHeader && sections.header) {\n        if (this.debug) {\n          console.log(`[printform]   - repeatHeader: ${heights.header}px`);\n        }\n        available -= heights.header;\n      }\n      sections.docInfos.forEach((docInfo) => {\n        if (this.config[docInfo.repeatFlag]) {\n          const h = heights.docInfos[docInfo.key] || 0;\n          if (this.debug) {\n            console.log(`[printform]   - repeat ${docInfo.className}: ${h}px`);\n          }\n          available -= h;\n        }\n      });\n      if (this.config.repeatRowheader && sections.rowHeader) {\n        if (this.debug) {\n          console.log(`[printform]   - repeatRowheader: ${heights.rowHeader}px`);\n        }\n        available -= heights.rowHeader;\n      }\n      sections.footerVariants.forEach((footer) => {\n        if (this.config[footer.repeatFlag]) {\n          const h = heights.footerVariants[footer.key] || 0;\n          if (this.debug) {\n            console.log(`[printform]   - repeat ${footer.className}: ${h}px`);\n          }\n          available -= h;\n        }\n      });\n      if (this.config.repeatFooterLogo && sections.footerLogo) {\n        if (this.debug) {\n          console.log(`[printform]   - repeatFooterLogo: ${heights.footerLogo}px`);\n        }\n        available -= heights.footerLogo;\n      }\n      if (this.config.repeatFooterPagenum && sections.footerPagenum) {\n        const h = heights.footerPagenum || 0;\n        if (this.debug) {\n          console.log(`[printform]   - repeatFooterPagenum: ${h}px`);\n        }\n        available -= h;\n      }\n      if (this.debug) {\n        console.log(`[printform] heightPerPage (available for content): ${Math.max(0, available)}px`);\n        console.log(`[printform] ================================`);\n      }\n      return Math.max(0, available);\n    };\n    FormatterClass.prototype.computeFooterState = function computeFooterState(sections, heights) {\n      const footerLogoHeight = heights.footerLogo || 0;\n      const footerPagenumHeight = heights.footerPagenum || 0;\n      const totalFooterHeight = sections.footerVariants.reduce((sum, footer) => {\n        const height = heights.footerVariants[footer.key] || 0;\n        return sum + height;\n      }, 0);\n      const totalFinal = totalFooterHeight + footerLogoHeight + footerPagenumHeight;\n      const repeatingFooterHeight = sections.footerVariants.reduce((sum, footer) => {\n        const height = heights.footerVariants[footer.key] || 0;\n        return this.config[footer.repeatFlag] ? sum + height : sum;\n      }, 0);\n      let repeating = repeatingFooterHeight;\n      if (this.config.repeatFooterLogo) {\n        repeating += footerLogoHeight;\n      }\n      if (this.config.repeatFooterPagenum) {\n        repeating += footerPagenumHeight;\n      }\n      const nonRepeating = Math.max(0, totalFinal - repeating);\n      return {\n        totalFinal,\n        repeating,\n        nonRepeating\n      };\n    };\n    FormatterClass.prototype.finalizeDocument = function finalizeDocument(outputContainer, sections, heights, footerState, defaultHeightPerPage, renderState, spacerTemplate, logFn) {\n      const baseHeight = renderState ? renderState.currentHeight : 0;\n      const lastPageLimit = renderState && renderState.pageLimit ? renderState.pageLimit : defaultHeightPerPage;\n      const repeatingHeight = renderState && Number.isFinite(renderState.repeatingHeight) ? renderState.repeatingHeight : 0;\n      const skipDummyRowItems = Boolean(\n        renderState && (renderState.isPtacPage && !this.config.insertPtacDummyRowItems || renderState.isPaddtPage && !(this.paddtConfig && this.paddtConfig.insertPaddtDummyRowItems))\n      );\n      const allowance = footerState.totalFinal - footerState.repeating;\n      const heightWithFinalFooters = baseHeight + allowance;\n      if (heightWithFinalFooters <= lastPageLimit) {\n        const container2 = this.getCurrentPageContainer(outputContainer);\n        this.applyRemainderSpacing(\n          container2,\n          lastPageLimit,\n          heightWithFinalFooters,\n          footerState,\n          spacerTemplate,\n          {\n            skipDummyRowItems,\n            repeatingHeight,\n            useCurrentHeight: true\n          }\n        );\n        this.appendFinalFooters(container2, sections, logFn);\n        return;\n      }\n      this.prepareNextPage(\n        outputContainer,\n        sections,\n        logFn,\n        lastPageLimit,\n        baseHeight,\n        footerState,\n        spacerTemplate,\n        false,\n        skipDummyRowItems,\n        repeatingHeight\n      );\n      const finalPageStartHeight = allowance;\n      const container = this.getCurrentPageContainer(outputContainer);\n      const nextRepeatingHeight = this.computeRepeatingHeightForPage(sections, heights, false);\n      this.applyRemainderSpacing(\n        container,\n        defaultHeightPerPage,\n        finalPageStartHeight,\n        footerState,\n        spacerTemplate,\n        {\n          repeatingHeight: nextRepeatingHeight,\n          useCurrentHeight: true\n        }\n      );\n      this.appendFinalFooters(container, sections, logFn);\n    };\n  }\n  function safeSerialize(value) {\n    if (value === null) return "null";\n    if (value === void 0) return "undefined";\n    if (typeof value === "string") return value;\n    if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value);\n    if (value instanceof Error) {\n      const name = value.name || "Error";\n      const message = value.message || "";\n      return message ? `${name}: ${message}` : name;\n    }\n    try {\n      return JSON.stringify(value);\n    } catch {\n      try {\n        return String(value);\n      } catch {\n        return "[unserializable]";\n      }\n    }\n  }\n  function formatArgs(args) {\n    return Array.from(args).map(safeSerialize).join(" ");\n  }\n  function ensureDebugPanelStyle(doc) {\n    if (!doc || !doc.head) return;\n    const existing = doc.getElementById("printform-debug-panel-style");\n    if (existing) return;\n    const style = doc.createElement("style");\n    style.id = "printform-debug-panel-style";\n    style.textContent = `\n    [data-printform-debug-panel="true"]{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;border:1px solid #ddd;background:#fafafa;color:#111;padding:12px;margin:12px 0;max-width:100%;overflow:auto}\n    [data-printform-debug-panel="true"] .printform-debug-title{font-weight:700;margin-bottom:8px}\n    [data-printform-debug-panel="true"] .printform-debug-meta{font-size:12px;opacity:.85;line-height:1.4;margin-bottom:8px;white-space:pre-wrap}\n    [data-printform-debug-panel="true"] .printform-debug-actions{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}\n    [data-printform-debug-panel="true"] button{font:inherit;font-size:12px;padding:6px 10px;border:1px solid #bbb;background:#fff;border-radius:6px}\n    [data-printform-debug-panel="true"] button:active{transform:translateY(1px)}\n    [data-printform-debug-panel="true"] .printform-debug-status{font-size:12px;opacity:.8}\n    [data-printform-debug-panel="true"] pre{margin:0;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.35}\n    @media print{[data-printform-debug-panel="true"]{display:none!important}}\n  `.trim();\n    doc.head.appendChild(style);\n  }\n  async function copyTextToClipboard(view, text) {\n    if (!view) return { ok: false, method: "none" };\n    const nav = view.navigator;\n    if (nav && nav.clipboard && typeof nav.clipboard.writeText === "function") {\n      try {\n        await nav.clipboard.writeText(text);\n        return { ok: true, method: "navigator.clipboard.writeText" };\n      } catch {\n      }\n    }\n    const doc = view.document;\n    if (!doc) return { ok: false, method: "none" };\n    const textarea = doc.createElement("textarea");\n    textarea.value = text;\n    textarea.setAttribute("readonly", "true");\n    textarea.style.position = "fixed";\n    textarea.style.left = "-9999px";\n    textarea.style.top = "0";\n    doc.body.appendChild(textarea);\n    textarea.focus();\n    textarea.select();\n    try {\n      const ok = doc.execCommand && doc.execCommand("copy");\n      return { ok: Boolean(ok), method: "document.execCommand(copy)" };\n    } catch {\n      return { ok: false, method: "document.execCommand(copy)" };\n    } finally {\n      doc.body.removeChild(textarea);\n    }\n  }\n  function formatConfigSummary(config) {\n    if (!config) return "";\n    const pick = (key) => config && Object.prototype.hasOwnProperty.call(config, key) ? config[key] : void 0;\n    const parts = [\n      `papersizeWidth=${pick("papersizeWidth")}`,\n      `papersizeHeight=${pick("papersizeHeight")}`,\n      `paperSize=${pick("paperSize")}`,\n      `orientation=${pick("orientation")}`,\n      `dpi=${pick("dpi")}`,\n      `nUp=${pick("nUp")}`,\n      `repeatHeader=${pick("repeatHeader")}`,\n      `repeatRowheader=${pick("repeatRowheader")}`,\n      `repeatFooterLogo=${pick("repeatFooterLogo")}`,\n      `repeatFooterPagenum=${pick("repeatFooterPagenum")}`\n    ];\n    return parts.join(", ");\n  }\n  function createPrintformDebugSession({ enabled, formEl, config }) {\n    const doc = formEl && formEl.ownerDocument ? formEl.ownerDocument : null;\n    const view = doc && doc.defaultView ? doc.defaultView : null;\n    const startMs = Date.now();\n    const lines = [];\n    let installed = false;\n    let originals = null;\n    let removeErrorHandlers = null;\n    const pushLine = (level, args) => {\n      const delta = Date.now() - startMs;\n      const message = formatArgs(args);\n      lines.push(`+${delta}ms [${level}] ${message}`);\n    };\n    const addEventLine = (level, message) => {\n      const delta = Date.now() - startMs;\n      lines.push(`+${delta}ms [${level}] ${message}`);\n    };\n    const install = () => {\n      if (!enabled || installed || !view || !view.console) return;\n      installed = true;\n      const con = view.console;\n      originals = {\n        log: con.log,\n        info: con.info,\n        warn: con.warn,\n        error: con.error\n      };\n      const wrap = (level) => function wrappedConsoleMethod(...args) {\n        pushLine(level, args);\n        const original = originals && originals[level];\n        if (typeof original === "function") {\n          try {\n            original.apply(con, args);\n          } catch {\n          }\n        }\n      };\n      try {\n        con.log = wrap("log");\n        con.info = wrap("info");\n        con.warn = wrap("warn");\n        con.error = wrap("error");\n      } catch {\n        installed = false;\n        originals = null;\n        return;\n      }\n      const onError = (event) => {\n        const message = event && event.message ? event.message : "window.error";\n        addEventLine("error", message);\n      };\n      const onUnhandledRejection = (event) => {\n        const reason = event && event.reason ? safeSerialize(event.reason) : "unhandledrejection";\n        addEventLine("error", `unhandledrejection: ${reason}`);\n      };\n      if (typeof view.addEventListener === "function" && typeof view.removeEventListener === "function") {\n        view.addEventListener("error", onError);\n        view.addEventListener("unhandledrejection", onUnhandledRejection);\n        removeErrorHandlers = () => {\n          view.removeEventListener("error", onError);\n          view.removeEventListener("unhandledrejection", onUnhandledRejection);\n        };\n      }\n      try {\n        con.log("[printform] ===== DEBUG SESSION START =====");\n        con.log(`[printform] time: ${new Date(startMs).toISOString()}`);\n        if (view.navigator && view.navigator.userAgent) {\n          con.log(`[printform] userAgent: ${view.navigator.userAgent}`);\n        }\n        if (typeof view.devicePixelRatio === "number") {\n          con.log(`[printform] devicePixelRatio: ${view.devicePixelRatio}`);\n        }\n        if (typeof view.innerWidth === "number" && typeof view.innerHeight === "number") {\n          con.log(`[printform] viewport: ${view.innerWidth}x${view.innerHeight}`);\n        }\n        if (view.visualViewport) {\n          con.log(`[printform] visualViewport: ${safeSerialize({ width: view.visualViewport.width, height: view.visualViewport.height, scale: view.visualViewport.scale })}`);\n        }\n        con.log(`[printform] config: ${formatConfigSummary(config)}`);\n      } catch {\n      }\n    };\n    const uninstall = () => {\n      if (!installed || !view || !view.console) return;\n      const con = view.console;\n      if (removeErrorHandlers) {\n        try {\n          removeErrorHandlers();\n        } catch {\n        }\n      }\n      if (originals) {\n        con.log = originals.log;\n        con.info = originals.info;\n        con.warn = originals.warn;\n        con.error = originals.error;\n      }\n    };\n    const markEnd = (details) => {\n      if (!enabled || !installed || !view || !view.console) return;\n      const con = view.console;\n      try {\n        con.log("[printform] ===== DEBUG SESSION END =====");\n        if (details && typeof details === "object") {\n          con.log(`[printform] debugSummary: ${safeSerialize(details)}`);\n        }\n      } catch {\n      }\n    };\n    const getText = () => lines.join("\\n");\n    const appendPanel = (outputContainer, details) => {\n      if (!enabled || !doc || !outputContainer) return;\n      ensureDebugPanelStyle(doc);\n      const panel = doc.createElement("div");\n      panel.setAttribute("data-printform-debug-panel", "true");\n      const title = doc.createElement("div");\n      title.className = "printform-debug-title";\n      title.textContent = "PrintForm Debug (data-debug=y)";\n      panel.appendChild(title);\n      const meta = doc.createElement("div");\n      meta.className = "printform-debug-meta";\n      const pageCount = details && Number.isFinite(details.pageCount) ? details.pageCount : null;\n      const formId = formEl && formEl.id ? `#${formEl.id}` : "";\n      const formClass = formEl && typeof formEl.className === "string" ? `.${formEl.className.split(/\\s+/).filter(Boolean).join(".")}` : "";\n      const formLabel = formId || formClass ? `${formId}${formClass}` : "(no id/class)";\n      meta.textContent = [\n        `form: ${formLabel}`,\n        pageCount !== null ? `pages: ${pageCount}` : null,\n        `config: ${formatConfigSummary(config)}`\n      ].filter(Boolean).join("\\n");\n      panel.appendChild(meta);\n      const actions = doc.createElement("div");\n      actions.className = "printform-debug-actions";\n      const copyButton = doc.createElement("button");\n      copyButton.type = "button";\n      copyButton.textContent = "Copy all logs";\n      actions.appendChild(copyButton);\n      const status = doc.createElement("span");\n      status.className = "printform-debug-status";\n      status.textContent = "";\n      actions.appendChild(status);\n      panel.appendChild(actions);\n      const pre = doc.createElement("pre");\n      pre.textContent = getText();\n      panel.appendChild(pre);\n      copyButton.addEventListener("click", async () => {\n        const text = getText();\n        const result = await copyTextToClipboard(view, text);\n        status.textContent = result.ok ? `copied (${result.method})` : `copy failed (${result.method})`;\n      });\n      outputContainer.appendChild(panel);\n    };\n    return {\n      install,\n      markEnd,\n      uninstall,\n      appendPanel,\n      getText\n    };\n  }\n  class PrintFormFormatter {\n    constructor(formEl, config) {\n      this.formEl = formEl;\n      this.config = config;\n      this.debug = Boolean(config.debug);\n      this.nUp = Math.max(1, Math.floor(Number(config.nUp || 1)));\n      this.showLogicalPageNumber = config.showLogicalPageNumber !== false;\n      this.showPhysicalPageNumber = Boolean(config.showPhysicalPageNumber);\n      this.paddtConfig = getPaddtConfig(formEl, {});\n      this.paddtDebug = Boolean(this.paddtConfig.paddtDebug);\n      this.currentPage = 1;\n      this.currentPhysicalPage = 0;\n      this.pagesInCurrentPhysical = 0;\n      this.currentPhysicalWrapper = null;\n      this.currentPageContainer = null;\n      this.logicalPageNumberClones = [];\n      this.physicalPageNumberClones = [];\n      this.logicalPageToPhysicalPage = [];\n      if (this.debug) {\n        console.log(`[printform] ===== PrintFormFormatter initialized =====`);\n        console.log(`[printform] debug mode: ON`);\n        console.log(`[printform] config.debug raw value: ${config.debug}`);\n      }\n    }\n    log(message) {\n      if (this.debug) {\n        console.log(`[printform] ${message}`);\n      }\n    }\n    format() {\n      const debugSession = createPrintformDebugSession({\n        enabled: this.debug,\n        formEl: this.formEl,\n        config: this.config\n      });\n      debugSession.install();\n      const logFn = this.debug ? this.log.bind(this) : null;\n      try {\n        const container = this.initializeOutputContainer();\n        this.ensureCurrentPageContainer(container);\n        const sections = this.collectSections();\n        const heights = this.measureSections(sections);\n        const footerSpacerTemplate = this.createFooterSpacerTemplate();\n        this.markSectionsProcessed(sections);\n        const footerState = this.computeFooterState(sections, heights);\n        const heightPerPage = this.computeHeightPerPage(sections, heights);\n        const renderState = sections.rows.length ? this.renderRows(\n          container,\n          sections,\n          heights,\n          footerState,\n          heightPerPage,\n          footerSpacerTemplate,\n          logFn\n        ) : this.renderEmptyDocument(\n          container,\n          sections,\n          heights,\n          heightPerPage,\n          logFn\n        );\n        this.finalizeDocument(\n          container,\n          sections,\n          heights,\n          footerState,\n          heightPerPage,\n          renderState,\n          footerSpacerTemplate,\n          logFn\n        );\n        if (this.paddtRows && this.paddtRows.length) {\n          this.currentPage += 1;\n          this.currentPageContainer = null;\n          this.initializePhysicalWrapper(container);\n          this.createNewLogicalPage(container);\n          var paddtDocinfoFlags = {\n            docInfo: this.paddtConfig.repeatPaddtDocinfo,\n            docInfo002: this.paddtConfig.repeatPaddtDocinfo002,\n            docInfo003: this.paddtConfig.repeatPaddtDocinfo003,\n            docInfo004: this.paddtConfig.repeatPaddtDocinfo004,\n            docInfo005: this.paddtConfig.repeatPaddtDocinfo005\n          };\n          var paddtDocInfos = sections.docInfos.filter(function(di) {\n            var flag = paddtDocinfoFlags[di.key];\n            return flag === void 0 ? true : !!flag;\n          });\n          const paddtSections = {\n            header: sections.header,\n            docInfos: paddtDocInfos,\n            rowHeader: sections.rowHeader,\n            // Exclude business footers (e.g. pfooter/pfooter002...), keep only logo and page number\n            footerVariants: [],\n            footerLogo: sections.footerLogo,\n            footerPagenum: sections.footerPagenum,\n            rows: this.paddtRows\n          };\n          const paddtFooterState = this.computeFooterState(paddtSections, heights);\n          const paddtHeightPerPage = this.computeHeightPerPage(paddtSections, heights);\n          const paddtRenderState = this.renderRows(\n            container,\n            paddtSections,\n            heights,\n            paddtFooterState,\n            paddtHeightPerPage,\n            footerSpacerTemplate,\n            logFn\n          );\n          this.finalizeDocument(\n            container,\n            paddtSections,\n            heights,\n            paddtFooterState,\n            paddtHeightPerPage,\n            paddtRenderState,\n            footerSpacerTemplate,\n            logFn\n          );\n        }\n        this.updatePageNumberTotals();\n        const allPages = container.querySelectorAll(".printform_page");\n        if (this.debug) {\n          console.log(`[printform] Finalizing heights for ${allPages.length} pages...`);\n        }\n        allPages.forEach((page, index) => {\n          this.finalizePageHeight(page);\n          if (this.debug) {\n            const heightStyle = page.style.height || "(auto)";\n            console.log(`[printform]   Page ${index + 1}: height style = ${heightStyle}`);\n          }\n        });\n        debugSession.markEnd({ pageCount: allPages.length });\n        debugSession.appendPanel(container, { pageCount: allPages.length });\n        container.classList.remove("printform_formatter");\n        container.classList.add("printform_formatter_processed");\n        this.formEl.remove();\n        return container;\n      } finally {\n        debugSession.uninstall();\n      }\n    }\n  }\n  attachPageMethods(PrintFormFormatter);\n  attachSectionMethods(PrintFormFormatter);\n  attachRowTypeMethods(PrintFormFormatter);\n  attachPaddtSegmentMethods(PrintFormFormatter);\n  attachPtacSegmentMethods(PrintFormFormatter);\n  attachRenderingMethods(PrintFormFormatter);\n  attachPaginationContextMethods(PrintFormFormatter);\n  attachPaginationDummyMethods(PrintFormFormatter);\n  attachPaginationRenderMethods(PrintFormFormatter);\n  attachPaginationSpacingMethods(PrintFormFormatter);\n  attachPaginationFinalizeMethods(PrintFormFormatter);\n  function isMobileDevice() {\n    const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";\n    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);\n  }\n  function getDeviceDelay() {\n    return isMobileDevice() ? 50 : 1;\n  }\n  function withDividerClassAppend(globalScope2, classAppend, fn) {\n    const prior = globalScope2.__printFormDividerClassAppend;\n    globalScope2.__printFormDividerClassAppend = typeof classAppend === "string" ? classAppend : "";\n    try {\n      return fn();\n    } finally {\n      if (prior === void 0) {\n        delete globalScope2.__printFormDividerClassAppend;\n      } else {\n        globalScope2.__printFormDividerClassAppend = prior;\n      }\n    }\n  }\n  function pauseInMilliseconds(time) {\n    return new Promise((resolve, reject) => {\n      if (typeof time === "number" && time > 0) {\n        setTimeout(resolve, time);\n      } else {\n        reject(new Error("Invalid time value"));\n      }\n    });\n  }\n  async function formatAllPrintForms(overrides = {}) {\n    const globalScope2 = typeof window !== "undefined" ? window : globalThis;\n    if (globalScope2.__printFormProcessing) {\n      return;\n    }\n    if (!overrides.force && globalScope2.__printFormProcessed) {\n      return;\n    }\n    globalScope2.__printFormProcessing = true;\n    try {\n      const doc = globalScope2.document;\n      if (!doc) return;\n      const forms = Array.from(doc.querySelectorAll(".printform"));\n      for (let index = 0; index < forms.length; index += 1) {\n        const formEl = forms[index];\n        const perFormOverrides = { ...overrides };\n        if (perFormOverrides.divPageBreakBeforeClassAppend === void 0 && formEl && formEl.dataset) {\n          const datasetValue = formEl.dataset.divPageBreakBeforeClassAppend;\n          if (typeof datasetValue === "string" && datasetValue.trim()) {\n            perFormOverrides.divPageBreakBeforeClassAppend = datasetValue.trim();\n          }\n        }\n        const dividerClassAppend = perFormOverrides.divPageBreakBeforeClassAppend;\n        const config = getPrintformConfig(formEl, perFormOverrides);\n        try {\n          await pauseInMilliseconds(getDeviceDelay());\n        } catch (error) {\n          console.error("pauseInMilliseconds error", error);\n        }\n        try {\n          const formatted = withDividerClassAppend(globalScope2, dividerClassAppend, () => {\n            const formatter = new PrintFormFormatter(formEl, config);\n            return formatter.format();\n          });\n          if (index > 0 && formatted && formatted.parentNode) {\n            formatted.parentNode.insertBefore(DomHelpers.createPageBreakDivider(dividerClassAppend), formatted);\n          }\n        } catch (error) {\n          console.error("printform format error", error);\n        }\n      }\n      globalScope2.__printFormProcessed = true;\n    } finally {\n      globalScope2.__printFormProcessing = false;\n    }\n  }\n  function formatSinglePrintForm(formEl, overrides = {}) {\n    const globalScope2 = typeof window !== "undefined" ? window : globalThis;\n    const perFormOverrides = { ...overrides };\n    if (perFormOverrides.divPageBreakBeforeClassAppend === void 0 && formEl && formEl.dataset) {\n      const datasetValue = formEl.dataset.divPageBreakBeforeClassAppend;\n      if (typeof datasetValue === "string" && datasetValue.trim()) {\n        perFormOverrides.divPageBreakBeforeClassAppend = datasetValue.trim();\n      }\n    }\n    const dividerClassAppend = perFormOverrides.divPageBreakBeforeClassAppend;\n    const config = getPrintformConfig(formEl, perFormOverrides);\n    return withDividerClassAppend(globalScope2, dividerClassAppend, () => {\n      const formatter = new PrintFormFormatter(formEl, config);\n      return formatter.format();\n    });\n  }\n  const api = {\n    formatAll: formatAllPrintForms,\n    format: formatSinglePrintForm,\n    DEFAULT_CONFIG,\n    DEFAULT_PADDT_CONFIG\n  };\n  const globalScope = typeof window !== "undefined" ? window : null;\n  if (globalScope) {\n    if (globalScope.__printFormScriptLoaded__) {\n      globalScope.PrintForm = globalScope.PrintForm || api;\n    } else {\n      globalScope.__printFormScriptLoaded__ = true;\n      globalScope.PrintForm = globalScope.PrintForm || {};\n      Object.assign(globalScope.PrintForm, api);\n      const doc = globalScope.document;\n      if (doc && doc.addEventListener) {\n        let ensureReadyAndFormat = function() {\n          const isMobile = isMobileDevice();\n          const delay = isMobile ? 150 : 50;\n          if (doc.readyState === "complete") {\n            setTimeout(() => {\n              formatAllPrintForms();\n            }, delay);\n          } else {\n            globalScope.addEventListener("load", () => {\n              setTimeout(() => {\n                formatAllPrintForms();\n              }, delay);\n            });\n          }\n        };\n        doc.addEventListener("DOMContentLoaded", ensureReadyAndFormat);\n      }\n    }\n  }\n  return api;\n}();\n';
 const escapeHtml = (value) => String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-const titleCase = (value) => value.split(/[_\s]+/).filter(Boolean).map((token) => token.charAt(0).toUpperCase() + token.slice(1)).join(" ");
+const titleCase$1 = (value) => value.split(/[_\s]+/).filter(Boolean).map((token) => token.charAt(0).toUpperCase() + token.slice(1)).join(" ");
 const dedupeStrings = (values) => {
   const seen = /* @__PURE__ */ new Set();
   const output = [];
@@ -3644,470 +3623,7 @@ const buildDistinctParagraphBlocks = (entries, maxItems) => {
   });
   return selected.map((entry) => renderParagraphBlock(entry.label, entry.value));
 };
-const renderManagementFindingSentence = (claim, caveat) => `${claim.trim().replace(/\.*$/, "")}.${caveat ? ` Caveat: ${caveat.trim().replace(/\.*$/, "")}.` : ""}`;
-const resolveBusinessKpiNote = (item, text, businessContext) => {
-  const note = String(item.supportingNote ?? "").trim();
-  if (!note) {
-    return "";
-  }
-  if (!businessContext.some((entry) => isSemanticallySimilar(entry, note))) {
-    return note;
-  }
-  const label = item.label.toLowerCase();
-  if (label.includes("top visual")) {
-    return text.primaryVisualSupport;
-  }
-  if (label.includes("trusted cards")) {
-    return "Visual evidence selected for this report.";
-  }
-  if (label.includes("row expansion")) {
-    return "Prepared rows compared with raw rows.";
-  }
-  if (label.includes("material caveats")) {
-    return "Caveats and readiness risks still active.";
-  }
-  return text.supportingDetailAvailable;
-};
-const renderVisualSummaryRow = (visual, index, text, reportTemplate) => renderProwItem(`
-  <article class="supporting-card summary-card">
-    <div class="card-header">
-      <div>
-        <p class="eyebrow">${escapeHtml(text.keyFinding)} ${index + 1}</p>
-        <h3>${escapeHtml(reportTemplate === "executive_brief" ? visual.title : visual.businessTitle)}</h3>
-        ${reportTemplate === "audit_appendix" ? `<p class="meta-line">${escapeHtml(visual.title)}</p>` : ""}
-      </div>
-      <div class="badge-stack">
-        ${renderBadge(visual.chartType === "table" ? text.dataTable : titleCase(visual.chartType), "neutral")}
-        ${visual.calloutValue ? renderBadge(visual.calloutValue, "good") : ""}
-      </div>
-    </div>
-    ${reportTemplate === "executive_brief" || reportTemplate === "management_review" ? `<p>${escapeHtml(renderManagementFindingSentence(visual.businessTitle, visual.caveat))}</p>` : visual.caveat ? `<p class="meta-line">${escapeHtml(visual.caveat)}</p>` : ""}
-  </article>
-`, { id: `finding-${index + 1}` });
-const renderVisualChartRow = (visual) => renderProwItem(`
-  <article class="supporting-card chart-card">
-    <div class="visual-surface">
-      ${visual.svgMarkup ?? renderFallbackTable(visual)}
-    </div>
-    ${visual.chartWarnings.length > 0 ? `<p class="meta-line chart-warning">${escapeHtml(visual.chartWarnings.join(" "))}</p>` : ""}
-  </article>
-`, { extraClassName: "report-row--chart" });
-const renderVisualNarrativeRow = (visual, text) => renderProwItem(`
-  <article class="supporting-card narrative-card">
-    <div class="narrative-grid narrative-grid--short">
-      <div>
-        <h4>${escapeHtml(text.whatItShows)}</h4>
-        <p>${escapeHtml(visual.whatItShows)}</p>
-      </div>
-      <div>
-        <h4>${escapeHtml(text.whyItMatters)}</h4>
-        <p>${escapeHtml(visual.whyItMatters)}</p>
-      </div>
-      ${visual.caveat ? `
-      <div>
-        <h4>${escapeHtml(text.caveat)}</h4>
-        <p>${escapeHtml(visual.caveat)}</p>
-      </div>
-      ` : ""}
-    </div>
-  </article>
-`, { extraClassName: "report-row--narrative" });
-const renderVisualLongNarrative = (visual, index, text) => renderPtacSection(
-  `${text.keyFinding} ${index + 1}: ${visual.businessTitle}`,
-  text.decisionEvidence,
-  [
-    renderParagraphBlock(text.whatItShows, visual.whatItShows),
-    renderParagraphBlock(text.whyItMatters, visual.whyItMatters),
-    ...visual.caveat ? [renderParagraphBlock(text.caveat, visual.caveat)] : [],
-    ...visual.chartWarnings.length > 0 ? [renderParagraphBlock("Chart note", visual.chartWarnings.join(" "))] : []
-  ]
-);
-const renderVisualFindingRows = (reportVisuals, text, reportTemplate) => {
-  if (reportVisuals.length === 0) {
-    return [];
-  }
-  return reportVisuals.map((visual, index) => {
-    if (reportTemplate === "executive_brief" || reportTemplate === "management_review") {
-      return [
-        renderVisualSummaryRow(visual, index, text, reportTemplate),
-        renderVisualChartRow(visual)
-      ].join("");
-    }
-    const shortNarrative = ![
-      visual.whatItShows,
-      visual.whyItMatters,
-      visual.caveat ?? "",
-      visual.chartWarnings.join(" ")
-    ].some((item) => isLongText(item, 160));
-    return [
-      renderVisualSummaryRow(visual, index, text, reportTemplate),
-      renderVisualChartRow(visual),
-      shortNarrative ? renderVisualNarrativeRow(visual, text) : renderVisualLongNarrative(visual, index, text)
-    ].join("");
-  });
-};
-const renderBusinessVisualFindingRows = (reportVisuals, text) => reportVisuals.map((visual, index) => renderProwItem(`
-  <article class="supporting-card summary-card">
-    ${index === 0 ? `<div class="section-intro-inline"><p class="eyebrow">${escapeHtml(text.decisionEvidence)}</p><h2>${escapeHtml(text.keyFindings)}</h2></div>` : ""}
-    <div class="card-header">
-      <div>
-        <p class="eyebrow">${escapeHtml(text.keyFinding)} ${index + 1}</p>
-        <h3>${escapeHtml(visual.title)}</h3>
-      </div>
-      <div class="badge-stack">
-        ${renderBadge(visual.chartType === "table" ? text.dataTable : titleCase(visual.chartType), "neutral")}
-        ${visual.calloutValue ? renderBadge(visual.calloutValue, "good") : ""}
-      </div>
-    </div>
-    <div class="visual-surface">
-      ${visual.svgMarkup ?? renderFallbackTable(visual)}
-    </div>
-    <p>${escapeHtml(renderManagementFindingSentence(visual.businessTitle, visual.caveat))}</p>
-  </article>
-`, { id: index === 0 ? "key-findings" : void 0 }));
-const renderBusinessTextFindingRows = (text, findingSections, introAlreadyUsed) => {
-  let usedIntro = introAlreadyUsed;
-  let businessIndex = introAlreadyUsed ? 2 : 1;
-  return findingSections.flatMap((section) => section.items.map((item) => {
-    const row = renderProwItem(`
-          <article class="supporting-card summary-card">
-            ${!usedIntro ? `<div class="section-intro-inline"><p class="eyebrow">${escapeHtml(text.decisionEvidence)}</p><h2>${escapeHtml(text.keyFindings)}</h2></div>` : ""}
-            <div class="card-header">
-              <div>
-                <p class="eyebrow">${escapeHtml(text.keyFinding)} ${businessIndex}</p>
-                <h3>${escapeHtml(text.keyFinding)} ${businessIndex}</h3>
-              </div>
-              ${renderBadge(titleCase(item.importance), item.importance === "high" ? "good" : item.importance === "medium" ? "warning" : "neutral")}
-            </div>
-            <p>${escapeHtml(renderManagementFindingSentence(item.claim, item.caveats[0]))}</p>
-          </article>
-        `, { id: !usedIntro ? "key-findings" : void 0 });
-    usedIntro = true;
-    businessIndex += 1;
-    return row;
-  }));
-};
-const renderTextFindingRows = (text, findingSections, reportTemplate) => findingSections.flatMap((section, sectionIndex) => section.items.map((item, index) => renderProwItem(`
-      <article class="supporting-card summary-card">
-        ${index === 0 ? `<p class="eyebrow">${escapeHtml(section.title)}</p>` : ""}
-        <div class="card-header">
-          <h3>${escapeHtml(reportTemplate === "audit_appendix" ? item.claim : `${text.keyFinding} ${sectionIndex + index + 1}`)}</h3>
-          ${renderBadge(titleCase(item.importance), item.importance === "high" ? "good" : item.importance === "medium" ? "warning" : "neutral")}
-        </div>
-        ${reportTemplate === "executive_brief" || reportTemplate === "management_review" ? `<p>${escapeHtml(renderManagementFindingSentence(item.claim, item.caveats[0]))}</p>` : `
-        <p class="meta-line"><strong>Supported by:</strong> ${item.supportedByRoles.map((role) => escapeHtml(titleCase(role))).join(", ")}</p>
-        ${renderEvidenceRefs(item.evidenceRefs)}
-        ${item.caveats.length > 0 ? `<div class="subsection"><h4>Caveats</h4>${renderList(item.caveats, "compact-list")}</div>` : ""}
-        `}
-      </article>
-    `, {
-  id: sectionIndex === 0 && index === 0 ? "finding-1" : void 0
-})));
-const renderFindingRows = (reportVisuals, text, findingSections, options) => {
-  const reportTemplate = (options == null ? void 0 : options.reportTemplate) ?? "management_review";
-  if (reportTemplate === "executive_brief" || reportTemplate === "management_review") {
-    const businessRows = [
-      ...renderBusinessVisualFindingRows(reportVisuals, text),
-      ...renderBusinessTextFindingRows(text, findingSections, reportVisuals.length > 0)
-    ];
-    return (typeof (options == null ? void 0 : options.maxItems) === "number" ? businessRows.slice(0, options.maxItems) : businessRows).join("");
-  }
-  const rows = [
-    ...renderVisualFindingRows(reportVisuals, text, reportTemplate),
-    ...renderTextFindingRows(text, findingSections, reportTemplate)
-  ];
-  return (typeof (options == null ? void 0 : options.maxItems) === "number" ? rows.slice(0, options.maxItems) : rows).join("");
-};
-const renderKpiGridContent = (kpiHighlights, options) => {
-  if (kpiHighlights.length === 0) {
-    return '<p class="empty-state">No KPI highlights were recorded.</p>';
-  }
-  return chunk(kpiHighlights, 3).map((group) => `
-      <div class="kpi-grid">
-        ${group.map((item) => `
-        <article class="kpi-card">
-          <div class="kpi-label">${escapeHtml(item.label)}</div>
-          <div class="kpi-value">${escapeHtml(item.value)}</div>
-          <p class="kpi-note">${escapeHtml((options == null ? void 0 : options.text) && options.businessContext ? resolveBusinessKpiNote(item, options.text, options.businessContext) : item.supportingNote)}</p>
-        </article>
-        `).join("")}
-      </div>
-    `).join("");
-};
-const renderDisagreementPtac = (section, text, options) => renderPtacSection(
-  section.title,
-  text.openQuestions,
-  section.items.flatMap((item) => [
-    renderTextParagraph(`${item.topic} (${titleCase(item.resolution)}).`),
-    ...item.positions.map((position) => renderParagraphBlock(
-      titleCase(position.role),
-      `${position.stance}${position.evidenceRefs.length > 0 ? ` Evidence: ${position.evidenceRefs.join(", ")}` : ""}`
-    ))
-  ]),
-  options
-);
-const renderEvidenceHighlightRows = (section, text) => {
-  const longForm = [];
-  const rows = section.cards.filter((card) => {
-    const long = isLongText(card.whyItMatters, 180);
-    if (long) {
-      longForm.push(`${card.title} (${card.cardId}): ${card.whyItMatters}`);
-    }
-    return !long;
-  }).map((card) => renderProwItem(`
-      <article class="supporting-card compact-card">
-        <div class="card-header">
-          <h3>${escapeHtml(card.title)}</h3>
-          ${renderBadge(card.artifactType ? titleCase(card.artifactType) : text.chart, "neutral")}
-        </div>
-        <p class="meta-line"><strong>Card ID:</strong> <code>${escapeHtml(card.cardId)}</code></p>
-        <p>${escapeHtml(card.whyItMatters)}</p>
-      </article>
-    `, {})).join("");
-  return { rows, longForm };
-};
-const splitEvidenceCatalog = (entries) => {
-  const shortRows = [];
-  const longParagraphs = [];
-  entries.forEach((entry) => {
-    const detail = `${entry.label} (${entry.id}) - ${titleCase(entry.source)}: ${entry.detail}`;
-    if (isLongText(entry.detail, 180)) {
-      longParagraphs.push(detail);
-      return;
-    }
-    shortRows.push(`
-          <article class="supporting-card compact-card">
-            <div class="card-header">
-              <h3>${escapeHtml(entry.label)}</h3>
-              ${renderBadge(titleCase(entry.kind), "neutral")}
-            </div>
-            <p class="meta-line"><strong>ID:</strong> <code>${escapeHtml(entry.id)}</code></p>
-            <p class="meta-line"><strong>Source:</strong> ${escapeHtml(titleCase(entry.source))}</p>
-            <p>${escapeHtml(entry.detail)}</p>
-          </article>
-        `);
-  });
-  return { shortRows, longParagraphs };
-};
-const renderAppendix = (ir, text) => {
-  const { shortRows, longParagraphs } = splitEvidenceCatalog(ir.appendix.evidenceCatalog);
-  const excludedLongForm = [];
-  const excludedRows = ir.appendix.excludedEvidence.filter((item) => {
-    const detail = `${item.displayTitle} (${item.cardId}) - ${item.detail}`;
-    if (isLongText(item.detail, 180)) {
-      excludedLongForm.push(`${detail}. Reasons: ${item.reasonCodes.map(humanizeReasonCode).join(", ")}`);
-      return false;
-    }
-    return true;
-  }).map((item) => renderProwItem(`
-      <article class="supporting-card compact-card">
-        <div class="card-header">
-          <h3>${escapeHtml(item.displayTitle)}</h3>
-          ${renderBadge(titleCase(item.decision), "warning")}
-        </div>
-        <p class="meta-line"><strong>Card ID:</strong> <code>${escapeHtml(item.cardId)}</code></p>
-        <p class="meta-line"><strong>Reasons:</strong> ${escapeHtml(item.reasonCodes.map(humanizeReasonCode).join(", "))}</p>
-        <p>${escapeHtml(item.detail)}</p>
-      </article>
-    `, {})).join("");
-  const evidenceRows = shortRows.length > 0 ? shortRows.map((row) => renderProwItem(row, {})).join("") : renderProwItem('<p class="empty-state">No evidence references were recorded.</p>', {});
-  const rows = [
-    renderProwHeader(text.traceability, ir.appendix.title, "appendix"),
-    evidenceRows,
-    ir.appendix.excludedEvidence.length > 0 ? renderProwHeader(text.excludedEvidence, text.excludedEvidence) : "",
-    excludedRows
-  ].join("");
-  const longFormParagraphs = [...longParagraphs, ...excludedLongForm];
-  return {
-    rows,
-    longForm: renderPaddtSection(text.evidenceCatalog, text.appendixHighlights, longFormParagraphs)
-  };
-};
-const buildSummarySection = (ir, text, summaryParagraphs, options) => (options == null ? void 0 : options.compact) ? renderCompactNarrativeSection(ir.summary.title, text.managementSummary, summaryParagraphs, { id: "key-takeaways" }) : renderPtacSection(ir.summary.title, text.managementSummary, summaryParagraphs, { id: "key-takeaways" });
-const buildKpiSection = (text, kpiHighlights, options) => (options == null ? void 0 : options.compactIntro) ? renderProwItem(`
-      <article class="supporting-card compact-card section-intro-card">
-        <p class="eyebrow">${escapeHtml(text.boardSnapshot)}</p>
-        <h2>${escapeHtml(text.kpiSnapshot)}</h2>
-        ${renderKpiGridContent(kpiHighlights, { text, businessContext: options.businessContext })}
-      </article>
-    `, { id: "kpi-strip" }) : [
-  renderProwHeader(text.boardSnapshot, text.kpiSnapshot, "kpi-strip"),
-  renderProwItem(renderKpiGridContent(kpiHighlights), {})
-].join("");
-const buildFindingsSection = (text, findingsMarkup, options) => findingsMarkup ? [
-  ...(options == null ? void 0 : options.compactIntro) ? [] : [renderProwHeader(text.decisionEvidence, text.keyFindings, "key-findings")],
-  findingsMarkup
-].join("") : "";
-const buildRisksSection = (text, paragraphs, options) => (options == null ? void 0 : options.compact) ? renderCompactNarrativeSection(text.decisionGuardrails, text.decisionGuardrails, paragraphs, { id: "risks-caveats" }) : renderPtacSection(text.decisionGuardrails, text.decisionGuardrails, paragraphs, { id: "risks-caveats" });
-const buildActionsSection = (text, paragraphs, options) => (options == null ? void 0 : options.compact) ? renderCompactNarrativeSection(text.recommendedActions, text.whatToDoNext, paragraphs, { id: "recommended-actions" }) : renderPtacSection(text.recommendedActions, text.whatToDoNext, paragraphs, { id: "recommended-actions" });
-const buildTraceabilitySection = (text, paragraphs) => renderPtacSection(text.preparationVerification, text.traceability, paragraphs, { id: "traceability" });
-const buildCompactAppendixSection = (text, ir) => {
-  if (ir.appendix.evidenceCatalog.length === 0 && ir.appendix.excludedEvidence.length === 0) {
-    return renderProwItem(`
-          <article class="supporting-card compact-card section-intro-card">
-            <p class="eyebrow">${escapeHtml(text.traceability)}</p>
-            <h2>${escapeHtml(text.appendixHighlights)}</h2>
-            <p class="empty-state">No evidence references were recorded.</p>
-          </article>
-        `, { id: "appendix" });
-  }
-  const topExcludedItem = ir.appendix.excludedEvidence[0];
-  const topExcludedSummary = topExcludedItem ? topExcludedItem.reasonCodes.map(humanizeReasonCode).join(", ") : "";
-  return renderProwItem(`
-      <article class="supporting-card compact-card section-intro-card">
-        <div class="card-header">
-          <div>
-            <p class="eyebrow">${escapeHtml(text.traceability)}</p>
-            <h2>${escapeHtml(text.appendixHighlights)}</h2>
-          </div>
-          ${renderBadge(text.traceability, "neutral")}
-        </div>
-        <p>${escapeHtml(`${ir.appendix.evidenceCatalog.length} evidence reference(s) and ${ir.appendix.excludedEvidence.length} excluded item(s) remain available in the audit appendix layout.`)}</p>
-        <p class="meta-line"><strong>${escapeHtml(text.evidenceReferences)}:</strong> ${escapeHtml(String(ir.appendix.evidenceCatalog.length))}</p>
-        <p class="meta-line"><strong>${escapeHtml(text.excludedCount)}:</strong> ${escapeHtml(String(ir.appendix.excludedEvidence.length))}</p>
-        ${topExcludedSummary ? `<p class="meta-line"><strong>${escapeHtml(text.topExcludedItem)}:</strong> ${escapeHtml(topExcludedSummary)}</p>` : ""}
-      </article>
-    `, { id: "appendix" });
-};
-const renderHtmlReport = (ir, options) => {
-  var _a;
-  const text = getShellText(options == null ? void 0 : options.language);
-  const reportTemplate = normalizeReportTemplate((options == null ? void 0 : options.reportTemplate) ?? "management_review");
-  const documentTitle = ir.dataset.datasetName ? `${ir.dataset.datasetName} Analyst Report` : "Analyst Report";
-  const structuralSignals = renderStructuralSignals(ir.dataset.structuralSignals);
-  const risksAndCaveats = dedupeStrings([...ir.dataset.readinessRisks, ...ir.dataset.caveats]);
-  const findingSections = ir.sections.filter((section) => section.type === "findings");
-  const disagreementSections = ir.sections.filter(
-    (section) => section.type === "disagreements"
-  );
-  const evidenceSections = ir.sections.filter(
-    (section) => section.type === "evidence"
-  );
-  const shouldRenderWarningBanner = ((_a = options == null ? void 0 : options.manifest) == null ? void 0 : _a.artifactStatus) === "partial";
-  const reportVisuals = reportTemplate === "executive_brief" ? ir.reportVisuals.slice(0, 1) : reportTemplate === "management_review" ? ir.reportVisuals.slice(0, 2) : ir.reportVisuals;
-  const findingSectionsForTemplate = reportTemplate === "audit_appendix" ? findingSections : findingSections.map((section) => ({
-    ...section,
-    items: section.items.slice(0, reportTemplate === "executive_brief" ? 2 : 3)
-  })).filter((section) => section.items.length > 0);
-  const businessFindingSections = reportTemplate === "audit_appendix" ? findingSectionsForTemplate : filterBusinessFindingSections(
-    findingSectionsForTemplate,
-    reportVisuals.map((visual) => visual.businessTitle)
-  );
-  const heroStats = [
-    { label: "Dataset", value: ir.dataset.datasetName || "Untitled" },
-    { label: "Visuals", value: String(reportVisuals.length) },
-    { label: "Material caveats", value: String(risksAndCaveats.length) }
-  ];
-  const embeddedPrintFormScript = printFormScript.replace(/<\/script/gi, "<\\/script");
-  const auditSummaryParagraphs = [
-    renderParagraphBlock(text.overallPosition, ir.summary.executivePosition),
-    renderParagraphBlock(text.topBusinessImplication, ir.summary.topImplication),
-    renderParagraphBlock(text.mainCaution, ir.summary.mainCaution),
-    renderParagraphBlock(text.deliveryReadiness, ir.dataset.readinessReason),
-    ...ir.summary.managementHighlights.map(renderTextParagraph),
-    ...ir.dataset.readinessDrivers.length > 0 ? [renderParagraphBlock(text.support, ir.dataset.readinessDrivers.join(" | "))] : [],
-    ...ir.dataset.readinessRisks.length > 0 ? [renderParagraphBlock(text.risks, ir.dataset.readinessRisks.join(" | "))] : [],
-    ...structuralSignals.length > 0 ? [renderParagraphBlock(text.structuralRiskSignals, structuralSignals.join(" | "))] : []
-  ];
-  const executiveBriefSummaryParagraphs = buildDistinctParagraphBlocks([
-    { label: text.overallPosition, value: ir.summary.executivePosition },
-    { label: text.topBusinessImplication, value: ir.summary.topImplication },
-    { label: text.mainCaution, value: ir.summary.mainCaution }
-  ], 2);
-  const managementReviewSummaryParagraphs = buildDistinctParagraphBlocks([
-    { label: text.overallPosition, value: ir.summary.executivePosition },
-    { label: text.topBusinessImplication, value: ir.summary.topImplication },
-    { label: text.mainCaution, value: ir.summary.mainCaution },
-    { label: text.deliveryReadiness, value: ir.dataset.readinessReason }
-  ], 4);
-  const businessContext = dedupeStrings([
-    ir.summary.executivePosition,
-    ir.summary.topImplication,
-    ...reportVisuals.map((visual) => visual.businessTitle),
-    ...businessFindingSections.flatMap((section) => section.items.map((item) => item.claim))
-  ]);
-  const findingsMarkup = renderFindingRows(reportVisuals, text, businessFindingSections, {
-    reportTemplate,
-    maxItems: reportTemplate === "executive_brief" ? 2 : reportTemplate === "management_review" ? 4 : void 0
-  });
-  const disagreementsMarkup = disagreementSections.map((section, index) => renderDisagreementPtac(section, text, {
-    id: index === 0 ? "open-disagreements" : void 0
-  })).join("");
-  const evidenceHighlights = evidenceSections.map((section) => renderEvidenceHighlightRows(section, text));
-  const evidenceRows = evidenceHighlights.some((result) => result.rows) ? [
-    renderProwHeader(text.appendixHighlights, text.appendixHighlights),
-    ...evidenceHighlights.map((result) => result.rows)
-  ].join("") : "";
-  const appendix = renderAppendix(ir, text);
-  const dedupedActions = dedupeStrings(ir.summary.recommendedActions).map((action) => action.replace(/^\d+[\.\)]\s*/, "").trim()).filter(Boolean);
-  const recommendationParagraphs = dedupedActions.length > 1 ? [renderNumberedList(dedupedActions)] : dedupedActions.map(renderTextParagraph);
-  const evidenceLongForm = evidenceHighlights.flatMap((result) => result.longForm);
-  const executiveBriefRiskParagraphs = [
-    ...risksAndCaveats.slice(0, 3).map(renderTextParagraph),
-    ...disagreementSections.length > 0 ? [renderTextParagraph("Open disagreements remain and should be reviewed in the audit appendix layout.")] : []
-  ];
-  const managementReviewRiskParagraphs = [
-    ...risksAndCaveats.slice(0, 4).map(renderTextParagraph),
-    ...disagreementSections.length > 0 ? [renderTextParagraph("Open disagreements remain and should be reviewed in the audit appendix layout.")] : []
-  ];
-  const auditRiskParagraphs = risksAndCaveats.map(renderTextParagraph);
-  const auditTraceabilityParagraphs = [
-    renderParagraphBlock(text.workflowStatus, ir.dataset.workflowStatus),
-    renderParagraphBlock(text.datasetShape, ir.dataset.shapeSummary),
-    ...ir.dataset.generationBlockers.length > 0 ? [renderParagraphBlock(text.generationBlockers, ir.dataset.generationBlockers.join(" | "))] : []
-  ];
-  const activeContents = reportTemplate === "audit_appendix" ? [
-    { id: "key-takeaways", label: text.managementSummary },
-    { id: "traceability", label: text.traceability },
-    { id: "kpi-strip", label: text.kpiSnapshot },
-    { id: "key-findings", label: text.keyFindings },
-    { id: "risks-caveats", label: text.decisionGuardrails },
-    { id: "recommended-actions", label: text.recommendedActions },
-    ...disagreementsMarkup ? [{ id: "open-disagreements", label: text.openQuestions }] : [],
-    { id: "appendix", label: text.evidenceCatalog }
-  ] : [
-    { id: "key-takeaways", label: text.managementSummary },
-    { id: "kpi-strip", label: text.kpiSnapshot },
-    { id: "key-findings", label: text.keyFindings },
-    { id: "risks-caveats", label: text.decisionGuardrails },
-    { id: "recommended-actions", label: text.recommendedActions },
-    { id: "appendix", label: text.appendixHighlights }
-  ];
-  const shouldRepeatRowHeader = reportTemplate === "audit_appendix";
-  const reportBody = reportTemplate === "audit_appendix" ? [
-    buildSummarySection(ir, text, auditSummaryParagraphs),
-    buildTraceabilitySection(text, auditTraceabilityParagraphs),
-    buildKpiSection(text, ir.kpiHighlights ?? []),
-    buildFindingsSection(text, findingsMarkup),
-    buildRisksSection(text, auditRiskParagraphs),
-    buildActionsSection(text, recommendationParagraphs),
-    disagreementsMarkup,
-    evidenceRows,
-    appendix.rows,
-    renderPaddtSection(text.evidenceCatalog, text.appendixHighlights, evidenceLongForm, { id: "appendix-highlights" }),
-    appendix.longForm
-  ].filter(Boolean).join("") : reportTemplate === "executive_brief" ? [
-    buildSummarySection(ir, text, executiveBriefSummaryParagraphs, { compact: true }),
-    buildKpiSection(text, ir.kpiHighlights ?? [], { compactIntro: true, businessContext }),
-    buildFindingsSection(text, findingsMarkup, { compactIntro: true }),
-    buildRisksSection(text, executiveBriefRiskParagraphs, { compact: true }),
-    buildActionsSection(text, recommendationParagraphs.slice(0, 3), { compact: true }),
-    buildCompactAppendixSection(text, ir)
-  ].filter(Boolean).join("") : [
-    buildSummarySection(ir, text, managementReviewSummaryParagraphs, { compact: true }),
-    buildKpiSection(text, ir.kpiHighlights ?? [], { compactIntro: true, businessContext }),
-    buildFindingsSection(text, findingsMarkup, { compactIntro: true }),
-    buildRisksSection(text, managementReviewRiskParagraphs, { compact: true }),
-    buildActionsSection(text, recommendationParagraphs.slice(0, 4), { compact: true }),
-    buildCompactAppendixSection(text, ir)
-  ].filter(Boolean).join("");
-  return `<!DOCTYPE html>
-<html lang="${(options == null ? void 0 : options.language) === "Mandarin" ? "zh-CN" : "en"}">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>${escapeHtml(documentTitle)}</title>
-  <style>
+const reportStylesheet = `
     :root {
       color-scheme: light;
       --bg: #f0f2f5;
@@ -4432,11 +3948,14 @@ const renderHtmlReport = (ir, options) => {
       margin-bottom: 6px;
     }
     .kpi-value {
-      font-size: 20px;
+      font-size: 26px;
       font-weight: 700;
       margin-bottom: 6px;
       color: var(--ink);
     }
+    .kpi-value-good { color: var(--good); }
+    .kpi-value-warning { color: var(--warning); }
+    .kpi-value-neutral { color: var(--ink); }
     .kpi-note {
       color: var(--muted);
       font-size: 11px;
@@ -4478,6 +3997,9 @@ const renderHtmlReport = (ir, options) => {
       color: var(--muted);
       font-style: italic;
     }
+    .finding-high { border-left: 4px solid var(--good); }
+    .finding-medium { border-left: 3px solid var(--warning); }
+    .finding-low { border-left: 3px solid var(--line); }
     .table-wrap {
       overflow-x: auto;
       border: 1px solid var(--line);
@@ -4617,6 +4139,664 @@ const renderHtmlReport = (ir, options) => {
       .printform_page:last-child { page-break-after: auto; }
       .div_page_break_before { display: none; }
     }
+`;
+const getShellText = (language) => {
+  if (language === "Mandarin") {
+    return {
+      viewer: "分析报告查看器",
+      exportPdf: "导出 PDF",
+      close: "关闭",
+      preparedBy: "由 AI 分析生成",
+      reportId: "报告 ID",
+      readiness: "可交付性",
+      confidence: "置信度",
+      generated: "生成时间",
+      documentMap: "文档导航",
+      contents: "目录",
+      managementSummary: "管理摘要",
+      overallPosition: "总体结论",
+      topBusinessImplication: "主要业务含义",
+      mainCaution: "主要注意事项",
+      deliveryReadiness: "交付就绪度",
+      whyThisRating: "为何是这个评级",
+      support: "支持信号",
+      risks: "风险信号",
+      structuralRiskSignals: "结构性风险信号",
+      boardSnapshot: "管理层快照",
+      kpiSnapshot: "KPI 快照",
+      decisionEvidence: "决策证据",
+      keyFindings: "关键发现",
+      decisionGuardrails: "风险与限制",
+      recommendedActions: "建议动作",
+      whatToDoNext: "下一步",
+      traceability: "可追溯性",
+      whatItShows: "图表说明",
+      whyItMatters: "业务意义",
+      caveat: "注意事项",
+      openQuestions: "未决分歧",
+      appendixHighlights: "附录亮点",
+      evidenceCatalog: "证据目录",
+      excludedEvidence: "已排除证据",
+      warningBannerTitle: "此报告可生成，但必须带风险提示使用。",
+      warningBannerPrefix: "生成原因",
+      excludedCount: "已排除证据数",
+      keyFinding: "关键发现",
+      dataTable: "数据表",
+      chart: "图表",
+      evidenceReferences: "证据引用数",
+      topExcludedItem: "主要排除项",
+      preparationVerification: "准备与校验",
+      workflowStatus: "工作流状态",
+      datasetShape: "数据形态",
+      generationBlockers: "生成阻塞项",
+      primaryVisualSupport: "该数值来自当前选用图表中的主要指标。",
+      supportingDetailAvailable: "更具体的说明已在下方关键发现中呈现。",
+      emptyFindings: "当前证据不足以生成具体发现。请添加更多分析卡片或运行更多查询以丰富证据。",
+      emptyRisks: "未发现明确的风险或限制条件。",
+      emptyActions: "当前没有建议的后续操作。"
+    };
+  }
+  return {
+    viewer: "Analyst Report Viewer",
+    exportPdf: "Export PDF",
+    close: "Close",
+    preparedBy: "Prepared by AI Analysis",
+    reportId: "Report ID",
+    readiness: "Readiness",
+    confidence: "Confidence",
+    generated: "Generated",
+    documentMap: "Document Map",
+    contents: "Contents",
+    managementSummary: "Management Summary",
+    overallPosition: "Overall Position",
+    topBusinessImplication: "Top Business Implication",
+    mainCaution: "Main Caution",
+    deliveryReadiness: "Delivery Readiness",
+    whyThisRating: "Why this rating",
+    support: "Support",
+    risks: "Risks",
+    structuralRiskSignals: "Structural risk signals",
+    boardSnapshot: "Board Snapshot",
+    kpiSnapshot: "KPI Snapshot",
+    decisionEvidence: "Decision Evidence",
+    keyFindings: "Key Findings",
+    decisionGuardrails: "Decision Guardrails",
+    recommendedActions: "Recommended Actions",
+    whatToDoNext: "What To Do Next",
+    traceability: "Traceability",
+    whatItShows: "What it shows",
+    whyItMatters: "Why it matters",
+    caveat: "Caveat",
+    openQuestions: "Open Questions",
+    appendixHighlights: "Appendix Highlights",
+    evidenceCatalog: "Evidence Catalog",
+    excludedEvidence: "Excluded Evidence",
+    warningBannerTitle: "This report is deliverable only with explicit caveats.",
+    warningBannerPrefix: "Generation reason",
+    excludedCount: "Excluded evidence",
+    keyFinding: "Key Finding",
+    dataTable: "Data table",
+    chart: "Chart",
+    evidenceReferences: "Evidence references",
+    topExcludedItem: "Top excluded item",
+    preparationVerification: "Preparation & Verification",
+    workflowStatus: "Workflow status",
+    datasetShape: "Dataset shape",
+    generationBlockers: "Generation blockers",
+    primaryVisualSupport: "Primary value highlighted by the selected visual.",
+    supportingDetailAvailable: "Supporting detail is summarized in the finding cards below.",
+    emptyFindings: "Not enough evidence to produce specific findings. Add more analysis cards or run additional queries to strengthen the evidence base.",
+    emptyRisks: "No explicit risks or caveats were identified.",
+    emptyActions: "No recommended follow-up actions at this time."
+  };
+};
+const REASON_CODE_LABELS = {
+  narrative_ineligible: "Not suitable for narrative reporting",
+  helper_exposure: "Contains helper/system columns",
+  low_business_confidence: "Low business meaning confidence",
+  aggregation_quality_warning: "Aggregation quality concern",
+  fallback_plan: "Generated from fallback plan"
+};
+const humanizeReasonCode = (code) => REASON_CODE_LABELS[code] ?? titleCase(code.replace(/_/g, " "));
+const titleCase = (value) => value.split(/[_\s]+/).filter(Boolean).map((token) => token.charAt(0).toUpperCase() + token.slice(1)).join(" ");
+const renderManagementFindingSentence = (claim, caveat) => `${claim.trim().replace(/\.*$/, "")}.${caveat ? ` Caveat: ${caveat.trim().replace(/\.*$/, "")}.` : ""}`;
+const resolveBusinessKpiNote = (item, text, businessContext) => {
+  const note = String(item.supportingNote ?? "").trim();
+  if (!note) {
+    return "";
+  }
+  if (!businessContext.some((entry) => isSemanticallySimilar(entry, note))) {
+    return note;
+  }
+  const label = item.label.toLowerCase();
+  if (label.includes("top visual")) {
+    return text.primaryVisualSupport;
+  }
+  if (label.includes("trusted cards")) {
+    return "Visual evidence selected for this report.";
+  }
+  if (label.includes("row expansion")) {
+    return "Prepared rows compared with raw rows.";
+  }
+  if (label.includes("material caveats")) {
+    return "Caveats and readiness risks still active.";
+  }
+  return text.supportingDetailAvailable;
+};
+const renderVisualSummaryRow = (visual, index, text, reportTemplate) => renderProwItem(`
+  <article class="supporting-card summary-card finding-high">
+    <div class="card-header">
+      <div>
+        <p class="eyebrow">${escapeHtml(text.keyFinding)} ${index + 1}</p>
+        <h3>${escapeHtml(reportTemplate === "executive_brief" ? visual.title : visual.businessTitle)}</h3>
+        ${reportTemplate === "audit_appendix" ? `<p class="meta-line">${escapeHtml(visual.title)}</p>` : ""}
+      </div>
+      <div class="badge-stack">
+        ${renderBadge(visual.chartType === "table" ? text.dataTable : titleCase$1(visual.chartType), "neutral")}
+        ${visual.calloutValue ? renderBadge(visual.calloutValue, "good") : ""}
+      </div>
+    </div>
+    ${reportTemplate === "executive_brief" || reportTemplate === "management_review" ? `<p>${escapeHtml(renderManagementFindingSentence(visual.businessTitle, visual.caveat))}</p>` : visual.caveat ? `<p class="meta-line">${escapeHtml(visual.caveat)}</p>` : ""}
+  </article>
+`, { id: `finding-${index + 1}` });
+const renderVisualChartRow = (visual) => renderProwItem(`
+  <article class="supporting-card chart-card">
+    <div class="visual-surface">
+      ${visual.svgMarkup ?? renderFallbackTable(visual)}
+    </div>
+    ${visual.chartWarnings.length > 0 ? `<p class="meta-line chart-warning">${escapeHtml(visual.chartWarnings.join(" "))}</p>` : ""}
+  </article>
+`, { extraClassName: "report-row--chart" });
+const renderVisualNarrativeRow = (visual, text) => renderProwItem(`
+  <article class="supporting-card narrative-card">
+    <div class="narrative-grid narrative-grid--short">
+      <div>
+        <h4>${escapeHtml(text.whatItShows)}</h4>
+        <p>${escapeHtml(visual.whatItShows)}</p>
+      </div>
+      <div>
+        <h4>${escapeHtml(text.whyItMatters)}</h4>
+        <p>${escapeHtml(visual.whyItMatters)}</p>
+      </div>
+      ${visual.caveat ? `
+      <div>
+        <h4>${escapeHtml(text.caveat)}</h4>
+        <p>${escapeHtml(visual.caveat)}</p>
+      </div>
+      ` : ""}
+    </div>
+  </article>
+`, { extraClassName: "report-row--narrative" });
+const renderVisualLongNarrative = (visual, index, text) => renderPtacSection(
+  `${text.keyFinding} ${index + 1}: ${visual.businessTitle}`,
+  text.decisionEvidence,
+  [
+    renderParagraphBlock(text.whatItShows, visual.whatItShows),
+    renderParagraphBlock(text.whyItMatters, visual.whyItMatters),
+    ...visual.caveat ? [renderParagraphBlock(text.caveat, visual.caveat)] : [],
+    ...visual.chartWarnings.length > 0 ? [renderParagraphBlock("Chart note", visual.chartWarnings.join(" "))] : []
+  ]
+);
+const renderVisualFindingRows = (reportVisuals, text, reportTemplate) => {
+  if (reportVisuals.length === 0) {
+    return [];
+  }
+  return reportVisuals.map((visual, index) => {
+    if (reportTemplate === "executive_brief" || reportTemplate === "management_review") {
+      return [
+        renderVisualSummaryRow(visual, index, text, reportTemplate),
+        renderVisualChartRow(visual)
+      ].join("");
+    }
+    const shortNarrative = ![
+      visual.whatItShows,
+      visual.whyItMatters,
+      visual.caveat ?? "",
+      visual.chartWarnings.join(" ")
+    ].some((item) => isLongText(item, 160));
+    return [
+      renderVisualSummaryRow(visual, index, text, reportTemplate),
+      renderVisualChartRow(visual),
+      shortNarrative ? renderVisualNarrativeRow(visual, text) : renderVisualLongNarrative(visual, index, text)
+    ].join("");
+  });
+};
+const renderBusinessVisualFindingRows = (reportVisuals, text) => reportVisuals.map((visual, index) => renderProwItem(`
+  <article class="supporting-card summary-card finding-high">
+    ${index === 0 ? `<div class="section-intro-inline"><p class="eyebrow">${escapeHtml(text.decisionEvidence)}</p><h2>${escapeHtml(text.keyFindings)}</h2></div>` : ""}
+    <div class="card-header">
+      <div>
+        <p class="eyebrow">${escapeHtml(text.keyFinding)} ${index + 1}</p>
+        <h3>${escapeHtml(visual.title)}</h3>
+      </div>
+      <div class="badge-stack">
+        ${renderBadge(visual.chartType === "table" ? text.dataTable : titleCase$1(visual.chartType), "neutral")}
+        ${visual.calloutValue ? renderBadge(visual.calloutValue, "good") : ""}
+      </div>
+    </div>
+    <div class="visual-surface">
+      ${visual.svgMarkup ?? renderFallbackTable(visual)}
+    </div>
+    <p>${escapeHtml(renderManagementFindingSentence(visual.businessTitle, visual.caveat))}</p>
+  </article>
+`, { id: index === 0 ? "key-findings" : void 0 }));
+const renderBusinessTextFindingRows = (text, findingSections, introAlreadyUsed, startIndex = 0) => {
+  let usedIntro = introAlreadyUsed;
+  let businessIndex = startIndex > 0 ? startIndex + 1 : introAlreadyUsed ? 2 : 1;
+  return findingSections.flatMap((section) => section.items.map((item) => {
+    const row = renderProwItem(`
+          <article class="supporting-card summary-card finding-${item.importance}">
+            ${!usedIntro ? `<div class="section-intro-inline"><p class="eyebrow">${escapeHtml(text.decisionEvidence)}</p><h2>${escapeHtml(text.keyFindings)}</h2></div>` : ""}
+            <div class="card-header">
+              <div>
+                <p class="eyebrow">${escapeHtml(text.keyFinding)} ${businessIndex}</p>
+                <h3>${escapeHtml(item.claim)}</h3>
+              </div>
+              ${renderBadge(titleCase$1(item.importance), item.importance === "high" ? "good" : item.importance === "medium" ? "warning" : "neutral")}
+            </div>
+            <p>${escapeHtml(renderManagementFindingSentence(item.claim, item.caveats[0]))}</p>
+          </article>
+        `, { id: !usedIntro ? "key-findings" : void 0 });
+    usedIntro = true;
+    businessIndex += 1;
+    return row;
+  }));
+};
+const renderTextFindingRows = (text, findingSections, reportTemplate) => findingSections.flatMap((section, sectionIndex) => section.items.map((item, index) => renderProwItem(`
+      <article class="supporting-card summary-card finding-${item.importance}">
+        ${index === 0 ? `<p class="eyebrow">${escapeHtml(section.title)}</p>` : ""}
+        <div class="card-header">
+          <h3>${escapeHtml(reportTemplate === "audit_appendix" ? item.claim : `${text.keyFinding} ${sectionIndex + index + 1}`)}</h3>
+          ${renderBadge(titleCase$1(item.importance), item.importance === "high" ? "good" : item.importance === "medium" ? "warning" : "neutral")}
+        </div>
+        ${reportTemplate === "executive_brief" || reportTemplate === "management_review" ? `<p>${escapeHtml(renderManagementFindingSentence(item.claim, item.caveats[0]))}</p>` : `
+        <p class="meta-line"><strong>Supported by:</strong> ${item.supportedByRoles.map((role) => escapeHtml(titleCase$1(role))).join(", ")}</p>
+        ${renderEvidenceRefs(item.evidenceRefs)}
+        ${item.caveats.length > 0 ? `<div class="subsection"><h4>Caveats</h4>${renderList(item.caveats, "compact-list")}</div>` : ""}
+        `}
+      </article>
+    `, {
+  id: sectionIndex === 0 && index === 0 ? "finding-1" : void 0
+})));
+const renderFindingRows = (reportVisuals, text, findingSections, options) => {
+  const reportTemplate = (options == null ? void 0 : options.reportTemplate) ?? "management_review";
+  if (reportTemplate === "executive_brief" || reportTemplate === "management_review") {
+    const businessRows = [
+      ...renderBusinessVisualFindingRows(reportVisuals, text),
+      ...renderBusinessTextFindingRows(text, findingSections, reportVisuals.length > 0, reportVisuals.length)
+    ];
+    return (typeof (options == null ? void 0 : options.maxItems) === "number" ? businessRows.slice(0, options.maxItems) : businessRows).join("");
+  }
+  const rows = [
+    ...renderVisualFindingRows(reportVisuals, text, reportTemplate),
+    ...renderTextFindingRows(text, findingSections, reportTemplate)
+  ];
+  return (typeof (options == null ? void 0 : options.maxItems) === "number" ? rows.slice(0, options.maxItems) : rows).join("");
+};
+const renderKpiGridContent = (kpiHighlights, options) => {
+  if (kpiHighlights.length === 0) {
+    return '<p class="empty-state">No KPI highlights were recorded.</p>';
+  }
+  return chunk(kpiHighlights, 3).map((group) => `
+      <div class="kpi-grid">
+        ${group.map((item) => `
+        <article class="kpi-card">
+          <div class="kpi-label">${escapeHtml(item.label)}</div>
+          <div class="kpi-value kpi-value-${item.tone ?? "neutral"}">${escapeHtml(item.value)}</div>
+          <p class="kpi-note">${escapeHtml((options == null ? void 0 : options.text) && options.businessContext ? resolveBusinessKpiNote(item, options.text, options.businessContext) : item.supportingNote)}</p>
+        </article>
+        `).join("")}
+      </div>
+    `).join("");
+};
+const renderDisagreementPtac = (section, text, options) => renderPtacSection(
+  section.title,
+  text.openQuestions,
+  section.items.flatMap((item) => [
+    renderTextParagraph(`${item.topic} (${titleCase$1(item.resolution)}).`),
+    ...item.positions.map((position) => renderParagraphBlock(
+      titleCase$1(position.role),
+      `${position.stance}${position.evidenceRefs.length > 0 ? ` Evidence: ${position.evidenceRefs.join(", ")}` : ""}`
+    ))
+  ]),
+  options
+);
+const renderEvidenceHighlightRows = (section, text) => {
+  const longForm = [];
+  const rows = section.cards.filter((card) => {
+    const long = isLongText(card.whyItMatters, 180);
+    if (long) {
+      longForm.push(`${card.title} (${card.cardId}): ${card.whyItMatters}`);
+    }
+    return !long;
+  }).map((card) => renderProwItem(`
+      <article class="supporting-card compact-card">
+        <div class="card-header">
+          <h3>${escapeHtml(card.title)}</h3>
+          ${renderBadge(card.artifactType ? titleCase$1(card.artifactType) : text.chart, "neutral")}
+        </div>
+        <p class="meta-line"><strong>Card ID:</strong> <code>${escapeHtml(card.cardId)}</code></p>
+        <p>${escapeHtml(card.whyItMatters)}</p>
+      </article>
+    `, {})).join("");
+  return { rows, longForm };
+};
+const splitEvidenceCatalog = (entries) => {
+  const shortRows = [];
+  const longParagraphs = [];
+  entries.forEach((entry) => {
+    const detail = `${entry.label} (${entry.id}) - ${titleCase$1(entry.source)}: ${entry.detail}`;
+    if (isLongText(entry.detail, 180)) {
+      longParagraphs.push(detail);
+      return;
+    }
+    shortRows.push(`
+          <article class="supporting-card compact-card">
+            <div class="card-header">
+              <h3>${escapeHtml(entry.label)}</h3>
+              ${renderBadge(titleCase$1(entry.kind), "neutral")}
+            </div>
+            <p class="meta-line"><strong>ID:</strong> <code>${escapeHtml(entry.id)}</code></p>
+            <p class="meta-line"><strong>Source:</strong> ${escapeHtml(titleCase$1(entry.source))}</p>
+            <p>${escapeHtml(entry.detail)}</p>
+          </article>
+        `);
+  });
+  return { shortRows, longParagraphs };
+};
+const renderAppendix = (ir, text) => {
+  const { shortRows, longParagraphs } = splitEvidenceCatalog(ir.appendix.evidenceCatalog);
+  const excludedLongForm = [];
+  const excludedRows = ir.appendix.excludedEvidence.filter((item) => {
+    const detail = `${item.displayTitle} (${item.cardId}) - ${item.detail}`;
+    if (isLongText(item.detail, 180)) {
+      excludedLongForm.push(`${detail}. Reasons: ${item.reasonCodes.map(humanizeReasonCode).join(", ")}`);
+      return false;
+    }
+    return true;
+  }).map((item) => renderProwItem(`
+      <article class="supporting-card compact-card">
+        <div class="card-header">
+          <h3>${escapeHtml(item.displayTitle)}</h3>
+          ${renderBadge(titleCase$1(item.decision), "warning")}
+        </div>
+        <p class="meta-line"><strong>Card ID:</strong> <code>${escapeHtml(item.cardId)}</code></p>
+        <p class="meta-line"><strong>Reasons:</strong> ${escapeHtml(item.reasonCodes.map(humanizeReasonCode).join(", "))}</p>
+        <p>${escapeHtml(item.detail)}</p>
+      </article>
+    `, {})).join("");
+  const evidenceRows = shortRows.length > 0 ? shortRows.map((row) => renderProwItem(row, {})).join("") : renderProwItem('<p class="empty-state">No evidence references were recorded.</p>', {});
+  const rows = [
+    renderProwHeader(text.traceability, ir.appendix.title, "appendix"),
+    evidenceRows,
+    ir.appendix.excludedEvidence.length > 0 ? renderProwHeader(text.excludedEvidence, text.excludedEvidence) : "",
+    excludedRows
+  ].join("");
+  const longFormParagraphs = [...longParagraphs, ...excludedLongForm];
+  return {
+    rows,
+    longForm: renderPaddtSection(text.evidenceCatalog, text.appendixHighlights, longFormParagraphs)
+  };
+};
+const buildSummarySection = (ir, text, summaryParagraphs, options) => (options == null ? void 0 : options.compact) ? renderCompactNarrativeSection(ir.summary.title, text.managementSummary, summaryParagraphs, { id: "key-takeaways" }) : renderPtacSection(ir.summary.title, text.managementSummary, summaryParagraphs, { id: "key-takeaways" });
+const buildKpiSection = (text, kpiHighlights, options) => (options == null ? void 0 : options.compactIntro) ? renderProwItem(`
+      <article class="supporting-card compact-card section-intro-card">
+        <p class="eyebrow">${escapeHtml(text.boardSnapshot)}</p>
+        <h2>${escapeHtml(text.kpiSnapshot)}</h2>
+        ${renderKpiGridContent(kpiHighlights, { text, businessContext: options.businessContext })}
+      </article>
+    `, { id: "kpi-strip" }) : [
+  renderProwHeader(text.boardSnapshot, text.kpiSnapshot, "kpi-strip"),
+  renderProwItem(renderKpiGridContent(kpiHighlights), {})
+].join("");
+const buildFindingsSection = (text, findingsMarkup, options) => findingsMarkup ? [
+  ...(options == null ? void 0 : options.compactIntro) ? [] : [renderProwHeader(text.decisionEvidence, text.keyFindings, "key-findings")],
+  findingsMarkup
+].join("") : renderProwItem(`
+      <article class="supporting-card compact-card section-intro-card">
+        <p class="eyebrow">${escapeHtml(text.decisionEvidence)}</p>
+        <h2>${escapeHtml(text.keyFindings)}</h2>
+        <p class="empty-state">${escapeHtml(text.emptyFindings)}</p>
+      </article>
+    `, { id: "key-findings" });
+const buildRisksSection = (text, paragraphs, options) => {
+  const rendered = (options == null ? void 0 : options.compact) ? renderCompactNarrativeSection(text.decisionGuardrails, text.decisionGuardrails, paragraphs, { id: "risks-caveats" }) : renderPtacSection(text.decisionGuardrails, text.decisionGuardrails, paragraphs, { id: "risks-caveats" });
+  return rendered || renderProwItem(`
+      <article class="supporting-card compact-card section-intro-card">
+        <p class="eyebrow">${escapeHtml(text.decisionGuardrails)}</p>
+        <h2>${escapeHtml(text.decisionGuardrails)}</h2>
+        <p class="empty-state">${escapeHtml(text.emptyRisks)}</p>
+      </article>
+    `, { id: "risks-caveats" });
+};
+const buildActionsSection = (text, paragraphs, options) => {
+  const rendered = (options == null ? void 0 : options.compact) ? renderCompactNarrativeSection(text.recommendedActions, text.whatToDoNext, paragraphs, { id: "recommended-actions" }) : renderPtacSection(text.recommendedActions, text.whatToDoNext, paragraphs, { id: "recommended-actions" });
+  return rendered || renderProwItem(`
+      <article class="supporting-card compact-card section-intro-card">
+        <p class="eyebrow">${escapeHtml(text.recommendedActions)}</p>
+        <h2>${escapeHtml(text.whatToDoNext)}</h2>
+        <p class="empty-state">${escapeHtml(text.emptyActions)}</p>
+      </article>
+    `, { id: "recommended-actions" });
+};
+const buildTraceabilitySection = (text, paragraphs) => renderPtacSection(text.preparationVerification, text.traceability, paragraphs, { id: "traceability" });
+const buildCompactAppendixSection = (text, ir) => {
+  if (ir.appendix.evidenceCatalog.length === 0 && ir.appendix.excludedEvidence.length === 0) {
+    return renderProwItem(`
+          <article class="supporting-card compact-card section-intro-card">
+            <p class="eyebrow">${escapeHtml(text.traceability)}</p>
+            <h2>${escapeHtml(text.appendixHighlights)}</h2>
+            <p class="empty-state">No evidence references were recorded.</p>
+          </article>
+        `, { id: "appendix" });
+  }
+  const topExcludedItem = ir.appendix.excludedEvidence[0];
+  const topExcludedSummary = topExcludedItem ? topExcludedItem.reasonCodes.map(humanizeReasonCode).join(", ") : "";
+  return renderProwItem(`
+      <article class="supporting-card compact-card section-intro-card">
+        <div class="card-header">
+          <div>
+            <p class="eyebrow">${escapeHtml(text.traceability)}</p>
+            <h2>${escapeHtml(text.appendixHighlights)}</h2>
+          </div>
+          ${renderBadge(text.traceability, "neutral")}
+        </div>
+        <p>${escapeHtml(`${ir.appendix.evidenceCatalog.length} evidence reference(s) and ${ir.appendix.excludedEvidence.length} excluded item(s) remain available in the audit appendix layout.`)}</p>
+        <p class="meta-line"><strong>${escapeHtml(text.evidenceReferences)}:</strong> ${escapeHtml(String(ir.appendix.evidenceCatalog.length))}</p>
+        <p class="meta-line"><strong>${escapeHtml(text.excludedCount)}:</strong> ${escapeHtml(String(ir.appendix.excludedEvidence.length))}</p>
+        ${topExcludedSummary ? `<p class="meta-line"><strong>${escapeHtml(text.topExcludedItem)}:</strong> ${escapeHtml(topExcludedSummary)}</p>` : ""}
+      </article>
+    `, { id: "appendix" });
+};
+const assembleReportData = (ir, options) => {
+  var _a;
+  const text = getShellText(options == null ? void 0 : options.language);
+  const reportTemplate = normalizeReportTemplate((options == null ? void 0 : options.reportTemplate) ?? "management_review");
+  const documentTitle = ir.dataset.datasetName ? `${ir.dataset.datasetName} Analyst Report` : "Analyst Report";
+  const structuralSignals = renderStructuralSignals(ir.dataset.structuralSignals);
+  const risksAndCaveats = dedupeStrings([...ir.dataset.readinessRisks, ...ir.dataset.caveats]);
+  const findingSections = ir.sections.filter((section) => section.type === "findings");
+  const disagreementSections = ir.sections.filter(
+    (section) => section.type === "disagreements"
+  );
+  const evidenceSections = ir.sections.filter(
+    (section) => section.type === "evidence"
+  );
+  const shouldRenderWarningBanner = ((_a = options == null ? void 0 : options.manifest) == null ? void 0 : _a.artifactStatus) === "partial";
+  const reportVisuals = reportTemplate === "executive_brief" ? ir.reportVisuals.slice(0, 1) : reportTemplate === "management_review" ? ir.reportVisuals.slice(0, 2) : ir.reportVisuals;
+  const findingSectionsForTemplate = reportTemplate === "audit_appendix" ? findingSections : findingSections.map((section) => ({
+    ...section,
+    items: section.items.slice(0, reportTemplate === "executive_brief" ? 2 : 3)
+  })).filter((section) => section.items.length > 0);
+  const businessFindingSections = reportTemplate === "audit_appendix" ? findingSectionsForTemplate : filterBusinessFindingSections(
+    findingSectionsForTemplate,
+    reportVisuals.map((visual) => visual.businessTitle)
+  );
+  const heroStats = [
+    { label: "Dataset", value: ir.dataset.datasetName || "Untitled" },
+    { label: "Visuals", value: String(reportVisuals.length) },
+    { label: "Material caveats", value: String(risksAndCaveats.length) }
+  ];
+  const auditSummaryParagraphs = [
+    renderParagraphBlock(text.overallPosition, ir.summary.executivePosition),
+    renderParagraphBlock(text.topBusinessImplication, ir.summary.topImplication),
+    renderParagraphBlock(text.mainCaution, ir.summary.mainCaution),
+    renderParagraphBlock(text.deliveryReadiness, ir.dataset.readinessReason),
+    ...ir.summary.managementHighlights.map(renderTextParagraph),
+    ...ir.dataset.readinessDrivers.length > 0 ? [renderParagraphBlock(text.support, ir.dataset.readinessDrivers.join(" | "))] : [],
+    ...ir.dataset.readinessRisks.length > 0 ? [renderParagraphBlock(text.risks, ir.dataset.readinessRisks.join(" | "))] : [],
+    ...structuralSignals.length > 0 ? [renderParagraphBlock(text.structuralRiskSignals, structuralSignals.join(" | "))] : []
+  ];
+  const executiveBriefSummaryParagraphs = buildDistinctParagraphBlocks([
+    { label: text.overallPosition, value: ir.summary.executivePosition },
+    { label: text.topBusinessImplication, value: ir.summary.topImplication },
+    { label: text.mainCaution, value: ir.summary.mainCaution }
+  ], 2);
+  const managementReviewSummaryParagraphs = buildDistinctParagraphBlocks([
+    { label: text.overallPosition, value: ir.summary.executivePosition },
+    { label: text.topBusinessImplication, value: ir.summary.topImplication },
+    { label: text.mainCaution, value: ir.summary.mainCaution },
+    { label: text.deliveryReadiness, value: ir.dataset.readinessReason }
+  ], 4);
+  const businessContext = dedupeStrings([
+    ir.summary.executivePosition,
+    ir.summary.topImplication,
+    ...reportVisuals.map((visual) => visual.businessTitle),
+    ...businessFindingSections.flatMap((section) => section.items.map((item) => item.claim))
+  ]);
+  const findingsMarkup = renderFindingRows(reportVisuals, text, businessFindingSections, {
+    reportTemplate,
+    maxItems: reportTemplate === "executive_brief" ? 2 : reportTemplate === "management_review" ? 4 : void 0
+  });
+  const disagreementsMarkup = disagreementSections.map((section, index) => renderDisagreementPtac(section, text, {
+    id: index === 0 ? "open-disagreements" : void 0
+  })).join("");
+  const evidenceHighlights = evidenceSections.map((section) => renderEvidenceHighlightRows(section, text));
+  const evidenceRows = evidenceHighlights.some((result) => result.rows) ? [
+    renderProwHeader(text.appendixHighlights, text.appendixHighlights),
+    ...evidenceHighlights.map((result) => result.rows)
+  ].join("") : "";
+  const appendix = renderAppendix(ir, text);
+  const dedupedActions = dedupeStrings(ir.summary.recommendedActions).map((action) => action.replace(/^\d+[\.\)]\s*/, "").trim()).filter(Boolean);
+  const recommendationParagraphs = dedupedActions.length > 1 ? [renderNumberedList(dedupedActions)] : dedupedActions.map(renderTextParagraph);
+  const evidenceLongForm = evidenceHighlights.flatMap((result) => result.longForm);
+  const briefRiskItems = risksAndCaveats.slice(0, 3);
+  const executiveBriefRiskParagraphs = [
+    ...briefRiskItems.length > 1 ? [renderList(briefRiskItems, "bullet-list")] : briefRiskItems.map(renderTextParagraph),
+    ...disagreementSections.length > 0 ? [renderTextParagraph("Open disagreements remain and should be reviewed in the audit appendix layout.")] : []
+  ];
+  const mgmtRiskItems = risksAndCaveats.slice(0, 4);
+  const managementReviewRiskParagraphs = [
+    ...mgmtRiskItems.length > 1 ? [renderList(mgmtRiskItems, "bullet-list")] : mgmtRiskItems.map(renderTextParagraph),
+    ...disagreementSections.length > 0 ? [renderTextParagraph("Open disagreements remain and should be reviewed in the audit appendix layout.")] : []
+  ];
+  const auditRiskParagraphs = risksAndCaveats.map(renderTextParagraph);
+  const auditTraceabilityParagraphs = [
+    renderParagraphBlock(text.workflowStatus, ir.dataset.workflowStatus),
+    renderParagraphBlock(text.datasetShape, ir.dataset.shapeSummary),
+    ...ir.dataset.generationBlockers.length > 0 ? [renderParagraphBlock(text.generationBlockers, ir.dataset.generationBlockers.join(" | "))] : []
+  ];
+  const activeContents = reportTemplate === "audit_appendix" ? [
+    { id: "key-takeaways", label: text.managementSummary },
+    { id: "traceability", label: text.traceability },
+    { id: "kpi-strip", label: text.kpiSnapshot },
+    { id: "key-findings", label: text.keyFindings },
+    { id: "risks-caveats", label: text.decisionGuardrails },
+    { id: "recommended-actions", label: text.recommendedActions },
+    ...disagreementsMarkup ? [{ id: "open-disagreements", label: text.openQuestions }] : [],
+    { id: "appendix", label: text.evidenceCatalog }
+  ] : [
+    { id: "key-takeaways", label: text.managementSummary },
+    { id: "kpi-strip", label: text.kpiSnapshot },
+    { id: "key-findings", label: text.keyFindings },
+    { id: "risks-caveats", label: text.decisionGuardrails },
+    { id: "recommended-actions", label: text.recommendedActions },
+    { id: "appendix", label: text.appendixHighlights }
+  ];
+  const shouldRepeatRowHeader = reportTemplate === "audit_appendix";
+  const reportBody = reportTemplate === "audit_appendix" ? [
+    buildSummarySection(ir, text, auditSummaryParagraphs),
+    buildTraceabilitySection(text, auditTraceabilityParagraphs),
+    buildKpiSection(text, ir.kpiHighlights ?? []),
+    buildFindingsSection(text, findingsMarkup),
+    buildRisksSection(text, auditRiskParagraphs),
+    buildActionsSection(text, recommendationParagraphs),
+    disagreementsMarkup,
+    evidenceRows,
+    appendix.rows,
+    renderPaddtSection(text.evidenceCatalog, text.appendixHighlights, evidenceLongForm, { id: "appendix-highlights" }),
+    appendix.longForm
+  ].filter(Boolean).join("") : reportTemplate === "executive_brief" ? [
+    buildSummarySection(ir, text, executiveBriefSummaryParagraphs, { compact: true }),
+    buildKpiSection(text, ir.kpiHighlights ?? [], { compactIntro: true, businessContext }),
+    buildFindingsSection(text, findingsMarkup, { compactIntro: true }),
+    buildRisksSection(text, executiveBriefRiskParagraphs, { compact: true }),
+    buildActionsSection(text, recommendationParagraphs.slice(0, 3), { compact: true }),
+    buildCompactAppendixSection(text, ir)
+  ].filter(Boolean).join("") : [
+    buildSummarySection(ir, text, managementReviewSummaryParagraphs, { compact: true }),
+    buildKpiSection(text, ir.kpiHighlights ?? [], { compactIntro: true, businessContext }),
+    buildFindingsSection(text, findingsMarkup, { compactIntro: true }),
+    buildRisksSection(text, managementReviewRiskParagraphs, { compact: true }),
+    buildActionsSection(text, recommendationParagraphs.slice(0, 4), { compact: true }),
+    buildCompactAppendixSection(text, ir)
+  ].filter(Boolean).join("");
+  return {
+    text,
+    reportTemplate,
+    documentTitle,
+    structuralSignals,
+    risksAndCaveats,
+    findingSections,
+    disagreementSections,
+    evidenceSections,
+    shouldRenderWarningBanner,
+    reportVisuals,
+    findingSectionsForTemplate,
+    businessFindingSections,
+    heroStats,
+    auditSummaryParagraphs,
+    executiveBriefSummaryParagraphs,
+    managementReviewSummaryParagraphs,
+    businessContext,
+    findingsMarkup,
+    disagreementsMarkup,
+    evidenceHighlights,
+    evidenceRows,
+    appendix,
+    dedupedActions,
+    recommendationParagraphs,
+    evidenceLongForm,
+    executiveBriefRiskParagraphs,
+    managementReviewRiskParagraphs,
+    auditRiskParagraphs,
+    auditTraceabilityParagraphs,
+    activeContents,
+    shouldRepeatRowHeader,
+    reportBody
+  };
+};
+const renderHtmlReport = (ir, options) => {
+  const data = assembleReportData(ir, options);
+  const {
+    text,
+    documentTitle,
+    heroStats,
+    activeContents,
+    shouldRepeatRowHeader,
+    shouldRenderWarningBanner,
+    reportBody,
+    reportTemplate
+  } = data;
+  const embeddedPrintFormScript = printFormScript.replace(/<\/script/gi, "<\\/script");
+  return `<!DOCTYPE html>
+<html lang="${(options == null ? void 0 : options.language) === "Mandarin" ? "zh-CN" : "en"}">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${escapeHtml(documentTitle)}</title>
+  <style>
+${reportStylesheet}
   </style>
 </head>
 <body>
@@ -4670,7 +4850,7 @@ const renderHtmlReport = (ir, options) => {
           <p>${escapeHtml(ir.summary.executivePosition)}</p>
           <div class="badge-stack">
             ${renderBadge(`${text.readiness}: ${renderReadinessLabel(ir.dataset.readiness)}`, ir.dataset.readiness === "ready" ? "good" : ir.dataset.readiness === "partial" ? "warning" : "danger")}
-            ${renderBadge(`${text.confidence}: ${titleCase(ir.summary.overallConfidence)}`, ir.summary.overallConfidence === "high" ? "good" : ir.summary.overallConfidence === "medium" ? "warning" : "danger")}
+            ${renderBadge(`${text.confidence}: ${titleCase$1(ir.summary.overallConfidence)}`, ir.summary.overallConfidence === "high" ? "good" : ir.summary.overallConfidence === "medium" ? "warning" : "danger")}
             ${renderBadge(`${text.generated}: ${ir.generatedAt.split("T")[0]}`, "neutral")}
           </div>
           <div class="hero-stats">
@@ -5184,16 +5364,20 @@ const generateAnalystReportArtifacts = async (state, settings, options) => {
     };
   }
   const briefing = runReportEvidenceHarness(bundle);
+  const abortSignal = options == null ? void 0 : options.abortSignal;
   const memoResults = [];
   for (let index = 0; index < analystRoles.length; index += 1) {
+    abortSignal == null ? void 0 : abortSignal.throwIfAborted();
     const role = analystRoles[index];
     updateProgress(index + 1, `Generating ${role.replace(/_/g, " ")} memo`, "Running one bounded analyst role against the shared evidence bundle.");
-    memoResults.push(await dependencies.generateMemo(role, bundle, settings, briefing));
+    memoResults.push(await dependencies.generateMemo(role, bundle, settings, briefing, abortSignal));
   }
   const memos = memoResults.map((result) => result.memo);
+  abortSignal == null ? void 0 : abortSignal.throwIfAborted();
   updateProgress(4, "Merging forum summary", "Aggregating the analyst memos into one structured forum summary.");
-  const forumResult = await dependencies.generateForum(memos, bundle, settings, briefing);
+  const forumResult = await dependencies.generateForum(memos, bundle, settings, briefing, abortSignal);
   const forum = forumResult.forum;
+  abortSignal == null ? void 0 : abortSignal.throwIfAborted();
   updateProgress(5, "Building report IR", "Converting evidence, memos, and forum output into a stable report contract.");
   const ir = dependencies.buildIr(bundle, memos, forum);
   const validation = dependencies.validateIr(ir);

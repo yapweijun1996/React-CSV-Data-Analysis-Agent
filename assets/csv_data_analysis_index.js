@@ -1,6 +1,6 @@
 const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["./csv_data_analysis_vendor-ai-sdk.js","./csv_data_analysis_vendor-misc.js","./csv_data_analysis_vendor-data.js","./csv_data_analysis_app-reporting.js","./csv_data_analysis_vendor-storage.js","./csv_data_analysis_ChatPanel.js","./csv_data_analysis_vendor-react-core.js","./csv_data_analysis_vendor-state.js","./csv_data_analysis_MarkdownRenderer.js","./csv_data_analysis_vendor-ui.js","./csv_data_analysis_IconThinking.js","./csv_data_analysis_IconAi.js","./csv_data_analysis_AnalysisPanel.js","./csv_data_analysis_IconClose.js","./csv_data_analysis_TabulatorTable.js","./csv_data_analysis_CleaningRunBanner.js","./csv_data_analysis_AiTaskStatusBubble.js","./csv_data_analysis_SpreadsheetPanel.js","./csv_data_analysis_SettingsModal.js","./csv_data_analysis_HistoryPanel.js","./csv_data_analysis_MemoryPanel.js","./csv_data_analysis_AgentMonitorModal.js","./csv_data_analysis_DatabaseModal.js","./csv_data_analysis_WorkspaceModal.js","./csv_data_analysis_DataPreparationWorkflowModal.js","./csv_data_analysis_copyText.js","./csv_data_analysis_DebugLogsModal.js","./csv_data_analysis_ReportBoundaryConfirmModal.js","./csv_data_analysis_ApiKeyRequiredModal.js"])))=>i.map(i=>d[i]);
 import { j as jsxRuntimeExports, r as reactExports, W as We, R as ReactDOM } from "./csv_data_analysis_vendor-react-core.js";
-import { b9 as shouldAllowAgentThinkingSurface, ba as shouldAllowLongTermMemorySurface, bb as shouldAllowLogsSurface, bc as shouldAllowWorkflowSurface, bd as shouldAllowWorkspaceSurface, be as shouldAllowDatabaseSurface, bf as shouldAllowSettingsSurface, bg as getDefaultSettings, a7 as __vitePreload, bh as normalizeRuntimeAccessControlSettings, bi as normalizeAppLanguage, bj as saveSettings, ax as createId, bk as disposeDuckDbQueryEngine, bl as getReport, bm as CURRENT_SESSION_KEY, bn as saveReport, D as vectorStore, bo as deleteReport, bp as deleteOriginalData, bq as createIdleDuckDbSessionStatus, br as normalizeRestoredAppState, bs as normalizeRestoredGoalState, bt as appendUnfinishedCleaningNotice, bu as getReportsList, Q as createChatMessage, bv as navigateToCard, bw as buildColumnRegistry, bx as buildEffectiveColumnRegistryFromState, by as duckDbWorkerClient, bz as DUCKDB_INIT_TIMEOUT_MS, bA as profileDataWithWorker, bB as createBindingDuckDbSessionStatus, bC as getOriginalData, O as getTranslation, bD as getAllowedColumns, bE as createProgressMessage, bF as trimProgressMessages, bG as isDuckDbSessionStatusEqual, bH as primeDuckDbDataset, bI as createDuckDbSessionStatusFromBinding, bJ as createWorkerDiagnosticsTelemetryReporter, bK as buildCorrelationFields, bL as toSerializable, bM as getSettings, bN as shouldShowNewSessionButton, bO as shouldShowHistoryButton, bP as shouldShowDatabaseButton, bQ as shouldShowWorkflowButton, bR as shouldShowLogsButton, bS as shouldShowChangeGoalButton, bT as shouldShowAssistantToggleButton, bU as checkStorageHealth, bV as shouldShowAgentThinkingModal, bW as shouldShowLongTermMemory, bX as formatUserError } from "./csv_data_analysis_app-agent.js";
+import { aZ as shouldAllowAgentThinkingSurface, a_ as shouldAllowLongTermMemorySurface, a$ as shouldAllowLogsSurface, b0 as shouldAllowWorkflowSurface, b1 as shouldAllowWorkspaceSurface, b2 as shouldAllowDatabaseSurface, b3 as shouldAllowSettingsSurface, b4 as getDefaultSettings, a5 as __vitePreload, b5 as normalizeRuntimeAccessControlSettings, b6 as normalizeAppLanguage, b7 as saveSettings, ar as createId, b8 as disposeDuckDbQueryEngine, b9 as getReport, ba as CURRENT_SESSION_KEY, bb as saveReport, D as vectorStore, bc as deleteReport, bd as deleteOriginalData, be as createIdleDuckDbSessionStatus, bf as purgeAllStorage, bg as normalizeRestoredAppState, bh as normalizeRestoredGoalState, bi as appendUnfinishedCleaningNotice, bj as getReportsList, K as createChatMessage, bk as navigateToCard, bl as buildColumnRegistry, bm as buildEffectiveColumnRegistryFromState, bn as duckDbWorkerClient, bo as DUCKDB_INIT_TIMEOUT_MS, bp as profileDataWithWorker, bq as createBindingDuckDbSessionStatus, br as getOriginalData, I as getTranslation, bs as getAllowedColumns, bt as createProgressMessage, bu as trimProgressMessages, bv as isDuckDbSessionStatusEqual, bw as primeDuckDbDataset, bx as createDuckDbSessionStatusFromBinding, by as createWorkerDiagnosticsTelemetryReporter, bz as parseCardMentions, bA as buildCorrelationFields, bB as toSerializable, b as isRuntimeAbortError, bC as getSettings, bD as shouldShowNewSessionButton, bE as shouldShowHistoryButton, bF as shouldShowDatabaseButton, bG as shouldShowWorkflowButton, bH as shouldShowLogsButton, bI as shouldShowChangeGoalButton, bJ as shouldShowAssistantToggleButton, bK as checkStorageHealth, bL as APP_HEADER_HIDE_FOR_CARD_NAVIGATION_EVENT, bM as shouldShowAgentThinkingModal, bN as shouldShowLongTermMemory, bO as formatUserError } from "./csv_data_analysis_app-agent.js";
 import { c as createWithEqualityFn, s as shallow$1 } from "./csv_data_analysis_vendor-state.js";
 import { p as parseReportArtifactManifest, l as loadReportArtifactHtml, k as printReportArtifact, o as openReportArtifact, m as hydrateLatestReportWorkspaceFiles, L as LATEST_REPORT_MANIFEST_PATH, n as LATEST_REPORT_READINESS_PATH, q as hasOpenableLatestReport, t as LATEST_REPORT_HTML_PATH, u as generateAnalystReportArtifacts, v as saveReportArtifacts } from "./csv_data_analysis_app-reporting.js";
 import "./csv_data_analysis_vendor-data.js";
@@ -65,8 +65,10 @@ const createUISlice = (set) => ({
   isReportBoundaryConfirmModalOpen: false,
   isApiKeyRequiredModalOpen: false,
   isResizing: false,
+  pendingPrecomputedCardData: null,
   globalErrorToast: null,
   setGlobalErrorToast: (toast) => set({ globalErrorToast: toast }),
+  setPendingPrecomputedCardData: (data) => set({ pendingPrecomputedCardData: data }),
   handleAsideMouseDown: (e) => {
     e.preventDefault();
     set({ isResizing: true });
@@ -105,7 +107,7 @@ const createSettingsSlice = (set, get) => ({
   isApiKeySet: false,
   handleSaveSettings: async (newSettings) => {
     if (!_isProviderConfigured$1) {
-      const mod = await __vitePreload(() => import("./csv_data_analysis_app-ai.js").then((n) => n.Y), true ? __vite__mapDeps([0,1,2,3,4]) : void 0, import.meta.url);
+      const mod = await __vitePreload(() => import("./csv_data_analysis_app-ai.js").then((n) => n.a6), true ? __vite__mapDeps([0,1,2,3,4]) : void 0, import.meta.url);
       _isProviderConfigured$1 = mod.isProviderConfigured;
     }
     const normalizedSettings = {
@@ -115,7 +117,7 @@ const createSettingsSlice = (set, get) => ({
     };
     set({ settings: normalizedSettings, isApiKeySet: _isProviderConfigured$1(normalizedSettings) });
     const { invalidateProviderHealthCache } = await __vitePreload(async () => {
-      const { invalidateProviderHealthCache: invalidateProviderHealthCache2 } = await import("./csv_data_analysis_app-ai.js").then((n) => n.Y);
+      const { invalidateProviderHealthCache: invalidateProviderHealthCache2 } = await import("./csv_data_analysis_app-ai.js").then((n) => n.a6);
       return { invalidateProviderHealthCache: invalidateProviderHealthCache2 };
     }, true ? __vite__mapDeps([0,1,2,3,4]) : void 0, import.meta.url);
     invalidateProviderHealthCache();
@@ -174,8 +176,8 @@ const createHistorySlice = (set, get) => ({
     get().addProgress(`Loading report ${id}...`);
     const [report, { normalizeDataPreparationPlan }, { updateCleaningRun }] = await Promise.all([
       getReport(id),
-      __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cV), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
-      __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cY), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url)
+      __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cO), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
+      __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cS), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url)
     ]);
     if (report) {
       const normalizedAppState = normalizeRestoredAppState(report.appState);
@@ -234,7 +236,7 @@ const createHistorySlice = (set, get) => ({
           }
         })();
       } else {
-        void __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cZ), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url).then(
+        void __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cT), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url).then(
           (m) => m.rebuildVectorMemoryFromState({ getState: get, setState: set }, {
             reset: true,
             includeDatasetDocs: true,
@@ -260,6 +262,16 @@ const createHistorySlice = (set, get) => ({
       await get().loadReportsList();
     } catch (error) {
       get().addProgress(`Failed to delete report: ${error instanceof Error ? error.message : String(error)}`, "error");
+    }
+  },
+  handlePurgeStorage: async () => {
+    try {
+      const result = await purgeAllStorage(get().sessionId);
+      await get().loadReportsList();
+      return result;
+    } catch (error) {
+      get().addProgress(`Failed to purge storage: ${error instanceof Error ? error.message : String(error)}`, "error");
+      return { deletedReports: 0, freedMB: 0 };
     }
   },
   openPersistedReportArtifact: async (id) => {
@@ -367,6 +379,7 @@ const createHistorySlice = (set, get) => ({
         planQueue: [],
         contextualSummary: null,
         isGeneratingReport: false,
+        isSummaryGenerating: false,
         reportGenerationProgress: null,
         sessionCreatedAt: /* @__PURE__ */ new Date(),
         agentToolLogs: [],
@@ -503,7 +516,7 @@ const createCardSlice = (set, get) => ({
     const card = get().analysisCards.find((item) => item.id === cardId);
     if (!card) return;
     invalidateChart(cardId);
-    void __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cZ), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url).then(
+    void __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cT), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url).then(
       (m) => m.removeCardMemoryDocument({ getState: get, setState: set }, cardId)
     );
     (_b = (_a = get()).addProgress) == null ? void 0 : _b.call(_a, `Removed card "${card.plan.title}".`);
@@ -603,7 +616,7 @@ const createCardSlice = (set, get) => ({
       }
     });
     if (didUpdate) {
-      void __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cZ), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url).then(
+      void __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cT), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url).then(
         (m) => m.upsertCardMemoryDocument({ getState: get, setState: set }, cardId)
       );
     }
@@ -667,7 +680,7 @@ const createDataSlice = (set, get) => {
         { CURRENT_SESSION_KEY: CURRENT_SESSION_KEY2, saveReport: saveReport2 }
       ] = await Promise.all([
         __vitePreload(() => Promise.resolve().then(() => persistedAppState), true ? void 0 : void 0, import.meta.url),
-        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cT), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url)
+        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cM), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url)
       ]);
       const currentReport = buildPersistedReportRecord2(state, {
         id: state.sessionId,
@@ -690,8 +703,8 @@ const createDataSlice = (set, get) => {
   };
   const getDuckDbRefreshHelpers = async () => {
     duckDbRefreshHelpersPromise ?? (duckDbRefreshHelpersPromise = Promise.all([
-      __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.c_), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
-      __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.c$), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url)
+      __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cU), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
+      __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cV), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url)
     ]).then(([
       { getPreferredAnalysisDataset },
       { resolveDatasetBindingTarget, isDuckDbSessionCurrentForDataset }
@@ -802,9 +815,9 @@ const createDataSlice = (set, get) => {
       { getPreferredAnalysisDataset },
       { buildSemanticDatasetVersion }
     ] = await Promise.all([
-      __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.d0), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
-      __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.c_), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
-      __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cU), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url)
+      __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cW), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
+      __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cU), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
+      __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cN), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url)
     ]);
     const state = get();
     const artifacts = await resolveReportStructureArtifactsWithProposal({
@@ -844,7 +857,7 @@ const createDataSlice = (set, get) => {
   };
   const runFilePipeline = async (file) => {
     const { orchestrateFileUpload } = await __vitePreload(async () => {
-      const { orchestrateFileUpload: orchestrateFileUpload2 } = await import("./csv_data_analysis_app-agent.js").then((n) => n.d5);
+      const { orchestrateFileUpload: orchestrateFileUpload2 } = await import("./csv_data_analysis_app-agent.js").then((n) => n.c_);
       return { orchestrateFileUpload: orchestrateFileUpload2 };
     }, true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url);
     try {
@@ -872,14 +885,14 @@ const createDataSlice = (set, get) => {
     },
     handleInitialAnalysis: async (dataForAnalysis, goal, options) => {
       const { handleInitialAnalysis } = await __vitePreload(async () => {
-        const { handleInitialAnalysis: handleInitialAnalysis2 } = await import("./csv_data_analysis_app-agent.js").then((n) => n.d9);
+        const { handleInitialAnalysis: handleInitialAnalysis2 } = await import("./csv_data_analysis_app-agent.js").then((n) => n.d2);
         return { handleInitialAnalysis: handleInitialAnalysis2 };
       }, true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url);
       return handleInitialAnalysis(dataForAnalysis, goal, storeApi, options);
     },
     proposeAnalysisGoals: async (dataForAnalysis) => {
       const { proposeAnalysisGoals: proposeGoals } = await __vitePreload(async () => {
-        const { proposeAnalysisGoals: proposeGoals2 } = await import("./csv_data_analysis_app-agent-planning.js").then((n) => n.f);
+        const { proposeAnalysisGoals: proposeGoals2 } = await import("./csv_data_analysis_app-agent-planning.js").then((n) => n.h);
         return { proposeAnalysisGoals: proposeGoals2 };
       }, true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url);
       return proposeGoals(dataForAnalysis, storeApi);
@@ -917,14 +930,14 @@ const createDataSlice = (set, get) => {
     },
     regenerateAnalyses: async (newData) => {
       const { regenerateAnalysesWithNewData } = await __vitePreload(async () => {
-        const { regenerateAnalysesWithNewData: regenerateAnalysesWithNewData2 } = await import("./csv_data_analysis_app-agent.js").then((n) => n.da);
+        const { regenerateAnalysesWithNewData: regenerateAnalysesWithNewData2 } = await import("./csv_data_analysis_app-agent.js").then((n) => n.d3);
         return { regenerateAnalysesWithNewData: regenerateAnalysesWithNewData2 };
       }, true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url);
       await regenerateAnalysesWithNewData(newData, storeApi);
     },
     reproposeAnalysisGoals: async () => {
       const { reproposeAnalysisGoals: reproposeGoalsService } = await __vitePreload(async () => {
-        const { reproposeAnalysisGoals: reproposeGoalsService2 } = await import("./csv_data_analysis_app-agent.js").then((n) => n.da);
+        const { reproposeAnalysisGoals: reproposeGoalsService2 } = await import("./csv_data_analysis_app-agent.js").then((n) => n.d3);
         return { reproposeAnalysisGoals: reproposeGoalsService2 };
       }, true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url);
       reproposeGoalsService(storeApi);
@@ -936,10 +949,10 @@ const createDataSlice = (set, get) => {
         { resolveAnalysisDatasetProfiles },
         { annotateDatasetSemantics }
       ] = await Promise.all([
-        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.c_), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
         __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cU), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
-        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.d4), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
-        __vitePreload(() => import("./csv_data_analysis_app-ai.js").then((n) => n.$), true ? __vite__mapDeps([0,1,2,3,4]) : void 0, import.meta.url)
+        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cN), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
+        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cZ), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
+        __vitePreload(() => import("./csv_data_analysis_app-ai.js").then((n) => n.a9), true ? __vite__mapDeps([0,1,2,3,4]) : void 0, import.meta.url)
       ]);
       const targetDataset = dataset ?? getPreferredAnalysisDataset(get());
       if (!targetDataset) {
@@ -1067,10 +1080,10 @@ const createDataSlice = (set, get) => {
         { compileWorkspaceDataQuery },
         { executeStructuredDataQuery }
       ] = await Promise.all([
-        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.c_), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
-        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.c$), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
-        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.db), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
-        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.d6), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url)
+        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cU), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
+        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cV), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
+        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.d4), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
+        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.c$), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url)
       ]);
       const state = get();
       const preferredDataset = getPreferredAnalysisDataset(state);
@@ -1122,10 +1135,10 @@ const createDataSlice = (set, get) => {
         { getPreferredAnalysisDataset },
         { DEFAULT_AUTO_ANALYSIS_GOAL }
       ] = await Promise.all([
-        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.d1), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
-        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.d2), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
-        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.c_), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
-        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.d3), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url)
+        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cR), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
+        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cX), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
+        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cU), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
+        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cY), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url)
       ]);
       updateAgentTaskStatus(storeApi, {
         status: "thinking",
@@ -1191,8 +1204,8 @@ const createDataSlice = (set, get) => {
         { createCleaningRun },
         { WORKSPACE_DATASET_CLEAN_CSV, WORKSPACE_DATASET_RAW_CSV, buildWorkspaceCsv }
       ] = await Promise.all([
-        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cY), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
-        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cS), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url)
+        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cS), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
+        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cL), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url)
       ]);
       const sessionId = get().sessionId;
       let originalData = sessionId ? await getOriginalData(sessionId) : null;
@@ -1258,12 +1271,12 @@ const createDataSlice = (set, get) => {
         { getPreferredAnalysisDataset },
         { DEFAULT_AUTO_ANALYSIS_GOAL }
       ] = await Promise.all([
-        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cY), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
         __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cS), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
-        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.d1), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
-        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.d2), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
-        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.c_), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
-        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.d3), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url)
+        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cL), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
+        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cR), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
+        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cX), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
+        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cU), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
+        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cY), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url)
       ]);
       const rawCsvData = get().rawCsvData;
       if (!rawCsvData) {
@@ -1385,9 +1398,9 @@ const createDataSlice = (set, get) => {
         { resolveAnalysisDatasetProfiles },
         { DEFAULT_AUTO_ANALYSIS_GOAL }
       ] = await Promise.all([
-        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.c_), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
-        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.d4), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
-        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.d3), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url)
+        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cU), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
+        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cZ), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
+        __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cY), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url)
       ]);
       await rebuildStructureArtifacts(boundary);
       get().setIsReportBoundaryConfirmModalOpen(false);
@@ -1436,7 +1449,7 @@ const createDataSlice = (set, get) => {
           })
         };
       });
-      void __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cZ), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url).then(
+      void __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cT), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url).then(
         (m) => m.upsertColumnAnnotationDoc(storeApi, annotation)
       );
     },
@@ -1457,7 +1470,7 @@ const createDataSlice = (set, get) => {
           })
         };
       });
-      void __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cZ), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url).then(
+      void __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cT), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url).then(
         (m) => m.removeColumnAnnotationDoc(storeApi, columnName)
       );
     }
@@ -1491,7 +1504,7 @@ const createChatSlice = (set, get) => {
     isRefreshingContext = true;
     try {
       const { shouldRefreshContextualSummary, generateContextualSummary, markContextualSummaryRefreshed } = await __vitePreload(async () => {
-        const { shouldRefreshContextualSummary: shouldRefreshContextualSummary2, generateContextualSummary: generateContextualSummary2, markContextualSummaryRefreshed: markContextualSummaryRefreshed2 } = await import("./csv_data_analysis_app-ai.js").then((n) => n._);
+        const { shouldRefreshContextualSummary: shouldRefreshContextualSummary2, generateContextualSummary: generateContextualSummary2, markContextualSummaryRefreshed: markContextualSummaryRefreshed2 } = await import("./csv_data_analysis_app-ai.js").then((n) => n.a8);
         return { shouldRefreshContextualSummary: shouldRefreshContextualSummary2, generateContextualSummary: generateContextualSummary2, markContextualSummaryRefreshed: markContextualSummaryRefreshed2 };
       }, true ? __vite__mapDeps([0,1,2,3,4]) : void 0, import.meta.url);
       const state = get();
@@ -1520,10 +1533,17 @@ const createChatSlice = (set, get) => {
     );
   };
   const appendUserMessage = (text) => {
+    const { cardIds, displayText } = parseCardMentions(text);
     set((prev) => ({
       chatHistory: [
         ...prev.chatHistory,
-        createChatMessage({ sender: "user", text, timestamp: /* @__PURE__ */ new Date(), type: "user_message" })
+        createChatMessage({
+          sender: "user",
+          text: displayText,
+          timestamp: /* @__PURE__ */ new Date(),
+          type: "user_message",
+          ...cardIds.length > 0 ? { referencedCardIds: cardIds } : {}
+        })
       ]
     }));
   };
@@ -1577,7 +1597,7 @@ const createChatSlice = (set, get) => {
     set({ isBusy: true, chatLifecycleState: "running", pendingClarification: null });
     try {
       const { handleAiAction } = await __vitePreload(async () => {
-        const { handleAiAction: handleAiAction2 } = await import("./csv_data_analysis_app-agent.js").then((n) => n.d8);
+        const { handleAiAction: handleAiAction2 } = await import("./csv_data_analysis_app-agent.js").then((n) => n.d1);
         return { handleAiAction: handleAiAction2 };
       }, true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url);
       const result = await handleAiAction(action, storeApi, { spreadsheetFilterOrigin: origin });
@@ -1616,7 +1636,7 @@ const createChatSlice = (set, get) => {
     }
     if (!_isProviderConfigured) return false;
     const { validateProviderHealth } = await __vitePreload(async () => {
-      const { validateProviderHealth: validateProviderHealth2 } = await import("./csv_data_analysis_app-ai.js").then((n) => n.Y);
+      const { validateProviderHealth: validateProviderHealth2 } = await import("./csv_data_analysis_app-ai.js").then((n) => n.a6);
       return { validateProviderHealth: validateProviderHealth2 };
     }, true ? __vite__mapDeps([0,1,2,3,4]) : void 0, import.meta.url);
     const health = await validateProviderHealth(settings);
@@ -1651,7 +1671,7 @@ const createChatSlice = (set, get) => {
     }
     try {
       const { orchestrateChatResponse } = await __vitePreload(async () => {
-        const { orchestrateChatResponse: orchestrateChatResponse2 } = await import("./csv_data_analysis_app-agent.js").then((n) => n.dc);
+        const { orchestrateChatResponse: orchestrateChatResponse2 } = await import("./csv_data_analysis_app-agent.js").then((n) => n.d5);
         return { orchestrateChatResponse: orchestrateChatResponse2 };
       }, true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url);
       await orchestrateChatResponse(message, storeApi);
@@ -1702,7 +1722,7 @@ const createChatSlice = (set, get) => {
     clearStreamingMessage: () => set({ streamingMessage: null }),
     confirmGoal: async (goalTitle) => {
       const { confirmAnalysisGoal } = await __vitePreload(async () => {
-        const { confirmAnalysisGoal: confirmAnalysisGoal2 } = await import("./csv_data_analysis_app-agent.js").then((n) => n.da);
+        const { confirmAnalysisGoal: confirmAnalysisGoal2 } = await import("./csv_data_analysis_app-agent.js").then((n) => n.d3);
         return { confirmAnalysisGoal: confirmAnalysisGoal2 };
       }, true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url);
       await confirmAnalysisGoal(goalTitle, storeApi);
@@ -1717,9 +1737,9 @@ const createChatSlice = (set, get) => {
       }
       if (!_resolveEffectivePendingClarification || !_isProviderConfigured) {
         const [clarificationMod, providerMod] = await Promise.all([
-          __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.d7), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
-          __vitePreload(() => import("./csv_data_analysis_app-ai.js").then((n) => n.Y), true ? __vite__mapDeps([0,1,2,3,4]) : void 0, import.meta.url),
-          __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.dc), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url)
+          __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.d0), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
+          __vitePreload(() => import("./csv_data_analysis_app-ai.js").then((n) => n.a6), true ? __vite__mapDeps([0,1,2,3,4]) : void 0, import.meta.url),
+          __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.d5), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url)
         ]);
         _resolveEffectivePendingClarification = clarificationMod.resolveEffectivePendingClarification;
         _isProviderConfigured = providerMod.isProviderConfigured;
@@ -1741,11 +1761,11 @@ const createChatSlice = (set, get) => {
           pendingClarificationInStore: Boolean(get().pendingClarification)
         });
         const { buildClarificationFollowUpPrompt, handleClarificationResponse: processClarificationResponse } = await __vitePreload(async () => {
-          const { buildClarificationFollowUpPrompt: buildClarificationFollowUpPrompt2, handleClarificationResponse: processClarificationResponse2 } = await import("./csv_data_analysis_app-agent.js").then((n) => n.d7);
+          const { buildClarificationFollowUpPrompt: buildClarificationFollowUpPrompt2, handleClarificationResponse: processClarificationResponse2 } = await import("./csv_data_analysis_app-agent.js").then((n) => n.d0);
           return { buildClarificationFollowUpPrompt: buildClarificationFollowUpPrompt2, handleClarificationResponse: processClarificationResponse2 };
         }, true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url).then(async (clarMod) => {
           const { handleClarificationResponse: procClarResp } = await __vitePreload(async () => {
-            const { handleClarificationResponse: procClarResp2 } = await import("./csv_data_analysis_app-agent.js").then((n) => n.dc);
+            const { handleClarificationResponse: procClarResp2 } = await import("./csv_data_analysis_app-agent.js").then((n) => n.d5);
             return { handleClarificationResponse: procClarResp2 };
           }, true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url);
           return { ...clarMod, handleClarificationResponse: procClarResp };
@@ -1817,7 +1837,7 @@ const createChatSlice = (set, get) => {
       });
       try {
         if (!_resolveEffectivePendingClarification) {
-          const mod = await __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.d7), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url);
+          const mod = await __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.d0), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url);
           _resolveEffectivePendingClarification = mod.resolveEffectivePendingClarification;
         }
         const pendingClarification = getEffectivePendingClarification();
@@ -1825,7 +1845,7 @@ const createChatSlice = (set, get) => {
           storeResolvedClarification(pendingClarification, userChoice.value || userChoice.label);
         }
         const { handleClarificationResponse: processClarificationResponse } = await __vitePreload(async () => {
-          const { handleClarificationResponse: processClarificationResponse2 } = await import("./csv_data_analysis_app-agent.js").then((n) => n.dc);
+          const { handleClarificationResponse: processClarificationResponse2 } = await import("./csv_data_analysis_app-agent.js").then((n) => n.d5);
           return { handleClarificationResponse: processClarificationResponse2 };
         }, true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url);
         await processClarificationResponse(userChoice, storeApi);
@@ -1921,183 +1941,6 @@ const createTelemetrySlice = (set, get) => ({
     set(() => ({ telemetryEvents: shadowTelemetryEvents }));
   }
 });
-const filterPersistedWorkspaceFiles = (workspaceFiles) => Object.fromEntries(
-  Object.entries(workspaceFiles).filter(([path]) => {
-    if (!path.startsWith("/workspace/reports/")) {
-      return true;
-    }
-    return path === LATEST_REPORT_MANIFEST_PATH || path === LATEST_REPORT_READINESS_PATH;
-  })
-);
-const hasSavableSession = (state) => Boolean(state.sessionId && state.csvData && state.csvData.data.length > 0);
-const buildColumnRegistrySignature = (state) => {
-  var _a;
-  return ((_a = state.columnRegistry) == null ? void 0 : _a.columns.map((column) => [
-    column.physicalName,
-    column.displayLabel,
-    column.aliases.join(","),
-    column.analysisRole,
-    column.allowedUsages.groupBy ? "1" : "0",
-    column.allowedUsages.filter ? "1" : "0",
-    column.allowedUsages.select ? "1" : "0",
-    column.allowedUsages.orderBy ? "1" : "0"
-  ].join("~")).join("|")) ?? "";
-};
-const buildPersistedAppState = (state) => ({
-  sessionId: state.sessionId,
-  settings: state.settings,
-  currentView: state.currentView,
-  isAppInitializing: state.isAppInitializing,
-  isBusy: state.isBusy,
-  chatLifecycleState: state.chatLifecycleState,
-  progressMessages: state.progressMessages,
-  csvData: state.csvData,
-  rawCsvData: state.rawCsvData,
-  rawIntakeIr: state.rawIntakeIr,
-  reportStructureResolution: state.reportStructureResolution,
-  canonicalCsvData: state.canonicalCsvData,
-  canonicalBuildMeta: state.canonicalBuildMeta,
-  canonicalizationStatus: state.canonicalizationStatus,
-  pipelineOutcome: state.pipelineOutcome,
-  reportContextResolution: state.reportContextResolution,
-  datasetSemanticSnapshot: state.datasetSemanticSnapshot,
-  semanticStatus: state.semanticStatus,
-  semanticDatasetVersion: state.semanticDatasetVersion,
-  columnProfiles: state.columnProfiles,
-  columnRegistry: state.columnRegistry,
-  analysisCards: state.analysisCards,
-  chatHistory: state.chatHistory,
-  finalSummary: state.finalSummary,
-  aiCoreAnalysisSummary: state.aiCoreAnalysisSummary,
-  dataPreparationPlan: state.dataPreparationPlan,
-  initialDataSample: state.initialDataSample,
-  // Use the store's already-synced snapshot — avoids an async call to the
-  // vector worker during persistence and keeps buildPersistedAppState sync.
-  vectorStoreDocuments: state.vectorStoreDocuments,
-  vectorMemoryState: state.vectorMemoryState,
-  pendingVectorMemoryDocs: state.pendingVectorMemoryDocs,
-  spreadsheetFilterFunction: state.spreadsheetFilterFunction,
-  activeDataQuery: null,
-  activeMetricMappingValidation: state.activeMetricMappingValidation,
-  activeSpreadsheetFilter: state.activeSpreadsheetFilter,
-  aiFilterExplanation: state.aiFilterExplanation,
-  pendingClarification: null,
-  resolvedClarifications: state.resolvedClarifications,
-  pendingMutationConfirmation: state.pendingMutationConfirmation,
-  activeTurn: null,
-  queuedChatTurns: [],
-  queuedAgentRuns: [],
-  cancelRequestedTurnId: null,
-  runtimeEvents: state.runtimeEvents,
-  runtimeRunHistory: state.runtimeRunHistory,
-  activeAnalysisSession: state.activeAnalysisSession,
-  latestAnalysisSession: state.latestAnalysisSession,
-  visibleAnalysisTrace: state.visibleAnalysisTrace,
-  aiTaskStatus: state.aiTaskStatus,
-  initialAnalysisStatus: state.initialAnalysisStatus,
-  telemetryEvents: state.telemetryEvents,
-  agentEvents: state.agentEvents,
-  agentToolLogs: state.agentToolLogs,
-  confirmedAnalysisGoal: state.confirmedAnalysisGoal,
-  goalState: state.goalState,
-  agentMemoryRun: state.agentMemoryRun,
-  liveAgentMemoryRun: state.liveAgentMemoryRun,
-  agentMemoryHistory: state.agentMemoryHistory,
-  selectedMemoryRunId: state.selectedMemoryRunId,
-  currentDatasetId: state.currentDatasetId,
-  dataQualityIssues: state.dataQualityIssues,
-  isChangingGoal: state.isChangingGoal,
-  planQueue: state.planQueue,
-  contextualSummary: state.contextualSummary,
-  isGeneratingReport: state.isGeneratingReport,
-  reportGenerationProgress: state.reportGenerationProgress,
-  sessionCreatedAt: state.sessionCreatedAt,
-  cardEnhancementSuggestions: state.cardEnhancementSuggestions,
-  isCardReviewInProgress: state.isCardReviewInProgress,
-  workspaceFiles: filterPersistedWorkspaceFiles(state.workspaceFiles),
-  workspaceActionHistory: state.workspaceActionHistory,
-  cleaningRun: state.cleaningRun,
-  queryHistory: state.queryHistory,
-  duckDbSessionStatus: state.duckDbSessionStatus,
-  userColumnAnnotations: state.userColumnAnnotations ?? {}
-});
-const buildPersistedAppStateSignature = (state) => {
-  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l;
-  if (!hasSavableSession(state)) {
-    return null;
-  }
-  return [
-    state.sessionId,
-    state.currentView,
-    // --- cards (track count, IDs, AND content mutations) ---
-    state.analysisCards.length,
-    state.analysisCards.map((c) => `${c.id}:${c.displayChartType}:${c.topN ?? ""}:${c.isDataVisible ? "1" : "0"}`).join(","),
-    // --- chat (track count + last message) ---
-    state.chatHistory.length,
-    ((_a = state.chatHistory.at(-1)) == null ? void 0 : _a.id) ?? "",
-    ((_c = (_b = state.chatHistory.at(-1)) == null ? void 0 : _b.text) == null ? void 0 : _c.slice(0, 64)) ?? "",
-    // --- column/profile state ---
-    state.columnProfiles.length,
-    buildColumnRegistrySignature(state),
-    // --- pipeline / analysis status ---
-    state.finalSummary ? "fs" : "",
-    state.aiCoreAnalysisSummary ? "acs" : "",
-    state.initialAnalysisStatus ?? "",
-    state.goalState ?? "",
-    ((_d = state.cleaningRun) == null ? void 0 : _d.status) ?? "",
-    ((_f = (_e = state.dataPreparationPlan) == null ? void 0 : _e.sqlPrecheck) == null ? void 0 : _f.status) ?? "",
-    state.confirmedAnalysisGoal ?? "",
-    state.isGeneratingReport ? "rg" : "",
-    state.semanticStatus ?? "",
-    state.canonicalizationStatus ?? "",
-    ((_g = state.pipelineOutcome) == null ? void 0 : _g.status) ?? "",
-    // --- AI task / status messages ---
-    state.aiTaskStatus ?? "",
-    (state.progressMessages ?? []).length,
-    // --- analysis session ---
-    ((_h = state.latestAnalysisSession) == null ? void 0 : _h.sessionId) ?? "",
-    ((_i = state.latestAnalysisSession) == null ? void 0 : _i.status) ?? "",
-    ((_j = state.activeAnalysisSession) == null ? void 0 : _j.status) ?? "",
-    // --- data quality / clarifications ---
-    (state.dataQualityIssues ?? []).length,
-    (state.resolvedClarifications ?? []).length,
-    state.contextualSummary ? "cs" : "",
-    // --- runtime / agent events ---
-    (state.runtimeEvents ?? []).length,
-    (state.runtimeRunHistory ?? []).length,
-    (state.agentEvents ?? []).length,
-    (state.agentToolLogs ?? []).length,
-    // --- vector / memory ---
-    (state.vectorStoreDocuments ?? []).length,
-    state.vectorMemoryState ?? "",
-    state.selectedMemoryRunId ?? "",
-    // --- query / workspace ---
-    (state.queryHistory ?? []).length,
-    ((_k = state.csvData) == null ? void 0 : _k.fileName) ?? "",
-    ((_l = state.csvData) == null ? void 0 : _l.data.length) ?? 0,
-    Object.keys(state.workspaceFiles).length,
-    (state.workspaceActionHistory ?? []).length,
-    // --- misc persistence-worthy state ---
-    state.duckDbSessionStatus ?? "",
-    state.reportGenerationProgress ?? "",
-    state.isCardReviewInProgress ? "1" : "0",
-    Object.keys(state.userColumnAnnotations ?? {}).length
-  ].join("|");
-};
-const buildPersistedReportRecord = (state, options) => ({
-  id: options.id,
-  filename: options.filename,
-  createdAt: options.createdAt ?? state.sessionCreatedAt ?? /* @__PURE__ */ new Date(),
-  updatedAt: options.updatedAt ?? /* @__PURE__ */ new Date(),
-  appState: buildPersistedAppState(state)
-});
-const persistedAppState = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
-  __proto__: null,
-  buildPersistedAppState,
-  buildPersistedAppStateSignature,
-  buildPersistedReportRecord,
-  hasSavableSession
-}, Symbol.toStringTag, { value: "Module" }));
 const createEventObject = (event) => ({
   id: event.id ?? createId("agent-event"),
   timestamp: event.timestamp ?? /* @__PURE__ */ new Date(),
@@ -2197,205 +2040,195 @@ const flushTelemetryToStore = (set, get) => {
     runtimeEvents: shadowRuntimeEvents
   }));
 };
-const createAgentSlice = (set, get) => ({
-  agentEvents: [],
-  agentToolLogs: [],
+const filterPersistedWorkspaceFiles = (workspaceFiles) => Object.fromEntries(
+  Object.entries(workspaceFiles).filter(([path]) => {
+    if (!path.startsWith("/workspace/reports/")) {
+      return true;
+    }
+    return path === LATEST_REPORT_MANIFEST_PATH || path === LATEST_REPORT_READINESS_PATH;
+  })
+);
+const hasSavableSession = (state) => Boolean(state.sessionId && state.csvData && state.csvData.data.length > 0);
+const buildColumnRegistrySignature = (state) => {
+  var _a;
+  return ((_a = state.columnRegistry) == null ? void 0 : _a.columns.map((column) => [
+    column.physicalName,
+    column.displayLabel,
+    column.aliases.join(","),
+    column.analysisRole,
+    column.allowedUsages.groupBy ? "1" : "0",
+    column.allowedUsages.filter ? "1" : "0",
+    column.allowedUsages.select ? "1" : "0",
+    column.allowedUsages.orderBy ? "1" : "0"
+  ].join("~")).join("|")) ?? "";
+};
+const buildPersistedAppState = (state) => ({
+  sessionId: state.sessionId,
+  settings: state.settings,
+  currentView: state.currentView,
+  isAppInitializing: state.isAppInitializing,
+  isBusy: state.isBusy,
+  chatLifecycleState: state.chatLifecycleState,
+  progressMessages: state.progressMessages,
+  csvData: state.csvData,
+  rawCsvData: state.rawCsvData,
+  rawIntakeIr: state.rawIntakeIr,
+  reportStructureResolution: state.reportStructureResolution,
+  canonicalCsvData: state.canonicalCsvData,
+  canonicalBuildMeta: state.canonicalBuildMeta,
+  canonicalizationStatus: state.canonicalizationStatus,
+  pipelineOutcome: state.pipelineOutcome,
+  reportContextResolution: state.reportContextResolution,
+  datasetSemanticSnapshot: state.datasetSemanticSnapshot,
+  semanticStatus: state.semanticStatus,
+  semanticDatasetVersion: state.semanticDatasetVersion,
+  columnProfiles: state.columnProfiles,
+  columnRegistry: state.columnRegistry,
+  analysisCards: state.analysisCards,
+  chatHistory: state.chatHistory,
+  finalSummary: state.finalSummary,
+  aiCoreAnalysisSummary: state.aiCoreAnalysisSummary,
+  dataPreparationPlan: state.dataPreparationPlan,
+  initialDataSample: state.initialDataSample,
+  // Use the store's already-synced snapshot — avoids an async call to the
+  // vector worker during persistence and keeps buildPersistedAppState sync.
+  vectorStoreDocuments: state.vectorStoreDocuments,
+  vectorMemoryState: state.vectorMemoryState,
+  pendingVectorMemoryDocs: state.pendingVectorMemoryDocs,
+  spreadsheetFilterFunction: state.spreadsheetFilterFunction,
+  activeDataQuery: null,
+  activeMetricMappingValidation: state.activeMetricMappingValidation,
+  activeSpreadsheetFilter: state.activeSpreadsheetFilter,
+  aiFilterExplanation: state.aiFilterExplanation,
+  pendingClarification: null,
+  resolvedClarifications: state.resolvedClarifications,
+  pendingMutationConfirmation: state.pendingMutationConfirmation,
   activeTurn: null,
+  queuedChatTurns: [],
   queuedAgentRuns: [],
   cancelRequestedTurnId: null,
-  runtimeEvents: [],
-  runtimeRunHistory: [],
-  lastInsightExtractedAtTurn: 0,
-  cardEnhancementSuggestions: [],
-  isCardReviewInProgress: false,
-  agentMemoryRun: null,
-  liveAgentMemoryRun: null,
-  agentMemoryHistory: [],
-  selectedMemoryRunId: null,
-  currentDatasetId: null,
-  recordAgentEvent: (eventInput) => {
-    const correlation = buildCorrelationFields(get(), eventInput);
-    const event = createEventObject({
-      ...eventInput,
-      sessionId: eventInput.sessionId ?? correlation.sessionId,
-      datasetId: eventInput.datasetId ?? correlation.datasetId,
-      runId: eventInput.runId ?? correlation.runId,
-      turnId: eventInput.turnId ?? correlation.turnId,
-      stepId: eventInput.stepId ?? correlation.stepId,
-      toolCallId: eventInput.toolCallId ?? correlation.toolCallId,
-      cleaningRunId: eventInput.cleaningRunId ?? correlation.cleaningRunId,
-      requestId: eventInput.requestId ?? correlation.requestId
-    });
-    pendingAgentEvents.push(event);
-    scheduleTelemetryFlush(set, get);
-    return event;
-  },
-  recordRuntimeEvent: (eventInput) => {
-    var _a, _b, _c, _d, _e, _f;
-    const event = createRuntimeEventObject({
-      ...eventInput,
-      sessionId: eventInput.sessionId ?? get().sessionId,
-      runId: eventInput.runId ?? ((_a = get().activeTurn) == null ? void 0 : _a.runId),
-      turnId: eventInput.turnId ?? ((_b = get().activeTurn) == null ? void 0 : _b.turnId),
-      toolCallId: eventInput.toolCallId ?? ((_d = (_c = get().activeTurn) == null ? void 0 : _c.steps.at(-1)) == null ? void 0 : _d.toolCallId) ?? ((_f = (_e = get().activeTurn) == null ? void 0 : _e.steps.at(-1)) == null ? void 0 : _f.stepId)
-    });
-    pendingRuntimeEvents.push(event);
-    scheduleTelemetryFlush(set, get);
-    return event;
-  },
-  enqueueAgentRun: (run) => {
-    set((state) => ({
-      queuedAgentRuns: [...state.queuedAgentRuns, run]
-    }));
-  },
-  dequeueQueuedAgentRun: (queueId) => {
-    const queuedRun = get().queuedAgentRuns.find((run) => run.queueId === queueId) ?? null;
-    if (!queuedRun) {
-      return null;
-    }
-    set((state) => ({
-      queuedAgentRuns: state.queuedAgentRuns.filter((run) => run.queueId !== queueId)
-    }));
-    return queuedRun;
-  },
-  appendRuntimeRunRecord: (record) => {
-    set((state) => ({
-      runtimeRunHistory: [...state.runtimeRunHistory, record].slice(-50)
-    }));
-  },
-  setActiveTurn: (turn) => set({ activeTurn: turn }),
-  clearActiveTurn: () => set({ activeTurn: null, isBusy: false, chatLifecycleState: "idle" }),
-  requestActiveTurnCancellation: async () => {
-    const activeTurn = get().activeTurn;
-    if (!activeTurn || activeTurn.status !== "running") {
-      return;
-    }
-    if (get().cancelRequestedTurnId === activeTurn.turnId) {
-      return;
-    }
-    const [{ abortRuntimeTurn }, { buildRuntimeContractDetail }] = await Promise.all([
-      __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cW), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
-      __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cX), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url)
-    ]);
-    set({ cancelRequestedTurnId: activeTurn.turnId });
-    abortRuntimeTurn(activeTurn.turnId);
-    get().recordRuntimeEvent({
-      turnId: activeTurn.turnId,
-      type: "turn_cancellation_requested",
-      message: "Cancellation requested for the active agent turn.",
-      detail: buildRuntimeContractDetail({
-        reasonCode: "cancellation_requested",
-        retryable: false,
-        abortMode: "checkpoint_abort",
-        abortSource: "runtime_cancellation",
-        abortPropagationStatus: "checkpoint_only",
-        source: "runtime_cancellation_request"
-      })
-    });
-  },
-  clearActiveTurnCancellation: () => set({ cancelRequestedTurnId: null }),
-  logAgentToolUsage: (entryInput) => {
-    const activeTurn = get().activeTurn;
-    const activeStep = activeTurn == null ? void 0 : activeTurn.steps.at(-1);
-    const correlation = buildCorrelationFields(get(), entryInput);
-    const entry = createToolLogEntry({
-      ...entryInput,
-      sessionId: entryInput.sessionId ?? correlation.sessionId ?? get().sessionId,
-      datasetId: entryInput.datasetId ?? correlation.datasetId,
-      runId: entryInput.runId ?? correlation.runId ?? (activeTurn == null ? void 0 : activeTurn.runId),
-      turnId: entryInput.turnId ?? correlation.turnId ?? (activeTurn == null ? void 0 : activeTurn.turnId),
-      stepId: entryInput.stepId ?? correlation.stepId ?? (activeStep == null ? void 0 : activeStep.stepId),
-      toolCallId: entryInput.toolCallId ?? correlation.toolCallId ?? (activeStep == null ? void 0 : activeStep.toolCallId) ?? (activeStep == null ? void 0 : activeStep.stepId),
-      cleaningRunId: entryInput.cleaningRunId ?? correlation.cleaningRunId,
-      requestId: entryInput.requestId ?? correlation.requestId
-    });
-    set((state) => {
-      const updated = [...state.agentToolLogs, entry];
-      return { agentToolLogs: updated.slice(-200) };
-    });
-  },
-  runCardEnhancementReview: async () => {
-    const { analysisCards, settings, addProgress } = get();
-    if (analysisCards.length === 0) {
-      addProgress("No cards available to review yet.", "system");
-      return;
-    }
-    set({ isCardReviewInProgress: true });
-    try {
-      const { generateCardEnhancementSuggestions } = await __vitePreload(async () => {
-        const { generateCardEnhancementSuggestions: generateCardEnhancementSuggestions2 } = await import("./csv_data_analysis_app-ai.js").then((n) => n.a0);
-        return { generateCardEnhancementSuggestions: generateCardEnhancementSuggestions2 };
-      }, true ? __vite__mapDeps([0,1,2,3,4]) : void 0, import.meta.url);
-      const cardContext = analysisCards.map((card) => ({
-        id: card.id,
-        title: card.plan.title,
-        aggregatedDataSample: card.aggregatedData.slice(0, 15),
-        groupByColumn: card.plan.groupByColumn,
-        valueColumn: card.plan.valueColumn,
-        aggregation: card.plan.aggregation
-      }));
-      const suggestions = await generateCardEnhancementSuggestions(cardContext, settings);
-      if (!suggestions || suggestions.length === 0) {
-        set((prev) => ({
-          cardEnhancementSuggestions: [],
-          isCardReviewInProgress: false,
-          chatHistory: [
-            ...prev.chatHistory,
-            createChatMessage({
-              sender: "ai",
-              text: "AI reviewed all cards but found no additional enhancements at the moment.",
-              timestamp: /* @__PURE__ */ new Date(),
-              type: "ai_message"
-            })
-          ]
-        }));
-        addProgress("AI review complete – no enhancements suggested.", "system");
-        return;
-      }
-      const cardTitleMap = new Map(analysisCards.map((card) => [card.id, card.plan.title]));
-      const suggestionsWithMeta = suggestions.map((suggestion, idx) => ({
-        ...suggestion,
-        cardTitle: String(suggestion.cardTitle ?? cardTitleMap.get(suggestion.cardId) ?? suggestion.cardId),
-        id: suggestion.id ?? `card-enhancement-${Date.now()}-${idx}`,
-        createdAt: /* @__PURE__ */ new Date(),
-        shortCode: `S${idx + 1}`,
-        status: "pending",
-        updateChart: suggestion.updateChart ? {
-          ...suggestion.updateChart,
-          newChartType: suggestion.updateChart.newChartType
-        } : void 0
-      }));
-      set((prev) => ({
-        cardEnhancementSuggestions: suggestionsWithMeta,
-        isCardReviewInProgress: false,
-        chatHistory: [
-          ...prev.chatHistory,
-          createChatMessage({
-            sender: "ai",
-            text: `AI reviewed all cards and proposed ${suggestionsWithMeta.length} enhancement${suggestionsWithMeta.length > 1 ? "s" : ""}. Reply "Approve S1" or "Dismiss S1" to act on a suggestion.`,
-            timestamp: /* @__PURE__ */ new Date(),
-            type: "ai_message"
-          }),
-          ...suggestionsWithMeta.map((s) => createChatMessage({
-            sender: "ai",
-            text: `Suggestion ${s.shortCode} (${s.priority.toUpperCase()}) for **${s.cardTitle}**:
-${s.rationale}
-
-Proposed column: ${s.proposedColumnName ? `**${s.proposedColumnName}** = ${s.formula}` : "N/A"}
-Reply "Approve ${s.shortCode}" to apply or "Dismiss ${s.shortCode}" to skip.`,
-            timestamp: /* @__PURE__ */ new Date(),
-            type: "ai_enhancement_suggestion",
-            enhancementSuggestionId: s.id
-          }))
-        ]
-      }));
-      addProgress(`AI proposed ${suggestionsWithMeta.length} potential enhancement${suggestionsWithMeta.length > 1 ? "s" : ""}.`, "system");
-    } catch (error) {
-      console.error("Card enhancement review failed:", error);
-      get().addProgress("AI card review failed. Please try again.", "error");
-      set({ isCardReviewInProgress: false });
-    }
-  },
+  runtimeEvents: state.runtimeEvents,
+  runtimeRunHistory: state.runtimeRunHistory,
+  activeAnalysisSession: state.activeAnalysisSession,
+  latestAnalysisSession: state.latestAnalysisSession,
+  visibleAnalysisTrace: state.visibleAnalysisTrace,
+  aiTaskStatus: state.aiTaskStatus,
+  initialAnalysisStatus: state.initialAnalysisStatus,
+  telemetryEvents: state.telemetryEvents,
+  agentEvents: state.agentEvents,
+  agentToolLogs: state.agentToolLogs,
+  confirmedAnalysisGoal: state.confirmedAnalysisGoal,
+  goalState: state.goalState,
+  agentMemoryRun: state.agentMemoryRun,
+  liveAgentMemoryRun: state.liveAgentMemoryRun,
+  agentMemoryHistory: state.agentMemoryHistory,
+  selectedMemoryRunId: state.selectedMemoryRunId,
+  currentDatasetId: state.currentDatasetId,
+  dataQualityIssues: state.dataQualityIssues,
+  isChangingGoal: state.isChangingGoal,
+  planQueue: state.planQueue,
+  contextualSummary: state.contextualSummary,
+  isGeneratingReport: state.isGeneratingReport,
+  isSummaryGenerating: state.isSummaryGenerating,
+  reportGenerationProgress: state.reportGenerationProgress,
+  sessionCreatedAt: state.sessionCreatedAt,
+  cardEnhancementSuggestions: state.cardEnhancementSuggestions,
+  isCardReviewInProgress: state.isCardReviewInProgress,
+  workspaceFiles: filterPersistedWorkspaceFiles(state.workspaceFiles),
+  workspaceActionHistory: state.workspaceActionHistory,
+  cleaningRun: state.cleaningRun,
+  queryHistory: state.queryHistory,
+  duckDbSessionStatus: state.duckDbSessionStatus,
+  userColumnAnnotations: state.userColumnAnnotations ?? {}
+});
+const buildPersistedAppStateSignature = (state) => {
+  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l;
+  if (!hasSavableSession(state)) {
+    return null;
+  }
+  return [
+    state.sessionId,
+    state.currentView,
+    // --- cards (track count, IDs, AND content mutations) ---
+    state.analysisCards.length,
+    state.analysisCards.map((c) => `${c.id}:${c.displayChartType}:${c.topN ?? ""}:${c.isDataVisible ? "1" : "0"}`).join(","),
+    // --- chat (track count + last message) ---
+    state.chatHistory.length,
+    ((_a = state.chatHistory.at(-1)) == null ? void 0 : _a.id) ?? "",
+    ((_c = (_b = state.chatHistory.at(-1)) == null ? void 0 : _b.text) == null ? void 0 : _c.slice(0, 64)) ?? "",
+    // --- column/profile state ---
+    state.columnProfiles.length,
+    buildColumnRegistrySignature(state),
+    // --- pipeline / analysis status ---
+    state.finalSummary ? "fs" : "",
+    state.aiCoreAnalysisSummary ? "acs" : "",
+    state.initialAnalysisStatus ?? "",
+    state.goalState ?? "",
+    ((_d = state.cleaningRun) == null ? void 0 : _d.status) ?? "",
+    ((_f = (_e = state.dataPreparationPlan) == null ? void 0 : _e.sqlPrecheck) == null ? void 0 : _f.status) ?? "",
+    state.confirmedAnalysisGoal ?? "",
+    state.isGeneratingReport ? "rg" : "",
+    state.semanticStatus ?? "",
+    state.canonicalizationStatus ?? "",
+    ((_g = state.pipelineOutcome) == null ? void 0 : _g.status) ?? "",
+    // --- AI task / status messages ---
+    state.aiTaskStatus ?? "",
+    (state.progressMessages ?? []).length,
+    // --- analysis session ---
+    ((_h = state.latestAnalysisSession) == null ? void 0 : _h.sessionId) ?? "",
+    ((_i = state.latestAnalysisSession) == null ? void 0 : _i.status) ?? "",
+    ((_j = state.activeAnalysisSession) == null ? void 0 : _j.status) ?? "",
+    // --- data quality / clarifications ---
+    (state.dataQualityIssues ?? []).length,
+    (state.resolvedClarifications ?? []).length,
+    state.contextualSummary ? "cs" : "",
+    // --- runtime / agent events ---
+    (state.runtimeEvents ?? []).length,
+    (state.runtimeRunHistory ?? []).length,
+    (state.agentEvents ?? []).length,
+    (state.agentToolLogs ?? []).length,
+    // --- vector / memory ---
+    (state.vectorStoreDocuments ?? []).length,
+    state.vectorMemoryState ?? "",
+    state.selectedMemoryRunId ?? "",
+    // --- query / workspace ---
+    (state.queryHistory ?? []).length,
+    ((_k = state.csvData) == null ? void 0 : _k.fileName) ?? "",
+    ((_l = state.csvData) == null ? void 0 : _l.data.length) ?? 0,
+    Object.keys(state.workspaceFiles).length,
+    (state.workspaceActionHistory ?? []).length,
+    // --- misc persistence-worthy state ---
+    state.duckDbSessionStatus ?? "",
+    state.reportGenerationProgress ?? "",
+    state.isCardReviewInProgress ? "1" : "0",
+    Object.keys(state.userColumnAnnotations ?? {}).length
+  ].join("|");
+};
+const buildPersistedReportRecord = (state, options) => ({
+  id: options.id,
+  filename: options.filename,
+  createdAt: options.createdAt ?? state.sessionCreatedAt ?? /* @__PURE__ */ new Date(),
+  updatedAt: options.updatedAt ?? /* @__PURE__ */ new Date(),
+  appState: buildPersistedAppState(state)
+});
+const persistedAppState = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  buildPersistedAppState,
+  buildPersistedAppStateSignature,
+  buildPersistedReportRecord,
+  hasSavableSession
+}, Symbol.toStringTag, { value: "Module" }));
+const REPORT_GENERATION_TIMEOUT_MS = 3e5;
+let reportAbortController = null;
+let reportTimeoutHandle = null;
+const cleanupReportAbort = () => {
+  if (reportTimeoutHandle) {
+    clearTimeout(reportTimeoutHandle);
+    reportTimeoutHandle = null;
+  }
+  reportAbortController = null;
+};
+const createAgentReportActions = (set, get) => ({
   generateAnalystReport: async () => {
     var _a;
     if (get().isGeneratingReport) {
@@ -2438,9 +2271,15 @@ Reply "Approve ${s.shortCode}" to apply or "Dismiss ${s.shortCode}" to skip.`,
         currentStep: 1
       }
     });
+    const controller = new AbortController();
+    reportAbortController = controller;
+    reportTimeoutHandle = setTimeout(() => {
+      controller.abort(new Error("Report generation timed out after 5 minutes."));
+    }, REPORT_GENERATION_TIMEOUT_MS);
     try {
       const artifacts = await generateAnalystReportArtifacts(state, state.settings, {
-        onProgress: updateProgress
+        onProgress: updateProgress,
+        abortSignal: controller.signal
       });
       await saveReportArtifacts(artifacts.manifest.reportId, artifacts.manifest, artifacts.storedArtifactFiles);
       set((prev) => ({
@@ -2545,12 +2384,13 @@ Reply "Approve ${s.shortCode}" to apply or "Dismiss ${s.shortCode}" to skip.`,
         });
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const cancelled = isRuntimeAbortError(error, controller.signal);
+      const message = cancelled ? "Report generation was cancelled." : error instanceof Error ? error.message : String(error);
       console.error("Analyst report generation failed:", error);
       set({
         isGeneratingReport: false,
         reportGenerationProgress: null,
-        aiTaskStatus: {
+        aiTaskStatus: cancelled ? null : {
           status: "error",
           title: "Analyst report failed",
           subtitle: message,
@@ -2559,16 +2399,28 @@ Reply "Approve ${s.shortCode}" to apply or "Dismiss ${s.shortCode}" to skip.`,
           error: message
         }
       });
-      get().addProgress(`Analyst report generation failed: ${message}`, "error");
-      get().recordAgentEvent({
-        phase: "execution",
-        step: "analyst_report_generated",
-        status: "error",
-        message: "Failed to generate bounded analyst report artifacts.",
-        detail: {
-          error: message
-        }
-      });
+      get().addProgress(
+        cancelled ? "Report generation cancelled." : `Analyst report generation failed: ${message}`,
+        cancelled ? "system" : "error"
+      );
+      if (!cancelled) {
+        get().recordAgentEvent({
+          phase: "execution",
+          step: "analyst_report_generated",
+          status: "error",
+          message: "Failed to generate bounded analyst report artifacts.",
+          detail: {
+            error: message
+          }
+        });
+      }
+    } finally {
+      cleanupReportAbort();
+    }
+  },
+  cancelReportGeneration: () => {
+    if (reportAbortController && !reportAbortController.signal.aborted) {
+      reportAbortController.abort(new Error("Report generation cancelled by user."));
     }
   },
   openLatestAnalystReport: () => {
@@ -2598,7 +2450,209 @@ Reply "Approve ${s.shortCode}" to apply or "Dismiss ${s.shortCode}" to skip.`,
     if (!openedWindow) {
       get().addProgress("Failed to open the analyst report for PDF export.", "error");
     }
+  }
+});
+const createAgentSlice = (set, get) => ({
+  agentEvents: [],
+  agentToolLogs: [],
+  activeTurn: null,
+  queuedAgentRuns: [],
+  cancelRequestedTurnId: null,
+  runtimeEvents: [],
+  runtimeRunHistory: [],
+  lastInsightExtractedAtTurn: 0,
+  cardEnhancementSuggestions: [],
+  isCardReviewInProgress: false,
+  agentMemoryRun: null,
+  liveAgentMemoryRun: null,
+  agentMemoryHistory: [],
+  selectedMemoryRunId: null,
+  currentDatasetId: null,
+  recordAgentEvent: (eventInput) => {
+    const correlation = buildCorrelationFields(get(), eventInput);
+    const event = createEventObject({
+      ...eventInput,
+      sessionId: eventInput.sessionId ?? correlation.sessionId,
+      datasetId: eventInput.datasetId ?? correlation.datasetId,
+      runId: eventInput.runId ?? correlation.runId,
+      turnId: eventInput.turnId ?? correlation.turnId,
+      stepId: eventInput.stepId ?? correlation.stepId,
+      toolCallId: eventInput.toolCallId ?? correlation.toolCallId,
+      cleaningRunId: eventInput.cleaningRunId ?? correlation.cleaningRunId,
+      requestId: eventInput.requestId ?? correlation.requestId
+    });
+    pendingAgentEvents.push(event);
+    scheduleTelemetryFlush(set, get);
+    return event;
   },
+  recordRuntimeEvent: (eventInput) => {
+    var _a, _b, _c, _d, _e, _f;
+    const event = createRuntimeEventObject({
+      ...eventInput,
+      sessionId: eventInput.sessionId ?? get().sessionId,
+      runId: eventInput.runId ?? ((_a = get().activeTurn) == null ? void 0 : _a.runId),
+      turnId: eventInput.turnId ?? ((_b = get().activeTurn) == null ? void 0 : _b.turnId),
+      toolCallId: eventInput.toolCallId ?? ((_d = (_c = get().activeTurn) == null ? void 0 : _c.steps.at(-1)) == null ? void 0 : _d.toolCallId) ?? ((_f = (_e = get().activeTurn) == null ? void 0 : _e.steps.at(-1)) == null ? void 0 : _f.stepId)
+    });
+    pendingRuntimeEvents.push(event);
+    scheduleTelemetryFlush(set, get);
+    return event;
+  },
+  enqueueAgentRun: (run) => {
+    set((state) => ({
+      queuedAgentRuns: [...state.queuedAgentRuns, run]
+    }));
+  },
+  dequeueQueuedAgentRun: (queueId) => {
+    const queuedRun = get().queuedAgentRuns.find((run) => run.queueId === queueId) ?? null;
+    if (!queuedRun) {
+      return null;
+    }
+    set((state) => ({
+      queuedAgentRuns: state.queuedAgentRuns.filter((run) => run.queueId !== queueId)
+    }));
+    return queuedRun;
+  },
+  appendRuntimeRunRecord: (record) => {
+    set((state) => ({
+      runtimeRunHistory: [...state.runtimeRunHistory, record].slice(-50)
+    }));
+  },
+  setActiveTurn: (turn) => set({ activeTurn: turn }),
+  clearActiveTurn: () => set({ activeTurn: null, isBusy: false, chatLifecycleState: "idle" }),
+  requestActiveTurnCancellation: async () => {
+    const activeTurn = get().activeTurn;
+    if (!activeTurn || activeTurn.status !== "running") {
+      return;
+    }
+    if (get().cancelRequestedTurnId === activeTurn.turnId) {
+      return;
+    }
+    const [{ abortRuntimeTurn }, { buildRuntimeContractDetail }] = await Promise.all([
+      __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cP), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
+      __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cQ), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url)
+    ]);
+    set({ cancelRequestedTurnId: activeTurn.turnId });
+    abortRuntimeTurn(activeTurn.turnId);
+    get().recordRuntimeEvent({
+      turnId: activeTurn.turnId,
+      type: "turn_cancellation_requested",
+      message: "Cancellation requested for the active agent turn.",
+      detail: buildRuntimeContractDetail({
+        reasonCode: "cancellation_requested",
+        retryable: false,
+        abortMode: "checkpoint_abort",
+        abortSource: "runtime_cancellation",
+        abortPropagationStatus: "checkpoint_only",
+        source: "runtime_cancellation_request"
+      })
+    });
+  },
+  clearActiveTurnCancellation: () => set({ cancelRequestedTurnId: null }),
+  logAgentToolUsage: (entryInput) => {
+    const activeTurn = get().activeTurn;
+    const activeStep = activeTurn == null ? void 0 : activeTurn.steps.at(-1);
+    const correlation = buildCorrelationFields(get(), entryInput);
+    const entry = createToolLogEntry({
+      ...entryInput,
+      sessionId: entryInput.sessionId ?? correlation.sessionId ?? get().sessionId,
+      datasetId: entryInput.datasetId ?? correlation.datasetId,
+      runId: entryInput.runId ?? correlation.runId ?? (activeTurn == null ? void 0 : activeTurn.runId),
+      turnId: entryInput.turnId ?? correlation.turnId ?? (activeTurn == null ? void 0 : activeTurn.turnId),
+      stepId: entryInput.stepId ?? correlation.stepId ?? (activeStep == null ? void 0 : activeStep.stepId),
+      toolCallId: entryInput.toolCallId ?? correlation.toolCallId ?? (activeStep == null ? void 0 : activeStep.toolCallId) ?? (activeStep == null ? void 0 : activeStep.stepId),
+      cleaningRunId: entryInput.cleaningRunId ?? correlation.cleaningRunId,
+      requestId: entryInput.requestId ?? correlation.requestId
+    });
+    set((state) => {
+      const updated = [...state.agentToolLogs, entry];
+      return { agentToolLogs: updated.slice(-200) };
+    });
+  },
+  runCardEnhancementReview: async () => {
+    const { analysisCards, settings, addProgress } = get();
+    if (analysisCards.length === 0) {
+      addProgress("No cards available to review yet.", "system");
+      return;
+    }
+    set({ isCardReviewInProgress: true });
+    try {
+      const { generateCardEnhancementSuggestions } = await __vitePreload(async () => {
+        const { generateCardEnhancementSuggestions: generateCardEnhancementSuggestions2 } = await import("./csv_data_analysis_app-ai.js").then((n) => n.aa);
+        return { generateCardEnhancementSuggestions: generateCardEnhancementSuggestions2 };
+      }, true ? __vite__mapDeps([0,1,2,3,4]) : void 0, import.meta.url);
+      const cardContext = analysisCards.map((card) => ({
+        id: card.id,
+        title: card.plan.title,
+        aggregatedDataSample: card.aggregatedData.slice(0, 15),
+        groupByColumn: card.plan.groupByColumn,
+        valueColumn: card.plan.valueColumn,
+        aggregation: card.plan.aggregation
+      }));
+      const suggestions = await generateCardEnhancementSuggestions(cardContext, settings);
+      if (!suggestions || suggestions.length === 0) {
+        set((prev) => ({
+          cardEnhancementSuggestions: [],
+          isCardReviewInProgress: false,
+          chatHistory: [
+            ...prev.chatHistory,
+            createChatMessage({
+              sender: "ai",
+              text: "AI reviewed all cards but found no additional enhancements at the moment.",
+              timestamp: /* @__PURE__ */ new Date(),
+              type: "ai_message"
+            })
+          ]
+        }));
+        addProgress("AI review complete – no enhancements suggested.", "system");
+        return;
+      }
+      const cardTitleMap = new Map(analysisCards.map((card) => [card.id, card.plan.title]));
+      const suggestionsWithMeta = suggestions.map((suggestion, idx) => ({
+        ...suggestion,
+        cardTitle: String(suggestion.cardTitle ?? cardTitleMap.get(suggestion.cardId) ?? suggestion.cardId),
+        id: suggestion.id ?? `card-enhancement-${Date.now()}-${idx}`,
+        createdAt: /* @__PURE__ */ new Date(),
+        shortCode: `S${idx + 1}`,
+        status: "pending",
+        updateChart: suggestion.updateChart ? {
+          ...suggestion.updateChart,
+          newChartType: suggestion.updateChart.newChartType
+        } : void 0
+      }));
+      set((prev) => ({
+        cardEnhancementSuggestions: suggestionsWithMeta,
+        isCardReviewInProgress: false,
+        chatHistory: [
+          ...prev.chatHistory,
+          createChatMessage({
+            sender: "ai",
+            text: `AI reviewed all cards and proposed ${suggestionsWithMeta.length} enhancement${suggestionsWithMeta.length > 1 ? "s" : ""}. Reply "Approve S1" or "Dismiss S1" to act on a suggestion.`,
+            timestamp: /* @__PURE__ */ new Date(),
+            type: "ai_message"
+          }),
+          ...suggestionsWithMeta.map((s) => createChatMessage({
+            sender: "ai",
+            text: `Suggestion ${s.shortCode} (${s.priority.toUpperCase()}) for **${s.cardTitle}**:
+${s.rationale}
+
+Proposed column: ${s.proposedColumnName ? `**${s.proposedColumnName}** = ${s.formula}` : "N/A"}
+Reply "Approve ${s.shortCode}" to apply or "Dismiss ${s.shortCode}" to skip.`,
+            timestamp: /* @__PURE__ */ new Date(),
+            type: "ai_enhancement_suggestion",
+            enhancementSuggestionId: s.id
+          }))
+        ]
+      }));
+      addProgress(`AI proposed ${suggestionsWithMeta.length} potential enhancement${suggestionsWithMeta.length > 1 ? "s" : ""}.`, "system");
+    } catch (error) {
+      console.error("Card enhancement review failed:", error);
+      get().addProgress("AI card review failed. Please try again.", "error");
+      set({ isCardReviewInProgress: false });
+    }
+  },
+  /* ── Report actions (delegated to agentReportActions.ts) ── */
+  ...createAgentReportActions(set, get),
   applyCardEnhancementSuggestion: async (suggestionId) => {
     const { cardEnhancementSuggestions, addCalculatedColumnToCard, addProgress } = get();
     const suggestion = cardEnhancementSuggestions.find((s) => s.id === suggestionId);
@@ -2764,6 +2818,7 @@ const initialAppState = {
   planQueue: [],
   contextualSummary: null,
   isGeneratingReport: false,
+  isSummaryGenerating: false,
   reportGenerationProgress: null,
   sessionCreatedAt: null,
   cardEnhancementSuggestions: [],
@@ -2801,9 +2856,9 @@ const useAppStore = createWithEqualityFn()((set, get, store) => ({
       { updateCleaningRun }
     ] = await Promise.all([
       getSettings(),
-      __vitePreload(() => import("./csv_data_analysis_app-ai.js").then((n) => n.Y), true ? __vite__mapDeps([0,1,2,3,4]) : void 0, import.meta.url),
-      __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cV), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
-      __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cY), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url)
+      __vitePreload(() => import("./csv_data_analysis_app-ai.js").then((n) => n.a6), true ? __vite__mapDeps([0,1,2,3,4]) : void 0, import.meta.url),
+      __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cO), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url),
+      __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cS), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url)
     ]);
     const persistedSettings = {
       ...rawPersistedSettings,
@@ -2898,6 +2953,7 @@ const useAppStore = createWithEqualityFn()((set, get, store) => ({
           isBusy: false,
           chatLifecycleState: "idle",
           isGeneratingReport: false,
+          isSummaryGenerating: false,
           aiTaskStatus: null,
           goalState: normalizeRestoredGoalState(normalizedAppState.goalState),
           currentView: normalizedAppState.csvData ? "analysis_dashboard" : "file_upload",
@@ -2926,7 +2982,7 @@ const useAppStore = createWithEqualityFn()((set, get, store) => ({
             set({ vectorMemoryState: "queued" });
             get().addProgress("Restored AI long-term memory from local storage.");
           } else {
-            void __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cZ), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url).then(
+            void __vitePreload(() => import("./csv_data_analysis_app-agent.js").then((n) => n.cT), true ? __vite__mapDeps([2,0,1,3,4]) : void 0, import.meta.url).then(
               (m) => m.rebuildVectorMemoryFromState({ getState: get, setState: set }, {
                 reset: true,
                 includeDatasetDocs: true,
@@ -3116,7 +3172,7 @@ const FileUpload = () => {
 };
 const IconNew = () => /* @__PURE__ */ jsxRuntimeExports.jsx("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-5 w-5", fill: "none", viewBox: "0 0 24 24", stroke: "currentColor", children: /* @__PURE__ */ jsxRuntimeExports.jsx("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" }) });
 const IconHistory = () => /* @__PURE__ */ jsxRuntimeExports.jsx("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-5 w-5", fill: "none", viewBox: "0 0 24 24", stroke: "currentColor", children: /* @__PURE__ */ jsxRuntimeExports.jsx("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" }) });
-const IconShowAssistant = () => /* @__PURE__ */ jsxRuntimeExports.jsx("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-6 w-6", fill: "none", viewBox: "0 0 24 24", stroke: "currentColor", children: /* @__PURE__ */ jsxRuntimeExports.jsx("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" }) });
+const IconShowAssistant = () => /* @__PURE__ */ jsxRuntimeExports.jsx("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-5 w-5", fill: "none", viewBox: "0 0 24 24", stroke: "currentColor", children: /* @__PURE__ */ jsxRuntimeExports.jsx("path", { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" }) });
 const IconChangeGoal = (props) => /* @__PURE__ */ jsxRuntimeExports.jsxs("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-5 w-5", viewBox: "0 0 20 20", fill: "currentColor", ...props, children: [
   /* @__PURE__ */ jsxRuntimeExports.jsx("path", { d: "M17.414 2.586a2 2 0 00-2.828 0L7 10.172V13h2.828l7.586-7.586a2 2 0 000-2.828z" }),
   /* @__PURE__ */ jsxRuntimeExports.jsx("path", { fillRule: "evenodd", d: "M2 6a2 2 0 012-2h4a1 1 0 010 2H4v10h10v-4a1 1 0 112 0v4a2 2 0 01-2 2H4a2 2 0 01-2-2V6z", clipRule: "evenodd" })
@@ -3165,7 +3221,7 @@ const AppHeader = () => {
     "header",
     {
       "data-app-header-root": "true",
-      className: "flex flex-col gap-2 rounded-card bg-slate-50/95 px-0 py-2 backdrop-blur-sm sm:flex-row sm:items-start sm:justify-between",
+      className: "flex flex-col gap-2 px-0 py-2 sm:flex-row sm:items-center sm:justify-between",
       children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "max-w-xs", children: /* @__PURE__ */ jsxRuntimeExports.jsx("h1", { className: "text-xl font-extrabold text-slate-900 leading-tight", children: "AI Analysis" }) }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-wrap items-center justify-end gap-2", children: [
@@ -3245,7 +3301,7 @@ const AppHeader = () => {
             "button",
             {
               onClick: onShowAssistant,
-              className: "inline-flex items-center justify-center rounded-md bg-blue-600 px-3 py-1.5 text-sm text-white transition-colors hover:bg-blue-700",
+              className: `${primaryButtonClass} bg-blue-600 text-white hover:bg-blue-700`,
               "aria-label": "Show Assistant Panel",
               title: "Show Assistant Panel",
               children: /* @__PURE__ */ jsxRuntimeExports.jsx(IconShowAssistant, {})
@@ -3610,6 +3666,94 @@ class ErrorBoundary extends We.Component {
     return this.props.children;
   }
 }
+const SCROLL_DELTA_THRESHOLD = 10;
+const TOP_REVEAL_THRESHOLD = 12;
+const useAutoHideHeader = ({
+  scrollContainerRef
+}) => {
+  const headerRef = reactExports.useRef(null);
+  const lastScrollTopRef = reactExports.useRef(0);
+  const forcedHiddenTimeoutRef = reactExports.useRef(null);
+  const [headerHeight, setHeaderHeight] = reactExports.useState(0);
+  const [isHeaderHidden, setIsHeaderHidden] = reactExports.useState(false);
+  reactExports.useEffect(() => {
+    const headerElement = headerRef.current;
+    if (!headerElement) {
+      return;
+    }
+    const updateHeaderHeight = () => {
+      setHeaderHeight(headerElement.getBoundingClientRect().height);
+    };
+    updateHeaderHeight();
+    const resizeObserver = new ResizeObserver(() => {
+      updateHeaderHeight();
+    });
+    resizeObserver.observe(headerElement);
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, []);
+  reactExports.useEffect(() => {
+    const handleTemporaryHide = (event) => {
+      var _a;
+      const customEvent = event;
+      const durationMs = ((_a = customEvent.detail) == null ? void 0 : _a.durationMs) ?? 1200;
+      if (forcedHiddenTimeoutRef.current !== null) {
+        window.clearTimeout(forcedHiddenTimeoutRef.current);
+      }
+      setIsHeaderHidden(true);
+      forcedHiddenTimeoutRef.current = window.setTimeout(() => {
+        setIsHeaderHidden(false);
+        forcedHiddenTimeoutRef.current = null;
+      }, durationMs);
+    };
+    window.addEventListener(APP_HEADER_HIDE_FOR_CARD_NAVIGATION_EVENT, handleTemporaryHide);
+    return () => {
+      window.removeEventListener(APP_HEADER_HIDE_FOR_CARD_NAVIGATION_EVENT, handleTemporaryHide);
+      if (forcedHiddenTimeoutRef.current !== null) {
+        window.clearTimeout(forcedHiddenTimeoutRef.current);
+      }
+    };
+  }, []);
+  reactExports.useEffect(() => {
+    const scrollElement = scrollContainerRef.current;
+    if (!scrollElement) {
+      return;
+    }
+    const onScroll = () => {
+      const scrollTop = scrollElement.scrollTop;
+      const delta = scrollTop - lastScrollTopRef.current;
+      if (forcedHiddenTimeoutRef.current !== null) {
+        lastScrollTopRef.current = scrollTop;
+        return;
+      }
+      if (scrollTop <= TOP_REVEAL_THRESHOLD) {
+        setIsHeaderHidden(false);
+        lastScrollTopRef.current = scrollTop;
+        return;
+      }
+      if (Math.abs(delta) < SCROLL_DELTA_THRESHOLD) {
+        return;
+      }
+      if (delta > 0 && scrollTop > headerHeight) {
+        setIsHeaderHidden(true);
+      } else if (delta < 0) {
+        setIsHeaderHidden(false);
+      }
+      lastScrollTopRef.current = scrollTop;
+    };
+    lastScrollTopRef.current = scrollElement.scrollTop;
+    scrollElement.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      scrollElement.removeEventListener("scroll", onScroll);
+    };
+  }, [headerHeight, scrollContainerRef]);
+  return {
+    headerRef,
+    headerHeight,
+    isHeaderHidden
+  };
+};
 const STALE_CHUNK_RELOAD_KEY = "csv-data-analysis:stale-chunk-reload";
 const RELOAD_COOLDOWN_MS = 15e3;
 function readReloadMarker(storage) {
@@ -3775,7 +3919,7 @@ const GlobalErrorToast = ({
   );
 };
 const ChatPanel = reactExports.lazy(() => __vitePreload(() => import("./csv_data_analysis_ChatPanel.js"), true ? __vite__mapDeps([5,6,2,1,0,3,4,7,8,9,10,11]) : void 0, import.meta.url).then((m) => ({ default: m.ChatPanel })));
-const AnalysisPanel = reactExports.lazy(() => __vitePreload(() => import("./csv_data_analysis_AnalysisPanel.js"), true ? __vite__mapDeps([12,6,2,1,0,3,4,9,7,8,13,14,15,16,10]) : void 0, import.meta.url).then((m) => ({ default: m.AnalysisPanel })));
+const AnalysisPanel = reactExports.lazy(() => __vitePreload(() => import("./csv_data_analysis_AnalysisPanel.js"), true ? __vite__mapDeps([12,6,2,1,0,3,4,7,8,9,13,14,15,16,10]) : void 0, import.meta.url).then((m) => ({ default: m.AnalysisPanel })));
 const SpreadsheetPanel = reactExports.lazy(() => __vitePreload(() => import("./csv_data_analysis_SpreadsheetPanel.js"), true ? __vite__mapDeps([17,6,2,1,0,3,4,14,9,13,11,7,15]) : void 0, import.meta.url).then((m) => ({ default: m.SpreadsheetPanel })));
 const SettingsModal = reactExports.lazy(() => __vitePreload(() => import("./csv_data_analysis_SettingsModal.js"), true ? __vite__mapDeps([18,6,2,1,0,3,4,7]) : void 0, import.meta.url).then((module) => ({ default: module.SettingsModal })));
 const HistoryPanel = reactExports.lazy(() => __vitePreload(() => import("./csv_data_analysis_HistoryPanel.js"), true ? __vite__mapDeps([19,6,2,1,0,3,4,7,13]) : void 0, import.meta.url).then((module) => ({ default: module.HistoryPanel })));
@@ -3787,6 +3931,25 @@ const DataPreparationWorkflowModal = reactExports.lazy(() => __vitePreload(() =>
 const DebugLogsModal = reactExports.lazy(() => __vitePreload(() => import("./csv_data_analysis_DebugLogsModal.js"), true ? __vite__mapDeps([26,6,2,1,0,3,4,7,25,13]) : void 0, import.meta.url).then((module) => ({ default: module.DebugLogsModal })));
 const ReportBoundaryConfirmModal = reactExports.lazy(() => __vitePreload(() => import("./csv_data_analysis_ReportBoundaryConfirmModal.js"), true ? __vite__mapDeps([27,6,2,1,0,3,4,7]) : void 0, import.meta.url).then((module) => ({ default: module.ReportBoundaryConfirmModal })));
 const ApiKeyRequiredModal = reactExports.lazy(() => __vitePreload(() => import("./csv_data_analysis_ApiKeyRequiredModal.js"), true ? __vite__mapDeps([28,6,2,1,0,3,4,7]) : void 0, import.meta.url).then((module) => ({ default: module.ApiKeyRequiredModal })));
+const SpreadsheetPanelGate = We.memo(({ isVisible }) => {
+  const isPipelineActive = useAppStore((state) => {
+    const task = state.aiTaskStatus;
+    const isTaskRunning = Boolean(task && task.status !== "done" && task.status !== "error");
+    const isSummaryPending = state.analysisCards.length > 0 && !state.finalSummary;
+    return isTaskRunning || isSummaryPending;
+  });
+  const prevActiveRef = reactExports.useRef(isPipelineActive);
+  reactExports.useEffect(() => {
+    if (prevActiveRef.current && !isPipelineActive) {
+      useAppStore.getState().setIsSpreadsheetVisible(false);
+    }
+    prevActiveRef.current = isPipelineActive;
+  }, [isPipelineActive]);
+  if (isPipelineActive) {
+    return null;
+  }
+  return /* @__PURE__ */ jsxRuntimeExports.jsx(SpreadsheetPanel, { isVisible }, "spreadsheet");
+});
 const App = () => {
   const {
     init,
@@ -3872,6 +4035,8 @@ const App = () => {
   const canUseLogsSurface = shouldAllowLogsSurface();
   const canUseAgentThinkingSurface = shouldAllowAgentThinkingSurface();
   const canUseLongTermMemorySurface = shouldAllowLongTermMemorySurface();
+  const scrollContainerRef = reactExports.useRef(null);
+  const { headerRef, headerHeight, isHeaderHidden } = useAutoHideHeader({ scrollContainerRef });
   const renderMainContent = () => {
     if (isAppInitializing) {
       return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex h-full items-center justify-center", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center text-slate-500", children: [
@@ -3887,7 +4052,7 @@ const App = () => {
       " Loading workspace..."
     ] }) }), children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx(AnalysisPanel, {}),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "mt-8", children: /* @__PURE__ */ jsxRuntimeExports.jsx(SpreadsheetPanel, { isVisible: isSpreadsheetVisible }, "spreadsheet") })
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "mt-8", children: /* @__PURE__ */ jsxRuntimeExports.jsx(SpreadsheetPanelGate, { isVisible: isSpreadsheetVisible }) })
     ] }) }) });
   };
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-col md:flex-row h-screen bg-slate-50 text-slate-800", children: [
@@ -3917,13 +4082,22 @@ const App = () => {
       canUseLogsSurface && isDebugLogsModalOpen && /* @__PURE__ */ jsxRuntimeExports.jsx(DebugLogsModal, {}),
       showLongTermMemory && canUseLongTermMemorySurface && isMemoryPanelOpen && /* @__PURE__ */ jsxRuntimeExports.jsx(MemoryPanel, {})
     ] }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx("main", { className: "relative flex flex-1 flex-col overflow-hidden p-4", children: /* @__PURE__ */ jsxRuntimeExports.jsxs(
+    /* @__PURE__ */ jsxRuntimeExports.jsx("main", { className: "relative flex flex-1 flex-col overflow-hidden px-4 pb-4 pt-0", children: /* @__PURE__ */ jsxRuntimeExports.jsxs(
       "div",
       {
         id: "app-main-scroll-container",
+        ref: scrollContainerRef,
         className: "min-h-0 flex-1 overflow-y-auto",
         children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "sticky top-0 z-20 bg-slate-50 pb-4", children: /* @__PURE__ */ jsxRuntimeExports.jsx(AppHeader, {}) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "div",
+            {
+              ref: headerRef,
+              className: "sticky top-0 z-20 bg-slate-50 pb-4 transition-transform duration-200",
+              style: { transform: isHeaderHidden ? `translateY(-${headerHeight}px)` : "translateY(0)" },
+              children: /* @__PURE__ */ jsxRuntimeExports.jsx(AppHeader, {})
+            }
+          ),
           renderMainContent()
         ]
       }

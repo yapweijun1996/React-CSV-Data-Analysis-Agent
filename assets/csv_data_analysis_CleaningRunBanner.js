@@ -1,5 +1,5 @@
 import { j as jsxRuntimeExports, r as reactExports } from "./csv_data_analysis_vendor-react-core.js";
-import { O as getTranslation } from "./csv_data_analysis_app-agent.js";
+import { I as getTranslation } from "./csv_data_analysis_app-agent.js";
 const formatNumber = (n) => Number.isInteger(n) ? n.toLocaleString() : n.toLocaleString(void 0, { maximumFractionDigits: 2 });
 const formatCell = (value) => {
   if (value == null) return "";
@@ -253,8 +253,13 @@ const GroupByTest = ({ rows, language, accentColor, onRequestCard }) => {
           {
             type: "button",
             onClick: () => {
-              const cardDesc = pivotBy ? `Create a new analysis card: pivot table with rows=${groupBy}, columns=${pivotBy}, values=${agg.toUpperCase()}(${valueCol})` : `Create a new analysis card: ${agg.toUpperCase()}(${valueCol}) grouped by ${groupBy}`;
-              onRequestCard(cardDesc);
+              const dataRows = (flatResult == null ? void 0 : flatResult.rows) ?? (pivotResult == null ? void 0 : pivotResult.rows) ?? [];
+              const previewLines = dataRows.slice(0, 5).map(
+                (r) => `${String(r[groupBy] ?? "?")}: ${formatNumber(parseNumeric(r[valueCol]))}`
+              ).join(", ");
+              const filterNote = `IMPORTANT: The user is viewing a filtered subset of the data. The precomputed results below are the ground truth for this card — do NOT re-query the full dataset. Use these exact figures in your response: ${dataRows.length} groups, total=${formatNumber(totalValue)}. Breakdown: ${previewLines}.`;
+              const cardDesc = pivotBy ? `Create a new analysis card: pivot table with rows=${groupBy}, columns=${pivotBy}, values=${agg.toUpperCase()}(${valueCol}). ${filterNote}` : `Create a new analysis card: ${agg.toUpperCase()}(${valueCol}) grouped by ${groupBy}. ${filterNote}`;
+              onRequestCard(cardDesc, dataRows);
             },
             className: "shrink-0 rounded-md border border-blue-300 bg-white px-2.5 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 transition-colors",
             children: t("groupby_create_card")

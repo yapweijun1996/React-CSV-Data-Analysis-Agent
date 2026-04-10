@@ -1,5 +1,5 @@
 const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["./csv_data_analysis_vendor-react-core.js","./csv_data_analysis_vendor-data.js","./csv_data_analysis_vendor-misc.js","./csv_data_analysis_vendor-ai-sdk.js","./csv_data_analysis_app-reporting.js","./csv_data_analysis_vendor-storage.js"])))=>i.map(i=>d[i]);
-import { a7 as __vitePreload } from "./csv_data_analysis_app-agent.js";
+import { a5 as __vitePreload } from "./csv_data_analysis_app-agent.js";
 import "./csv_data_analysis_vendor-data.js";
 import "./csv_data_analysis_app-ai.js";
 import "./csv_data_analysis_vendor-ai-sdk.js";

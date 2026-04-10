@@ -1,6 +1,6 @@
-import { i as injectDirectivesIntoQueryPlan, c as createEmptyRuntimeDirectives, n as normalizePreFilterOperator, d as detectQuarterIntent, f as findMissingQuarterColumns, t as throwIfAborted, a as createAnalysisTopicsSchema, r as robustlyParseJsonObject, b as isRuntimeAbortError, e as isStructuralMetadataColumn, g as isTimeLikeDimensionColumn, h as formatAnalysisSteeringBundle, j as detectPeriodColumnFamilies, k as compileQueryPlanToDuckDbSql, l as createSqlEvidenceQueryPlanSchema, m as createSqlPresentationPlanSchema, o as recommendChartType, p as isSequentialDimensionName, q as resolvePivotDecision, s as hasDuplicateNormalizedBuckets, u as isMonotonicSequence, v as resolveOrdinalIndices, w as emitAgentEvent, x as buildDatasetContext, y as buildRuntimeSemanticUnderstanding, z as buildAnalysisIntentBrief, A as recordRuntimeEvent, B as buildEvidenceSignature, C as buildPlanOnlySemanticSignature, D as vectorStore, E as executeEvidenceQuery, F as buildEvidenceResultSummary, G as callAiEvidenceEvaluation, H as evaluateEvidenceValue, I as executePresentationPlanAndCreateCard, J as findTemplateMatches, K as resolveEffectiveReportContext, L as getSemanticSampleRows, M as formatPatternPreferences, N as mapGoalCandidatesToSuggestedActions, O as getTranslation, P as buildAnalysisRankingHints, Q as createChatMessage } from "./csv_data_analysis_app-agent.js";
-import { g as generateText, o as output_exports, j as jsonSchema } from "./csv_data_analysis_vendor-ai-sdk.js";
-import { m as createProviderModel, y as createContextSection, u as runWithOverflowCompaction, x as prepareManagedContext, I as buildAnalysisPlannerSystemPrompt, C as reportContextDiagnostics, w as withTransientRetry, p as prepareSchemaForProvider, J as createAnalysisTopicsPrompt, K as formatColumnNames, L as formatRows, M as trimRawDataSample, N as buildTopicPlanningUserPrompt, O as buildPlanRetryFeedback, i as isProviderConfigured, P as createSqlPresentationPlanPrompt, Q as generateAnalysisGoalCandidates } from "./csv_data_analysis_app-ai.js";
+import { i as injectDirectivesIntoQueryPlan, c as createEmptyRuntimeDirectives, n as normalizePreFilterOperator, d as detectQuarterIntent, f as findMissingQuarterColumns, a as formatAnalysisSteeringBundle, t as throwIfAborted, r as robustlyParseJsonObject, b as isRuntimeAbortError, e as isProviderTimeoutError, g as isTimeLikeDimensionColumn, h as detectPeriodColumnFamilies, j as compileQueryPlanToDuckDbSql, k as isAggregationType, l as isStructuralMetadataColumn, m as isSequentialDimensionName, o as recommendChartType, p as emitAgentEvent, q as buildDatasetContext, s as buildRuntimeSemanticUnderstanding, u as buildAnalysisIntentBrief, v as recordRuntimeEvent, w as buildEvidenceSignature, x as buildPlanOnlySemanticSignature, y as executeEvidenceQuery, z as buildEvidenceResultSummary, A as evaluateEvidenceValue, B as executePresentationPlanAndCreateCard, C as findTemplateMatches, D as vectorStore, E as resolveEffectiveReportContext, F as getSemanticSampleRows, G as formatPatternPreferences, H as mapGoalCandidatesToSuggestedActions, I as getTranslation, J as buildAnalysisRankingHints, K as createChatMessage } from "./csv_data_analysis_app-agent.js";
+import { o as output_exports, j as jsonSchema } from "./csv_data_analysis_vendor-ai-sdk.js";
+import { F as createContextSection, Q as formatColumnNames, R as formatRows, S as trimRawDataSample, v as createProviderModel, D as runWithOverflowCompaction, E as prepareManagedContext, T as buildAnalysisPlannerSystemPrompt, J as reportContextDiagnostics, x as withTransientRetry, y as streamGenerateText, C as prepareSchemaForProvider, U as createAnalysisTopicsSchema, V as createAnalysisTopicsPrompt, W as createSqlEvidenceQueryPlanSchema, X as buildTopicPlanningUserPrompt, Y as buildPlanRetryFeedback, Z as generateAnalysisGoalCandidates } from "./csv_data_analysis_app-ai.js";
 import { h as formatColumnDisplayHints } from "./csv_data_analysis_app-reporting.js";
 const AGENT_CHART_TYPE_MAP = {
   // Canonical identity mappings
@@ -60,12 +60,6 @@ function resolveAiChartType(aiChartType, fallback) {
   const normalized = aiChartType.trim().toLowerCase();
   if (!normalized) return fallback ?? DEFAULT_FALLBACK;
   return AGENT_CHART_TYPE_MAP[normalized] ?? fallback ?? DEFAULT_FALLBACK;
-}
-function tryResolveAiChartType(aiChartType) {
-  if (!aiChartType) return void 0;
-  const normalized = aiChartType.trim().toLowerCase();
-  if (!normalized) return void 0;
-  return AGENT_CHART_TYPE_MAP[normalized];
 }
 const TEMPORAL_COLUMN_TYPES = /* @__PURE__ */ new Set(["date", "time"]);
 const normalizeString$1 = (value) => {
@@ -176,7 +170,7 @@ const resolveStructuredComboDecision = ({
     reason
   };
 };
-const normalizeTopicText$2 = (value) => value.trim().toLowerCase().replace(/\bno\.\b/g, "number ").replace(/[_/.-]+/g, " ").replace(/\s+/g, " ").trim();
+const normalizeTopicText$1 = (value) => value.trim().toLowerCase().replace(/\bno\.\b/g, "number ").replace(/[_/.-]+/g, " ").replace(/\s+/g, " ").trim();
 const RATIO_METRIC_PATTERN = /(?:^|[\s_])(ratio|margin|pct|percentage|percent)(?:$|[\s_])|%/i;
 const AVERAGE_INTENT_PATTERN = /\b(avg|average|mean)\b/i;
 const CUMULATIVE_RATIO_INTENT_PATTERN = /\b(sum|total|cumulative|accumulated)\b/i;
@@ -282,7 +276,7 @@ const topicPrefersAverageAggregation = (topic, columnName, profile) => {
   if (!isRatioLikeMetric(columnName, profile)) {
     return false;
   }
-  const normalizedTopic = normalizeTopicText$2(topic ?? "");
+  const normalizedTopic = normalizeTopicText$1(topic ?? "");
   if (!normalizedTopic) {
     return (profile == null ? void 0 : profile.type) === "percentage";
   }
@@ -337,7 +331,7 @@ const applyEvidenceQuerySemanticDefaults = (plan, columns, options) => {
   }
   const detailRowFilter = ((_e = options == null ? void 0 : options.steering) == null ? void 0 : _e.detailRowFilter) ?? (((_f = options == null ? void 0 : options.steering) == null ? void 0 : _f.detailRowColumn) && ((_g = options == null ? void 0 : options.steering) == null ? void 0 : _g.detailRowValue) ? { column: options.steering.detailRowColumn, value: options.steering.detailRowValue } : null);
   const detailRowColumnExists = (detailRowFilter == null ? void 0 : detailRowFilter.column) ? columns.some((col) => col.name.toLowerCase() === detailRowFilter.column.toLowerCase()) : false;
-  if ((detailRowFilter == null ? void 0 : detailRowFilter.column) && (detailRowFilter == null ? void 0 : detailRowFilter.value) && detailRowColumnExists && !SUMMARY_ROW_TOPIC_PATTERN.test(normalizeTopicText$2((options == null ? void 0 : options.topic) ?? ""))) {
+  if ((detailRowFilter == null ? void 0 : detailRowFilter.column) && (detailRowFilter == null ? void 0 : detailRowFilter.value) && detailRowColumnExists && !SUMMARY_ROW_TOPIC_PATTERN.test(normalizeTopicText$1((options == null ? void 0 : options.topic) ?? ""))) {
     nextPlan.preFilter = appendPreFilterClause(nextPlan.preFilter, {
       column: detailRowFilter.column,
       operator: "eq",
@@ -353,7 +347,7 @@ const applyEvidenceQuerySemanticDefaults = (plan, columns, options) => {
         hierarchyColumn: options.steering.hierarchyColumn
       },
       availableColumns: columns.map((c) => c.name),
-      isSummaryRowTopic: SUMMARY_ROW_TOPIC_PATTERN.test(normalizeTopicText$2((options == null ? void 0 : options.topic) ?? ""))
+      isSummaryRowTopic: SUMMARY_ROW_TOPIC_PATTERN.test(normalizeTopicText$1((options == null ? void 0 : options.topic) ?? ""))
     });
     if (injectionResult.validationError) {
       throw new Error(injectionResult.validationError);
@@ -385,13 +379,12 @@ const logPlannerStabilitySignal = (telemetryTarget, reasonCode, detail, meta) =>
     }
   });
 };
-const isObject = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 const normalizeString = (value) => typeof value === "string" ? value.trim() : "";
-const normalizeTopicText$1 = (value) => value.trim().toLowerCase().replace(/\bno\.\b/g, "number ").replace(/[_/.-]+/g, " ").replace(/\s+/g, " ").trim();
-const normalizeColumnWords$1 = (value) => normalizeTopicText$1(
+const normalizeTopicText = (value) => value.trim().toLowerCase().replace(/\bno\.\b/g, "number ").replace(/[_/.-]+/g, " ").replace(/\s+/g, " ").trim();
+const normalizeColumnWords = (value) => normalizeTopicText(
   value.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2").replace(/([a-zA-Z])(\d)/g, "$1 $2").replace(/(\d)([a-zA-Z])/g, "$1 $2")
 );
-const singularizeToken$1 = (token) => {
+const singularizeToken = (token) => {
   if (token.length <= 3) return token;
   if (token.endsWith("ies") && token.length > 4) {
     return `${token.slice(0, -3)}y`;
@@ -404,10 +397,10 @@ const singularizeToken$1 = (token) => {
   }
   return token;
 };
-const tokenizeForTopicMatch$1 = (value) => normalizeTopicText$1(value).split(" ").map((token) => singularizeToken$1(token.trim())).filter((token) => token.length >= 2);
-const topicMentionsColumn$1 = (topic, column) => {
-  const normalizedTopic = normalizeTopicText$1(topic);
-  const normalizedColumn = normalizeColumnWords$1(column);
+const tokenizeForTopicMatch = (value) => normalizeTopicText(value).split(" ").map((token) => singularizeToken(token.trim())).filter((token) => token.length >= 2);
+const topicMentionsColumn = (topic, column) => {
+  const normalizedTopic = normalizeTopicText(topic);
+  const normalizedColumn = normalizeColumnWords(column);
   const rawColumn = normalizeString(column).toLowerCase();
   if (!normalizedTopic || !normalizedColumn) {
     return false;
@@ -418,11 +411,11 @@ const topicMentionsColumn$1 = (topic, column) => {
   if (normalizedTopic.includes(normalizedColumn)) {
     return true;
   }
-  const columnTokens = tokenizeForTopicMatch$1(normalizedColumn);
+  const columnTokens = tokenizeForTopicMatch(normalizedColumn);
   if (columnTokens.length === 0) {
     return false;
   }
-  const topicTokens = new Set(tokenizeForTopicMatch$1(normalizedTopic));
+  const topicTokens = new Set(tokenizeForTopicMatch(normalizedTopic));
   return columnTokens.every((token) => topicTokens.has(token));
 };
 const hasWholePhraseMatch = (topic, phrase) => {
@@ -432,8 +425,8 @@ const hasWholePhraseMatch = (topic, phrase) => {
   return ` ${topic} `.includes(` ${phrase} `);
 };
 const getTopicColumnMatchScore = (topic, column) => {
-  const normalizedTopic = normalizeTopicText$1(topic);
-  const normalizedColumn = normalizeColumnWords$1(column);
+  const normalizedTopic = normalizeTopicText(topic);
+  const normalizedColumn = normalizeColumnWords(column);
   const rawColumn = normalizeString(column).toLowerCase();
   if (!normalizedTopic || !normalizedColumn) {
     return Number.NEGATIVE_INFINITY;
@@ -443,12 +436,12 @@ const getTopicColumnMatchScore = (topic, column) => {
     score = 300;
   } else if (rawColumn && hasWholePhraseMatch(normalizedTopic, rawColumn)) {
     score = 260;
-  } else if (topicMentionsColumn$1(normalizedTopic, column)) {
+  } else if (topicMentionsColumn(normalizedTopic, column)) {
     score = 100;
   } else {
     return Number.NEGATIVE_INFINITY;
   }
-  const tokenCount = tokenizeForTopicMatch$1(normalizedColumn).length;
+  const tokenCount = tokenizeForTopicMatch(normalizedColumn).length;
   return score + tokenCount * 10 + normalizedColumn.length;
 };
 const hasDistinctTopicTargetMention = (topic, column, candidates) => {
@@ -456,7 +449,7 @@ const hasDistinctTopicTargetMention = (topic, column, candidates) => {
   if (!Number.isFinite(candidateScore)) {
     return false;
   }
-  const normalizedColumn = normalizeColumnWords$1(column);
+  const normalizedColumn = normalizeColumnWords(column);
   return !candidates.some((candidate) => {
     if (candidate === column) {
       return false;
@@ -465,15 +458,17 @@ const hasDistinctTopicTargetMention = (topic, column, candidates) => {
     if (!Number.isFinite(candidateMatchScore) || candidateMatchScore <= candidateScore) {
       return false;
     }
-    const normalizedCandidate = normalizeColumnWords$1(candidate);
+    const normalizedCandidate = normalizeColumnWords(candidate);
     return normalizedCandidate.length > normalizedColumn.length && normalizedCandidate.includes(normalizedColumn);
   });
 };
-const COUNT_INTENT_PATTERN$1 = /\b(count|counts|number of|numbers of|how many|frequency|occurrence|occurrences)\b/i;
+const COUNT_INTENT_PATTERN = /\b(count|counts|number of|numbers of|how many|frequency|occurrence|occurrences)\b/i;
 const GENERIC_COUNT_TOPIC_PATTERN = /\b(record|records|row|rows|entry|entries|line|lines)\b/i;
+const TEMPORAL_PREFIX_PATTERN = /^(ytd|mtd|qtd|ly|py|cy|fytd|prior\s+year|current\s+year)\s+/i;
+const stripTemporalPrefix = (value) => value.replace(TEMPORAL_PREFIX_PATTERN, "").trim();
 const extractTopicGroupingClause = (topic) => {
   var _a;
-  const normalizedTopic = normalizeTopicText$1(topic);
+  const normalizedTopic = normalizeTopicText(topic);
   const byMatch = normalizedTopic.match(/\b(?:by|per)\s+(.+)$/);
   if (!byMatch) {
     return null;
@@ -484,7 +479,7 @@ const extractTopicGroupingClause = (topic) => {
   }
   return tail;
 };
-const inferTopicGroupByTarget$1 = (topic, candidates) => {
+const inferTopicGroupByTarget = (topic, candidates) => {
   var _a;
   const tail = extractTopicGroupingClause(topic);
   if (!tail) {
@@ -492,22 +487,20 @@ const inferTopicGroupByTarget$1 = (topic, candidates) => {
   }
   return ((_a = candidates.map((candidate) => ({ candidate, score: getTopicColumnMatchScore(tail, candidate) })).filter((match) => Number.isFinite(match.score)).sort((left, right) => right.score - left.score)[0]) == null ? void 0 : _a.candidate) ?? null;
 };
-const inferCountTopicOperandTarget$1 = (topic, candidates) => {
-  const normalizedTopic = normalizeTopicText$1(topic);
-  if (!COUNT_INTENT_PATTERN$1.test(normalizedTopic)) {
+const inferCountTopicOperandTarget = (topic, candidates) => {
+  const normalizedTopic = normalizeTopicText(topic);
+  if (!COUNT_INTENT_PATTERN.test(normalizedTopic)) {
     return null;
   }
   const head = normalizedTopic.replace(/\b(?:by|per)\s+.+$/, "").trim();
   if (!head) {
     return null;
   }
-  return candidates.find((candidate) => topicMentionsColumn$1(head, candidate)) ?? null;
+  return candidates.find((candidate) => topicMentionsColumn(head, candidate)) ?? null;
 };
-const TEMPORAL_PREFIX_PATTERN = /^(ytd|mtd|qtd|ly|py|cy|fytd|prior\s+year|current\s+year)\s+/i;
-const stripTemporalPrefix = (value) => value.replace(TEMPORAL_PREFIX_PATTERN, "").trim();
 const columnsShareTopicIdentity = (left, right) => {
-  const leftTokens = left ? tokenizeForTopicMatch$1(normalizeColumnWords$1(left)) : [];
-  const rightTokens = right ? tokenizeForTopicMatch$1(normalizeColumnWords$1(right)) : [];
+  const leftTokens = left ? tokenizeForTopicMatch(normalizeColumnWords(left)) : [];
+  const rightTokens = right ? tokenizeForTopicMatch(normalizeColumnWords(right)) : [];
   if (leftTokens.length === 0 || rightTokens.length === 0) {
     return false;
   }
@@ -518,8 +511,8 @@ const columnsShareTopicIdentity = (left, right) => {
   if (leftSubsetOfRight || rightSubsetOfLeft) {
     return true;
   }
-  const leftStripped = left ? tokenizeForTopicMatch$1(normalizeColumnWords$1(stripTemporalPrefix(left))) : [];
-  const rightStripped = right ? tokenizeForTopicMatch$1(normalizeColumnWords$1(stripTemporalPrefix(right))) : [];
+  const leftStripped = left ? tokenizeForTopicMatch(normalizeColumnWords(stripTemporalPrefix(left))) : [];
+  const rightStripped = right ? tokenizeForTopicMatch(normalizeColumnWords(stripTemporalPrefix(right))) : [];
   if (leftStripped.length > 0 && rightStripped.length > 0) {
     const leftStrippedSet = new Set(leftStripped);
     const rightStrippedSet = new Set(rightStripped);
@@ -527,6 +520,20 @@ const columnsShareTopicIdentity = (left, right) => {
   }
   return false;
 };
+const TIME_INTENT_PATTERN = /\b(trend|over time|time|month|monthly|quarter|quarterly|year|yearly|period|daily|weekly|mom|yoy|qoq)\b/i;
+const IDENTIFIER_LIKE_COLUMN_PATTERN = /\b(id|ids|code|codes|number|numbers|no|ref|reference|order)\b/i;
+const normalizeColumnKey = (value) => normalizeColumnWords(value).replace(/\s+/g, " ").trim();
+const stripColumnQuotes = (value) => value.trim().replace(/^["'`\[]+|["'`\]]+$/g, "").trim();
+const buildColumnNameMap = (columns) => new Map(
+  columns.map((column) => [normalizeColumnKey(column.name), column.name])
+);
+const resolveExactColumnMatch = (candidate, columnNameMap) => {
+  if (!candidate) {
+    return null;
+  }
+  return columnNameMap.get(normalizeColumnKey(stripColumnQuotes(candidate))) ?? null;
+};
+const isObject = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 const normalizeAggregateAliases = (aggregates) => new Set((aggregates ?? []).map((aggregate) => aggregate.as.trim().toLowerCase()));
 const normalizeOutputKey = (value) => value.trim().toLowerCase();
 const splitAggregateSourceExpression = (value) => {
@@ -737,15 +744,15 @@ const validateTopicAlignment = (plan, columns, topic, intent, semanticHints, opt
   var _a, _b, _c, _d, _e, _f, _g, _h;
   const errors = [];
   const columnByName = new Map(columns.map((column) => [column.name, column]));
-  const countIntent = COUNT_INTENT_PATTERN$1.test(normalizeString(topic));
+  const countIntent = COUNT_INTENT_PATTERN.test(normalizeString(topic));
   const preferredGroupByColumn = (intent == null ? void 0 : intent.preferredGroupBy) ? columnByName.get(intent.preferredGroupBy) : null;
   const preferredMetricColumn = (intent == null ? void 0 : intent.preferredMetric) ? columnByName.get(intent.preferredMetric) : null;
   const preferredGroupByLooksUsable = preferredGroupByColumn ? ["categorical", "date", "time"].includes(preferredGroupByColumn.type) : false;
   const preferredMetricLooksUsable = preferredMetricColumn ? ["numerical", "currency", "percentage"].includes(preferredMetricColumn.type) || countIntent && ["categorical", "date", "time"].includes(preferredMetricColumn.type) : false;
   const topicGroupingClause = extractTopicGroupingClause(normalizeString(topic));
   const candidateColumnNames = columns.map((column) => column.name);
-  const topicGroupByTarget = inferTopicGroupByTarget$1(normalizeString(topic), candidateColumnNames);
-  const topicCountOperandTarget = inferCountTopicOperandTarget$1(normalizeString(topic), candidateColumnNames);
+  const topicGroupByTarget = inferTopicGroupByTarget(normalizeString(topic), candidateColumnNames);
+  const topicCountOperandTarget = inferCountTopicOperandTarget(normalizeString(topic), candidateColumnNames);
   const targetTopicMatchScore = topicGroupingClause && topicGroupByTarget ? getTopicColumnMatchScore(topicGroupingClause, topicGroupByTarget) : Number.NEGATIVE_INFINITY;
   const preferredTopicMatchScore = topicGroupingClause && (intent == null ? void 0 : intent.preferredGroupBy) ? getTopicColumnMatchScore(topicGroupingClause, intent.preferredGroupBy) : Number.NEGATIVE_INFINITY;
   const targetIsDistinctTopicTarget = Boolean(
@@ -781,13 +788,13 @@ const validateTopicAlignment = (plan, columns, topic, intent, semanticHints, opt
     return errors;
   }
   const dimensionColumns = columns.filter((column) => column.type === "categorical" || column.type === "date" || column.type === "time").map((column) => column.name);
-  const mentionedDimensions = dimensionColumns.filter((column) => topicMentionsColumn$1(normalizedTopic, column));
+  const mentionedDimensions = dimensionColumns.filter((column) => topicMentionsColumn(normalizedTopic, column));
   const groupByColumn = (_h = plan.query.groupBy) == null ? void 0 : _h[0];
-  const topicGroupByTargetFromDimensions = inferTopicGroupByTarget$1(normalizedTopic, dimensionColumns);
+  const topicGroupByTargetFromDimensions = inferTopicGroupByTarget(normalizedTopic, dimensionColumns);
   if (groupByColumn && topicGroupByTargetFromDimensions && groupByColumn !== topicGroupByTargetFromDimensions) {
     const groupingClause = extractTopicGroupingClause(normalizedTopic);
     const planGroupByIsValidAlternative = Boolean(
-      groupingClause && topicMentionsColumn$1(groupingClause, groupByColumn) && hasDistinctTopicTargetMention(groupingClause, groupByColumn, candidateColumnNames)
+      groupingClause && topicMentionsColumn(groupingClause, groupByColumn) && hasDistinctTopicTargetMention(groupingClause, groupByColumn, candidateColumnNames)
     );
     if (!planGroupByIsValidAlternative && !(options == null ? void 0 : options.lenient)) {
       errors.push(`Evidence query groupBy "${groupByColumn}" does not match the topic grouping target "${topicGroupByTargetFromDimensions}".`);
@@ -797,7 +804,7 @@ const validateTopicAlignment = (plan, columns, topic, intent, semanticHints, opt
   if (groupByColumn && mentionedDimensions.length > 0 && !mentionedDimensions.includes(groupByColumn)) {
     const groupingClause = extractTopicGroupingClause(normalizedTopic);
     const planGroupByIsValidAlternative = Boolean(
-      groupingClause && topicMentionsColumn$1(groupingClause, groupByColumn) && hasDistinctTopicTargetMention(groupingClause, groupByColumn, candidateColumnNames)
+      groupingClause && topicMentionsColumn(groupingClause, groupByColumn) && hasDistinctTopicTargetMention(groupingClause, groupByColumn, candidateColumnNames)
     );
     if (!planGroupByIsValidAlternative && !(options == null ? void 0 : options.lenient)) {
       const profile = columnByName.get(groupByColumn);
@@ -810,7 +817,7 @@ const validateTopicAlignment = (plan, columns, topic, intent, semanticHints, opt
   if (aggregates.length === 0) {
     return errors;
   }
-  const mentionedColumns = columns.map((column) => column.name).filter((column) => topicMentionsColumn$1(normalizedTopic, column));
+  const mentionedColumns = columns.map((column) => column.name).filter((column) => topicMentionsColumn(normalizedTopic, column));
   const mentionedMetricColumns = mentionedColumns.filter((column) => column !== groupByColumn);
   const primaryAggregate = aggregates[0];
   if (!primaryAggregate) {
@@ -860,7 +867,7 @@ const collectEvidencePlanStabilityReasonCodes = (plan, columns, options) => {
     return [];
   }
   const candidateColumnNames = columns.map((column) => column.name);
-  const topicGroupByTarget = inferTopicGroupByTarget$1(topic, candidateColumnNames);
+  const topicGroupByTarget = inferTopicGroupByTarget(topic, candidateColumnNames);
   const topicGroupingClause = extractTopicGroupingClause(topic);
   const targetTopicMatchScore = topicGroupingClause && topicGroupByTarget ? getTopicColumnMatchScore(topicGroupingClause, topicGroupByTarget) : Number.NEGATIVE_INFINITY;
   const preferredTopicMatchScore = topicGroupingClause && intent.preferredGroupBy ? getTopicColumnMatchScore(topicGroupingClause, intent.preferredGroupBy) : Number.NEGATIVE_INFINITY;
@@ -870,8 +877,8 @@ const collectEvidencePlanStabilityReasonCodes = (plan, columns, options) => {
   const preferredIsDistinctTopicTarget = Boolean(
     topicGroupingClause && intent.preferredGroupBy && hasDistinctTopicTargetMention(topicGroupingClause, intent.preferredGroupBy, candidateColumnNames)
   );
-  const topicCountOperandTarget = inferCountTopicOperandTarget$1(topic, candidateColumnNames);
-  if (COUNT_INTENT_PATTERN$1.test(normalizeString(topic)) && topicGroupByTarget && topicCountOperandTarget && groupByColumn === topicGroupByTarget && metricColumn === topicCountOperandTarget && (intent.preferredGroupBy === topicCountOperandTarget || intent.preferredMetric === topicGroupByTarget)) {
+  const topicCountOperandTarget = inferCountTopicOperandTarget(topic, candidateColumnNames);
+  if (COUNT_INTENT_PATTERN.test(normalizeString(topic)) && topicGroupByTarget && topicCountOperandTarget && groupByColumn === topicGroupByTarget && metricColumn === topicCountOperandTarget && (intent.preferredGroupBy === topicCountOperandTarget || intent.preferredMetric === topicGroupByTarget)) {
     reasonCodes.add(PLANNER_STABILITY_REASON_CODES.intentMismatchRecovered);
   }
   if (intent.preferredGroupBy && intent.preferredMetric && groupByColumn && metricColumn && intent.preferredGroupBy === metricColumn && intent.preferredMetric === groupByColumn) {
@@ -880,7 +887,7 @@ const collectEvidencePlanStabilityReasonCodes = (plan, columns, options) => {
   if (intent.preferredGroupBy && groupByColumn && intent.preferredGroupBy !== groupByColumn && topicGroupByTarget && topicGroupByTarget === groupByColumn && targetIsDistinctTopicTarget && !preferredIsDistinctTopicTarget && targetTopicMatchScore > preferredTopicMatchScore) {
     reasonCodes.add(PLANNER_STABILITY_REASON_CODES.intentMismatchRecovered);
   }
-  if (intent.preferredMetric && metricColumn && intent.preferredMetric !== metricColumn && topicMentionsColumn$1(topic, metricColumn) && !topicMentionsColumn$1(topic, intent.preferredMetric)) {
+  if (intent.preferredMetric && metricColumn && intent.preferredMetric !== metricColumn && topicMentionsColumn(topic, metricColumn) && !topicMentionsColumn(topic, intent.preferredMetric)) {
     reasonCodes.add(PLANNER_STABILITY_REASON_CODES.intentMismatchRecovered);
   }
   if (intent.preferredGroupBy && groupByColumn && intent.preferredGroupBy !== groupByColumn && columnsShareTopicIdentity(groupByColumn, intent.preferredGroupBy)) {
@@ -889,7 +896,7 @@ const collectEvidencePlanStabilityReasonCodes = (plan, columns, options) => {
   if (intent.preferredMetric && metricColumn && intent.preferredMetric !== metricColumn && columnsShareTopicIdentity(metricColumn, intent.preferredMetric)) {
     reasonCodes.add(PLANNER_STABILITY_REASON_CODES.intentMismatchRecovered);
   }
-  if (groupByColumn && topicGroupByTarget && groupByColumn !== topicGroupByTarget && topicGroupingClause && topicMentionsColumn$1(topicGroupingClause, groupByColumn) && hasDistinctTopicTargetMention(topicGroupingClause, groupByColumn, candidateColumnNames)) {
+  if (groupByColumn && topicGroupByTarget && groupByColumn !== topicGroupByTarget && topicGroupingClause && topicMentionsColumn(topicGroupingClause, groupByColumn) && hasDistinctTopicTargetMention(topicGroupingClause, groupByColumn, candidateColumnNames)) {
     reasonCodes.add(PLANNER_STABILITY_REASON_CODES.intentMismatchRecovered);
   }
   return [...reasonCodes];
@@ -983,203 +990,6 @@ const normalizeAndValidateSqlEvidenceQueryPlan = (rawPlan, columns, options) => 
   }
   return errors.length > 0 ? { validPlan: null, errors } : { validPlan: plan, errors: [] };
 };
-class SqlAutoAnalysisError extends Error {
-  constructor(code, message, detail) {
-    super(message);
-    this.name = "SqlAutoAnalysisError";
-    this.code = code;
-    this.detail = detail;
-  }
-}
-const isSqlAutoAnalysisError = (value) => value instanceof SqlAutoAnalysisError;
-const normalizeAggregation = (aggregation, valueColumn) => {
-  if (!aggregation && valueColumn) return "sum";
-  if (!aggregation && !valueColumn) return "count";
-  if (aggregation === "average") return "avg";
-  if (aggregation === "sum" || aggregation === "count" || aggregation === "avg") {
-    return aggregation;
-  }
-  return void 0;
-};
-const preparePlan = (rawPlan) => {
-  const plan = { ...rawPlan };
-  plan.title = plan.title || "AI Generated Analysis";
-  plan.description = plan.description || `Analysis of ${plan.title}.`;
-  plan.chartType = resolveAiChartType(plan.chartType);
-  plan.aggregation = normalizeAggregation(plan.aggregation, plan.valueColumn);
-  if (plan.chartType !== "scatter" && !plan.groupByColumn && plan.valueColumn) {
-    plan.groupByColumn = plan.valueColumn;
-  }
-  return plan;
-};
-const LOG_PREFIX$3 = "[PlanGenerator]";
-const MAX_ATTEMPTS = 3;
-const PLAN_GENERATION_TIMEOUT_MS = 3e4;
-class PlanGenerationTimeoutError extends Error {
-  constructor(ms) {
-    super(`Plan generation model call timed out after ${ms}ms`);
-    this.name = "PlanGenerationTimeoutError";
-  }
-}
-const isPlanGenerationTimeout = (e) => e instanceof PlanGenerationTimeoutError;
-const raceWithPlanTimeout = (promise, ms) => {
-  let handle;
-  const timer = new Promise((_, reject) => {
-    handle = setTimeout(() => reject(new PlanGenerationTimeoutError(ms)), ms);
-  });
-  return Promise.race([promise, timer]).finally(() => clearTimeout(handle));
-};
-const buildDeterministicTopics = (columns, datasetContext) => {
-  var _a, _b, _c, _d, _e;
-  const blockedSet = new Set(datasetContext.blockedDimensions ?? []);
-  const avoidedDimensions = new Set(datasetContext.avoidGrainColumns ?? []);
-  const safeDimensionSet = new Set(datasetContext.dimensionColumns ?? []);
-  const availableColumnSet = new Set(columns.map((column) => column.name));
-  const dims = columns.filter((c) => ["categorical", "date", "time"].includes(c.type)).filter((c) => safeDimensionSet.size === 0 || safeDimensionSet.has(c.name)).filter((c) => !blockedSet.has(c.name)).filter((c) => !avoidedDimensions.has(c.name)).sort((a, b) => (b.uniqueValues ?? 0) - (a.uniqueValues ?? 0)).slice(0, 3);
-  const avoidedMetrics = new Set(datasetContext.avoidMetricColumns ?? []);
-  const preferredMetric = (datasetContext.preferredMetricTerms ?? []).find(
-    (column) => availableColumnSet.has(column) && !avoidedMetrics.has(column) && !isStructuralMetadataColumn(column)
-  );
-  const metric = preferredMetric ?? ((_a = datasetContext.metricColumns) == null ? void 0 : _a.find((column) => !avoidedMetrics.has(column))) ?? ((_b = columns.find(
-    (c) => ["numerical", "currency", "percentage"].includes(c.type) && !avoidedMetrics.has(c.name) && !isStructuralMetadataColumn(c.name)
-  )) == null ? void 0 : _b.name) ?? ((_c = datasetContext.metricColumns) == null ? void 0 : _c.find((column) => !isStructuralMetadataColumn(column))) ?? ((_d = columns.find(
-    (c) => ["numerical", "currency", "percentage"].includes(c.type) && !isStructuralMetadataColumn(c.name)
-  )) == null ? void 0 : _d.name);
-  if (!metric || dims.length === 0) return [];
-  const topics = dims.map((dim) => `${metric} by ${dim.name}`);
-  const periodFamilies = (_e = datasetContext.analysisSteering) == null ? void 0 : _e.periodColumnFamilies;
-  if (periodFamilies && periodFamilies.length > 0) {
-    const timeDim = dims.find((d) => isTimeLikeDimensionColumn(d.name));
-    if (timeDim && !topics.some((t) => /\b(trend|over time|monthly)\b/i.test(t))) {
-      topics.push(`${metric} monthly trend by ${timeDim.name}`);
-    }
-  }
-  return topics;
-};
-const extractSemanticHints = (ctx) => {
-  var _a, _b, _c, _d;
-  if (!ctx) return void 0;
-  const hints = {};
-  if ((_a = ctx.metricColumns) == null ? void 0 : _a.length) hints.knownMetricColumns = ctx.metricColumns;
-  if ((_b = ctx.dimensionColumns) == null ? void 0 : _b.length) hints.knownDimensionColumns = ctx.dimensionColumns;
-  if ((_c = ctx.businessGrains) == null ? void 0 : _c.length) hints.businessGrains = ctx.businessGrains;
-  if ((_d = ctx.preferredMetricTerms) == null ? void 0 : _d.length) hints.candidateMetrics = ctx.preferredMetricTerms;
-  return Object.keys(hints).length > 0 ? hints : void 0;
-};
-const TIME_INTENT_PATTERN = /\b(trend|over time|time|month|monthly|quarter|quarterly|year|yearly|period|daily|weekly|mom|yoy|qoq)\b/i;
-const COUNT_INTENT_PATTERN = /\b(count|counts|number of|numbers of|how many|frequency|occurrence|occurrences)\b/i;
-const IDENTIFIER_LIKE_COLUMN_PATTERN = /\b(id|ids|code|codes|number|numbers|no|ref|reference|order)\b/i;
-const normalizeText = (value) => value.trim().toLowerCase();
-const normalizeTopicText = (value) => value.trim().toLowerCase().replace(/\bno\.\b/g, "number ").replace(/[_/.-]+/g, " ").replace(/\s+/g, " ").trim();
-const normalizeColumnWords = (value) => normalizeTopicText(
-  value.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2").replace(/([a-zA-Z])(\d)/g, "$1 $2").replace(/(\d)([a-zA-Z])/g, "$1 $2")
-);
-const normalizeColumnKey = (value) => normalizeColumnWords(value).replace(/\s+/g, " ").trim();
-const stripColumnQuotes = (value) => value.trim().replace(/^["'`\[]+|["'`\]]+$/g, "").trim();
-const buildColumnNameMap = (columns) => new Map(
-  columns.map((column) => [normalizeColumnKey(column.name), column.name])
-);
-const resolveExactColumnMatch = (candidate, columnNameMap) => {
-  if (!candidate) {
-    return null;
-  }
-  return columnNameMap.get(normalizeColumnKey(stripColumnQuotes(candidate))) ?? null;
-};
-const parseSteppedPredicateLine = (line, columnNameMap) => {
-  var _a, _b;
-  const match = line.match(/^\s*(?:"([^"]+)"|'([^']+)'|`([^`]+)`|\[([^\]]+)\]|([^=<>]+?))\s*(=|<>|!=)\s*(.+?)\s*$/);
-  if (!match) {
-    return { predicate: null };
-  }
-  const rawColumn = ((_a = [match[1], match[2], match[3], match[4], match[5]].find(Boolean)) == null ? void 0 : _a.trim()) ?? "";
-  const mappedColumn = resolveExactColumnMatch(rawColumn, columnNameMap);
-  if (!mappedColumn) {
-    return {
-      predicate: null,
-      error: `Unknown filter column "${rawColumn}" in stepped planner filter response.`
-    };
-  }
-  const rawValue = ((_b = match[7]) == null ? void 0 : _b.trim()) ?? "";
-  const normalizedValue = rawValue.replace(/^["'`](.*)["'`]$/s, "$1").trim();
-  return {
-    predicate: {
-      column: mappedColumn,
-      operator: match[6] === "=" ? "eq" : "neq",
-      value: normalizedValue
-    }
-  };
-};
-const singularizeToken = (token) => {
-  if (token.length <= 3) return token;
-  if (token.endsWith("ies") && token.length > 4) {
-    return `${token.slice(0, -3)}y`;
-  }
-  if (token.endsWith("es") && token.length > 4) {
-    return token.slice(0, -2);
-  }
-  if (token.endsWith("s") && !token.endsWith("ss")) {
-    return token.slice(0, -1);
-  }
-  return token;
-};
-const tokenizeForTopicMatch = (value) => normalizeTopicText(value).split(" ").map((token) => singularizeToken(token.trim())).filter((token) => token.length >= 2);
-const topicMentionsColumn = (topic, column) => {
-  const normalizedTopic = normalizeTopicText(topic);
-  const normalizedColumn = normalizeColumnWords(column);
-  const rawColumn = normalizeText(column);
-  if (!normalizedTopic || !normalizedColumn) {
-    return false;
-  }
-  if (rawColumn && normalizedTopic.includes(rawColumn)) {
-    return true;
-  }
-  if (normalizedTopic.includes(normalizedColumn)) {
-    return true;
-  }
-  const columnTokens = tokenizeForTopicMatch(normalizedColumn);
-  if (columnTokens.length === 0) {
-    return false;
-  }
-  const topicTokens = new Set(tokenizeForTopicMatch(normalizedTopic));
-  return columnTokens.every((token) => topicTokens.has(token));
-};
-const inferTopicGroupByTarget = (topic, candidates) => {
-  var _a;
-  const normalizedTopic = normalizeTopicText(topic);
-  const byMatch = normalizedTopic.match(/\b(?:by|per)\s+(.+)$/);
-  if (!byMatch) {
-    return null;
-  }
-  const tail = (_a = byMatch[1]) == null ? void 0 : _a.trim();
-  if (!tail) {
-    return null;
-  }
-  return candidates.find((candidate) => topicMentionsColumn(tail, candidate)) ?? null;
-};
-const inferCountTopicOperandTarget = (topic, candidates) => {
-  const normalizedTopic = normalizeTopicText(topic);
-  if (!COUNT_INTENT_PATTERN.test(normalizedTopic)) {
-    return null;
-  }
-  const head = normalizedTopic.replace(/\b(?:by|per)\s+.+$/, "").trim();
-  if (!head) {
-    return null;
-  }
-  return candidates.find((candidate) => topicMentionsColumn(head, candidate)) ?? null;
-};
-const suggestAlternativeDimensions = (columns, learningHints) => {
-  const blocked = new Set(((learningHints == null ? void 0 : learningHints.avoidGroupBys) ?? []).map((value) => value.toLowerCase()));
-  return columns.filter((column) => column.type === "categorical" || column.type === "date" || column.type === "time").filter((column) => !blocked.has(column.name.toLowerCase())).sort((left, right) => (left.uniqueValues ?? Number.MAX_SAFE_INTEGER) - (right.uniqueValues ?? Number.MAX_SAFE_INTEGER)).slice(0, 6).map((column) => column.name);
-};
-const classifyCompileFailure = (message) => message.toLowerCase().includes("query") || message.toLowerCase().includes("duckdb") ? "sql_compile_failed" : "planning_invalid";
-const isTopicBlockedBySemanticUnderstanding = (topic, datasetContext) => (datasetContext.blockedDimensions ?? []).some((column) => topicMentionsColumn(topic, column));
-const isTopicDeprioritizedByQualityGovernance = (topic, datasetContext) => {
-  const avoidColumns = /* @__PURE__ */ new Set([
-    ...datasetContext.avoidGrainColumns ?? [],
-    ...datasetContext.avoidMetricColumns ?? []
-  ]);
-  return Array.from(avoidColumns).some((column) => topicMentionsColumn(topic, column));
-};
 const buildDatasetOverviewText = (datasetContext) => `Dataset title: ${datasetContext.title || "Unknown Report"}
 Report title: ${datasetContext.reportTitle || datasetContext.title || "Unknown Report"}
 Report shape: ${datasetContext.reportShapeKind || "unknown"}
@@ -1194,7 +1004,7 @@ ${datasetContext.footerPreview || "No footer lines were detected."}
 Summary highlights:
 ${datasetContext.summaryPreview || "No summary rows were detected."}`;
 const buildPlanningHintsText = (datasetContext) => {
-  var _a, _b, _c, _d, _e, _f, _g, _h;
+  var _a, _b, _c, _d, _e, _f, _g, _h, _i;
   const lines = [];
   const steeringSummary = formatAnalysisSteeringBundle(datasetContext.analysisSteering);
   if ((_a = datasetContext.businessGrains) == null ? void 0 : _a.length) {
@@ -1215,17 +1025,20 @@ const buildPlanningHintsText = (datasetContext) => {
   if ((_f = datasetContext.avoidMetricColumns) == null ? void 0 : _f.length) {
     lines.push(`Avoid risky metrics for automatic analysis: ${datasetContext.avoidMetricColumns.join(", ")}`);
   }
+  if ((_g = datasetContext.nonAdditiveMetrics) == null ? void 0 : _g.length) {
+    lines.push(`Non-additive metrics (do NOT use SUM — use AVG instead): ${datasetContext.nonAdditiveMetrics.join(", ")}`);
+  }
   if (datasetContext.qualityHintsSummary) {
     lines.push(`Quality governance summary: ${datasetContext.qualityHintsSummary}`);
   }
   if (datasetContext.headerSemantics) {
     lines.push(`Report context: ${datasetContext.headerSemantics}`);
   }
-  if ((_g = datasetContext.suggestedDerivedTopics) == null ? void 0 : _g.length) {
+  if ((_h = datasetContext.suggestedDerivedTopics) == null ? void 0 : _h.length) {
     lines.push(`Detected metric relationships (A - B ≈ C) — consider including derived metric topics:`);
     datasetContext.suggestedDerivedTopics.forEach((t) => lines.push(`  - ${t}`));
   }
-  if ((_h = datasetContext.pivotOnlyCombinations) == null ? void 0 : _h.length) {
+  if ((_i = datasetContext.pivotOnlyCombinations) == null ? void 0 : _i.length) {
     lines.push(`High-cardinality dimension pairs — use pivot chart type, NOT flat bar chart:`);
     datasetContext.pivotOnlyCombinations.forEach(
       (c) => lines.push(`  - ${c.dimA} × ${c.dimB} (${c.product} combinations)`)
@@ -1280,6 +1093,123 @@ const inferPreferredResultShape = (topic, datasetContext) => {
   }
   return "ranked_aggregate";
 };
+class SqlAutoAnalysisError extends Error {
+  constructor(code, message, detail) {
+    super(message);
+    this.name = "SqlAutoAnalysisError";
+    this.code = code;
+    this.detail = detail;
+  }
+}
+const isSqlAutoAnalysisError = (value) => value instanceof SqlAutoAnalysisError;
+const normalizeAggregation = (aggregation, valueColumn) => {
+  if (!aggregation && valueColumn) return "sum";
+  if (!aggregation && !valueColumn) return "count";
+  if (aggregation === "average") return "avg";
+  if (isAggregationType(aggregation)) return aggregation;
+  return void 0;
+};
+const preparePlan = (rawPlan) => {
+  const plan = { ...rawPlan };
+  plan.title = plan.title || "AI Generated Analysis";
+  plan.description = plan.description || `Analysis of ${plan.title}.`;
+  plan.chartType = resolveAiChartType(plan.chartType);
+  plan.aggregation = normalizeAggregation(plan.aggregation, plan.valueColumn);
+  if (plan.chartType !== "scatter" && !plan.groupByColumn && plan.valueColumn) {
+    plan.groupByColumn = plan.valueColumn;
+  }
+  return plan;
+};
+const LOG_PREFIX$2 = "[PlanGenerator]";
+const MAX_ATTEMPTS = 3;
+const PLAN_GENERATION_TIMEOUT_MS = 3e4;
+const buildDeterministicTopics = (columns, datasetContext) => {
+  var _a, _b, _c, _d, _e;
+  const blockedSet = new Set(datasetContext.blockedDimensions ?? []);
+  const avoidedDimensions = new Set(datasetContext.avoidGrainColumns ?? []);
+  const safeDimensionSet = new Set(datasetContext.dimensionColumns ?? []);
+  const availableColumnSet = new Set(columns.map((column) => column.name));
+  const dims = columns.filter((c) => ["categorical", "date", "time"].includes(c.type)).filter((c) => safeDimensionSet.size === 0 || safeDimensionSet.has(c.name)).filter((c) => !blockedSet.has(c.name)).filter((c) => !avoidedDimensions.has(c.name)).sort((a, b) => (b.uniqueValues ?? 0) - (a.uniqueValues ?? 0)).slice(0, 3);
+  const avoidedMetrics = new Set(datasetContext.avoidMetricColumns ?? []);
+  const preferredMetric = (datasetContext.preferredMetricTerms ?? []).find(
+    (column) => availableColumnSet.has(column) && !avoidedMetrics.has(column) && !isStructuralMetadataColumn(column)
+  );
+  const metric = preferredMetric ?? ((_a = datasetContext.metricColumns) == null ? void 0 : _a.find((column) => !avoidedMetrics.has(column))) ?? ((_b = columns.find(
+    (c) => ["numerical", "currency", "percentage"].includes(c.type) && !avoidedMetrics.has(c.name) && !isStructuralMetadataColumn(c.name)
+  )) == null ? void 0 : _b.name) ?? ((_c = datasetContext.metricColumns) == null ? void 0 : _c.find((column) => !isStructuralMetadataColumn(column))) ?? ((_d = columns.find(
+    (c) => ["numerical", "currency", "percentage"].includes(c.type) && !isStructuralMetadataColumn(c.name)
+  )) == null ? void 0 : _d.name);
+  if (!metric || dims.length === 0) return [];
+  const topics = dims.map((dim) => `${metric} by ${dim.name}`);
+  const periodFamilies = (_e = datasetContext.analysisSteering) == null ? void 0 : _e.periodColumnFamilies;
+  if (periodFamilies && periodFamilies.length > 0) {
+    const timeDim = dims.find((d) => isTimeLikeDimensionColumn(d.name));
+    if (timeDim && !topics.some((t) => /\b(trend|over time|monthly)\b/i.test(t))) {
+      topics.push(`${metric} monthly trend by ${timeDim.name}`);
+    }
+  }
+  return topics;
+};
+const extractSemanticHints = (ctx) => {
+  var _a, _b, _c, _d;
+  if (!ctx) return void 0;
+  const hints = {};
+  if ((_a = ctx.metricColumns) == null ? void 0 : _a.length) hints.knownMetricColumns = ctx.metricColumns;
+  if ((_b = ctx.dimensionColumns) == null ? void 0 : _b.length) hints.knownDimensionColumns = ctx.dimensionColumns;
+  if ((_c = ctx.businessGrains) == null ? void 0 : _c.length) hints.businessGrains = ctx.businessGrains;
+  if ((_d = ctx.preferredMetricTerms) == null ? void 0 : _d.length) hints.candidateMetrics = ctx.preferredMetricTerms;
+  return Object.keys(hints).length > 0 ? hints : void 0;
+};
+const parseSteppedPredicateLine = (line, columnNameMap) => {
+  var _a, _b;
+  const match = line.match(/^\s*(?:"([^"]+)"|'([^']+)'|`([^`]+)`|\[([^\]]+)\]|([^=<>]+?))\s*(=|<>|!=)\s*(.+?)\s*$/);
+  if (!match) {
+    return { predicate: null };
+  }
+  const rawColumn = ((_a = [match[1], match[2], match[3], match[4], match[5]].find(Boolean)) == null ? void 0 : _a.trim()) ?? "";
+  const mappedColumn = resolveExactColumnMatch(rawColumn, columnNameMap);
+  if (!mappedColumn) {
+    return {
+      predicate: null,
+      error: `Unknown filter column "${rawColumn}" in stepped planner filter response.`
+    };
+  }
+  const rawValue = ((_b = match[7]) == null ? void 0 : _b.trim()) ?? "";
+  const normalizedValue = rawValue.replace(/^["'`](.*)["'`]$/s, "$1").trim();
+  return {
+    predicate: {
+      column: mappedColumn,
+      operator: match[6] === "=" ? "eq" : "neq",
+      value: normalizedValue
+    }
+  };
+};
+const inferSteppedGroupByTarget = (topic, candidates) => {
+  var _a;
+  const normalizedTopic = normalizeTopicText(topic);
+  const byMatch = normalizedTopic.match(/\b(?:by|per)\s+(.+)$/);
+  if (!byMatch) {
+    return null;
+  }
+  const tail = (_a = byMatch[1]) == null ? void 0 : _a.trim();
+  if (!tail) {
+    return null;
+  }
+  return candidates.find((candidate) => topicMentionsColumn(tail, candidate)) ?? null;
+};
+const suggestAlternativeDimensions = (columns, learningHints) => {
+  const blocked = new Set(((learningHints == null ? void 0 : learningHints.avoidGroupBys) ?? []).map((value) => value.toLowerCase()));
+  return columns.filter((column) => column.type === "categorical" || column.type === "date" || column.type === "time").filter((column) => !blocked.has(column.name.toLowerCase())).sort((left, right) => (left.uniqueValues ?? Number.MAX_SAFE_INTEGER) - (right.uniqueValues ?? Number.MAX_SAFE_INTEGER)).slice(0, 6).map((column) => column.name);
+};
+const classifyCompileFailure = (message) => message.toLowerCase().includes("query") || message.toLowerCase().includes("duckdb") ? "sql_compile_failed" : "planning_invalid";
+const isTopicBlockedBySemanticUnderstanding = (topic, datasetContext) => (datasetContext.blockedDimensions ?? []).some((column) => topicMentionsColumn(topic, column));
+const isTopicDeprioritizedByQualityGovernance = (topic, datasetContext) => {
+  const avoidColumns = /* @__PURE__ */ new Set([
+    ...datasetContext.avoidGrainColumns ?? [],
+    ...datasetContext.avoidMetricColumns ?? []
+  ]);
+  return Array.from(avoidColumns).some((column) => topicMentionsColumn(topic, column));
+};
 const rankAnalysisTopics = (topics, datasetContext) => Array.from(new Set(topics.map((t) => t.trim()).filter(Boolean))).filter((topic) => !isTopicBlockedBySemanticUnderstanding(topic, datasetContext)).sort((a, b) => {
   const aDeprioritized = isTopicDeprioritizedByQualityGovernance(a, datasetContext) ? 1 : 0;
   const bDeprioritized = isTopicDeprioritizedByQualityGovernance(b, datasetContext) ? 1 : 0;
@@ -1301,80 +1231,75 @@ const generateAnalysisTopics = async (columns, sampleData, settings, goal, datas
   const priorAnalysisSections = (existingCardTitles == null ? void 0 : existingCardTitles.length) ? [createContextSection("prior_analysis", `Already completed analysis cards (do NOT repeat these):
 ${existingCardTitles.map((t) => `- ${t}`).join("\n")}`, "high", "sticky")] : [];
   try {
-    const result = await raceWithPlanTimeout(
-      runWithOverflowCompaction({
-        provider: settings.provider,
-        abortSignal,
-        execute: async (compactionMode) => {
-          throwIfAborted(abortSignal);
-          const managed = await prepareManagedContext({
-            callType: "planner",
-            systemText: systemPrompt,
-            baseUserText: "Generate SQL-safe automatic analysis topics for this dataset.",
-            sections: [...createPlannerSections(columns, datasetContext, sampleData, void 0, explorationContext, harnessSummary), ...priorAnalysisSections],
-            settings,
-            modelId,
-            compactionMode
-          });
-          reportContextDiagnostics(telemetryTarget, managed.diagnostics);
-          return withTransientRetry(
-            (fb) => generateText({
-              model: fb ?? model,
-              messages: [
-                { role: "system", content: managed.systemText },
-                {
-                  role: "user",
-                  content: createAnalysisTopicsPrompt(
-                    managed.userText,
-                    goal,
-                    availableDimensions,
-                    existingCardTitles
-                  )
-                }
-              ],
-              abortSignal,
-              output: output_exports.object({ schema: jsonSchema(prepareSchemaForProvider(createAnalysisTopicsSchema(minTopics, maxTopics), settings.provider)) })
-            }),
-            { settings, primaryModelId: modelId, label: "planGenerator.topics", abortSignal }
-          );
-        }
-      }),
-      effectiveTimeout
-    );
+    const result = await runWithOverflowCompaction({
+      provider: settings.provider,
+      abortSignal,
+      execute: async (compactionMode) => {
+        throwIfAborted(abortSignal);
+        const managed = await prepareManagedContext({
+          callType: "planner",
+          systemText: systemPrompt,
+          baseUserText: "Generate SQL-safe automatic analysis topics for this dataset.",
+          sections: [...createPlannerSections(columns, datasetContext, sampleData, void 0, explorationContext, harnessSummary), ...priorAnalysisSections],
+          settings,
+          modelId,
+          compactionMode
+        });
+        reportContextDiagnostics(telemetryTarget, managed.diagnostics);
+        return withTransientRetry(
+          (fb) => streamGenerateText({
+            model: fb ?? model,
+            messages: [
+              { role: "system", content: managed.systemText },
+              {
+                role: "user",
+                content: createAnalysisTopicsPrompt(
+                  managed.userText,
+                  goal,
+                  availableDimensions,
+                  existingCardTitles
+                )
+              }
+            ],
+            abortSignal,
+            output: output_exports.object({ schema: jsonSchema(prepareSchemaForProvider(createAnalysisTopicsSchema(minTopics, maxTopics), settings.provider)) }),
+            activityTimeoutMs: effectiveTimeout
+          }),
+          { settings, primaryModelId: modelId, label: "planGenerator.topics", abortSignal }
+        );
+      }
+    });
     const parsed = result.output !== void 0 ? result.output : robustlyParseJsonObject(result.text);
     const rankedTopics = rankAnalysisTopics(parsed.topics || [], datasetContext);
     if (rankedTopics.length > 0 || deterministicTopics.length === 0) {
       return rankedTopics;
     }
-    console.warn(`${LOG_PREFIX$3} generateAnalysisTopics returned no executable topics, using deterministic fallback.`);
+    console.warn(`${LOG_PREFIX$2} generateAnalysisTopics returned no executable topics, using deterministic fallback.`);
     return deterministicTopics;
   } catch (error) {
     if (isRuntimeAbortError(error, abortSignal)) throw error;
-    if (!isPlanGenerationTimeout(error)) throw error;
-    console.warn(`${LOG_PREFIX$3} generateAnalysisTopics timed out (first attempt), retrying with simplified prompt.`);
+    if (!isProviderTimeoutError(error)) throw error;
+    console.warn(`${LOG_PREFIX$2} generateAnalysisTopics timed out (first attempt), retrying with simplified prompt.`);
     try {
       const colList = columns.map((c) => `${c.name} (${c.type})`).join(", ");
-      const text = await raceWithPlanTimeout(
-        callSmallAiStep(
-          settings,
-          'You are a data analyst. Generate SQL-safe analysis topics. Return JSON only: {"topics": [...]}.',
-          `Goal: ${goal ?? "Explore the data"}
+      const text = await callSmallAiStep(
+        settings,
+        'You are a data analyst. Generate SQL-safe analysis topics. Return JSON only: {"topics": [...]}.',
+        `Goal: ${goal ?? "Explore the data"}
 Columns: ${colList}
 Return 3-5 topics as JSON.`,
-          abortSignal
-        ),
-        effectiveTimeout
+        abortSignal
       );
       const parsed = robustlyParseJsonObject(text);
       const rankedTopics = rankAnalysisTopics(parsed.topics || [], datasetContext);
       if (rankedTopics.length > 0 || deterministicTopics.length === 0) {
         return rankedTopics;
       }
-      console.warn(`${LOG_PREFIX$3} generateAnalysisTopics simplified retry returned no executable topics, using deterministic fallback.`);
+      console.warn(`${LOG_PREFIX$2} generateAnalysisTopics simplified retry returned no executable topics, using deterministic fallback.`);
       return deterministicTopics;
     } catch (retryError) {
-      if (isPlanGenerationTimeout(retryError)) {
-        console.warn(`${LOG_PREFIX$3} generateAnalysisTopics retry also timed out, using deterministic fallback.`);
+      if (isProviderTimeoutError(retryError)) {
+        console.warn(`${LOG_PREFIX$2} generateAnalysisTopics retry also timed out, using deterministic fallback.`);
         return deterministicTopics;
       }
       throw retryError;
@@ -1423,54 +1348,52 @@ const generateEvidenceQueryPlanWithRetry = async (topic, columns, settings, lear
   let lastFailureCategory = "unknown";
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const strategyDirective = attempt === 1 ? "" : attempt === 2 && lastFailureCategory === "structural" ? "\n\nIMPORTANT: The previous attempt had structural issues. Use a SIMPLER query shape: one groupBy column, one aggregate, and ensure every aggregate alias appears in query.select. Do NOT attempt multi-aggregate plans." : attempt === 2 ? "\n\nIMPORTANT: The previous attempt failed. Simplify the query: use a single primary metric, one groupBy dimension, and keep the plan minimal." : "\n\nCRITICAL: This is the final attempt. Use the SIMPLEST possible query: one groupBy, one SUM/COUNT aggregate, include all selected columns explicitly. Do NOT use complex multi-aggregate or derived-column patterns.";
-    console.log(`${LOG_PREFIX$3} Generating evidence query plan for topic "${topic}", attempt ${attempt}/${MAX_ATTEMPTS}${attempt > 1 ? ` (strategy: ${lastFailureCategory})` : ""}`);
+    console.log(`${LOG_PREFIX$2} Generating evidence query plan for topic "${topic}", attempt ${attempt}/${MAX_ATTEMPTS}${attempt > 1 ? ` (strategy: ${lastFailureCategory})` : ""}`);
     try {
       const { model, modelId } = createProviderModel(settings, settings.complexModel);
-      const result = await raceWithPlanTimeout(
-        runWithOverflowCompaction({
-          provider: settings.provider,
-          abortSignal,
-          execute: async (compactionMode) => {
-            throwIfAborted(abortSignal);
-            const managed = await prepareManagedContext({
-              callType: "planner",
-              systemText: buildAnalysisPlannerSystemPrompt("evidence_query"),
-              baseUserText: `Create a SQL evidence query plan for the topic "${topic}".${strategyDirective}`,
-              sections: [
-                ...createPlannerSections(columns, plannerDatasetContext, sampleData, learningHints, explorationContext ?? void 0, harnessSummary),
-                ...planningIntentSummary ? [createContextSection("runtime_hypothesis_intent", planningIntentSummary, "high", "sticky")] : []
+      const result = await runWithOverflowCompaction({
+        provider: settings.provider,
+        abortSignal,
+        execute: async (compactionMode) => {
+          throwIfAborted(abortSignal);
+          const managed = await prepareManagedContext({
+            callType: "planner",
+            systemText: buildAnalysisPlannerSystemPrompt("evidence_query"),
+            baseUserText: `Create a SQL evidence query plan for the topic "${topic}".${strategyDirective}`,
+            sections: [
+              ...createPlannerSections(columns, plannerDatasetContext, sampleData, learningHints, explorationContext ?? void 0, harnessSummary),
+              ...planningIntentSummary ? [createContextSection("runtime_hypothesis_intent", planningIntentSummary, "high", "sticky")] : []
+            ],
+            settings,
+            modelId,
+            compactionMode
+          });
+          reportContextDiagnostics(telemetryTarget, managed.diagnostics);
+          return withTransientRetry(
+            (fb) => streamGenerateText({
+              model: fb ?? model,
+              messages: [
+                { role: "system", content: managed.systemText },
+                {
+                  role: "user",
+                  content: buildTopicPlanningUserPrompt(
+                    topic,
+                    managed.userText,
+                    buildPlanRetryFeedback(lastError),
+                    learningHints
+                  )
+                }
               ],
-              settings,
-              modelId,
-              compactionMode
-            });
-            reportContextDiagnostics(telemetryTarget, managed.diagnostics);
-            return withTransientRetry(
-              (fb) => generateText({
-                model: fb ?? model,
-                messages: [
-                  { role: "system", content: managed.systemText },
-                  {
-                    role: "user",
-                    content: buildTopicPlanningUserPrompt(
-                      topic,
-                      managed.userText,
-                      buildPlanRetryFeedback(lastError),
-                      learningHints
-                    )
-                  }
-                ],
-                abortSignal,
-                output: output_exports.object({ schema: jsonSchema(prepareSchemaForProvider(createSqlEvidenceQueryPlanSchema(allColumnNames), settings.provider)) })
-              }),
-              { settings, primaryModelId: modelId, label: "planGenerator.plan", abortSignal }
-            );
-          }
-        }),
-        effectiveTimeout
-      );
+              abortSignal,
+              output: output_exports.object({ schema: jsonSchema(prepareSchemaForProvider(createSqlEvidenceQueryPlanSchema(allColumnNames), settings.provider)) }),
+              activityTimeoutMs: effectiveTimeout
+            }),
+            { settings, primaryModelId: modelId, label: "planGenerator.plan", abortSignal }
+          );
+        }
+      });
       const rawPlan = result.output !== void 0 ? result.output : robustlyParseJsonObject(result.text);
-      console.debug(`${LOG_PREFIX$3} Raw evidence plan from AI for "${topic}":`, rawPlan);
+      console.debug(`${LOG_PREFIX$2} Raw evidence plan from AI for "${topic}":`, rawPlan);
       const semanticDefaultsApplied = applyEvidenceQuerySemanticDefaults({
         preferredResultShape: inferPreferredResultShape(topic, plannerDatasetContext),
         ...rawPlan
@@ -1550,19 +1473,23 @@ const generateEvidenceQueryPlanWithRetry = async (topic, columns, settings, lear
     { topic, lastFailureCategory }
   );
 };
-const callSmallAiStep = async (settings, systemPrompt, userPrompt, abortSignal) => {
+const callSmallAiStep = async (settings, systemPrompt, userPrompt, abortSignal, stepLabel) => {
   throwIfAborted(abortSignal);
   const { model, modelId } = createProviderModel(settings, settings.complexModel);
+  const promptChars = systemPrompt.length + userPrompt.length;
+  const label = stepLabel ? `step:${stepLabel}` : "callSmallAiStep";
+  console.log(`[Perf:AI:Payload] ${label} | model=${modelId} | promptChars=${promptChars} | systemLen=${systemPrompt.length} | userLen=${userPrompt.length}`);
   const result = await withTransientRetry(
-    (fb) => generateText({
+    (fb) => streamGenerateText({
       model: fb ?? model,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt }
       ],
-      abortSignal
+      abortSignal,
+      activityTimeoutMs: PLAN_GENERATION_TIMEOUT_MS
     }),
-    { settings, primaryModelId: modelId, label: "callSmallAiStep", abortSignal }
+    { settings, primaryModelId: modelId, label, abortSignal }
   );
   return (result.text ?? "").trim();
 };
@@ -1595,8 +1522,8 @@ const generateEvidenceQueryPlanStepped = async (topic, columns, settings, harnes
   });
   const numericMetrics = columns.filter((c) => ["numerical", "currency", "percentage"].includes(c.type));
   const countIntent = COUNT_INTENT_PATTERN.test(topic);
-  const inferredCountGroupBy = countIntent ? inferTopicGroupByTarget(topic, dimensions.map((column) => column.name)) : null;
-  const explicitGroupBy = inferredCountGroupBy ?? ((_a = dimensions.find((column) => column.name === (planningIntent == null ? void 0 : planningIntent.preferredGroupBy))) == null ? void 0 : _a.name) ?? inferTopicGroupByTarget(topic, dimensions.map((column) => column.name)) ?? ((_b = dimensions.find((column) => topicMentionsColumn(topic, column.name))) == null ? void 0 : _b.name) ?? null;
+  const inferredCountGroupBy = countIntent ? inferSteppedGroupByTarget(topic, dimensions.map((column) => column.name)) : null;
+  const explicitGroupBy = inferredCountGroupBy ?? ((_a = dimensions.find((column) => column.name === (planningIntent == null ? void 0 : planningIntent.preferredGroupBy))) == null ? void 0 : _a.name) ?? inferSteppedGroupByTarget(topic, dimensions.map((column) => column.name)) ?? ((_b = dimensions.find((column) => topicMentionsColumn(topic, column.name))) == null ? void 0 : _b.name) ?? null;
   const inferredCountOperand = countIntent ? inferCountTopicOperandTarget(topic, columns.map((column) => column.name)) : null;
   const explicitMetricColumn = ((_c = columns.find(
     (column) => countIntent ? column.name === inferredCountOperand && column.name !== explicitGroupBy : column.name === (planningIntent == null ? void 0 : planningIntent.preferredMetric) && column.name !== explicitGroupBy
@@ -1628,7 +1555,8 @@ Which ONE column is best for groupBy? Prefer columns with 0% null and do not cho
 ${dimList}
 
 Reply with ONLY the exact column name.`,
-      abortSignal
+      abortSignal,
+      `groupBy[${topic.slice(0, 25)}]`
     );
     groupBy = resolveExactColumnMatch(step1Response, columnNameMap);
     if (!groupBy || !dimensions.some((column) => column.name === groupBy)) {
@@ -1668,7 +1596,8 @@ ${metricList}
 
 Which metric and function (SUM, COUNT, AVG, COUNT_DISTINCT) best fits the topic?
 Reply as: FUNCTION(exact column name) or COUNT(*) when counting records.`,
-      abortSignal
+      abortSignal,
+      `metric[${topic.slice(0, 25)}]`
     );
     const functionMatch = step2Response.match(/\b(SUM|COUNT|AVG|COUNT_DISTINCT|MIN|MAX)\s*\(\s*([^)]+)\s*\)/i);
     const rawFunction = (_f = functionMatch == null ? void 0 : functionMatch[1]) == null ? void 0 : _f.toLowerCase();
@@ -1722,7 +1651,8 @@ What additional WHERE filters are needed? Reply as one predicate per line using 
 "Row Class" = fact
 Country <> Internal
 Or reply NONE if no extra filters are needed.`,
-      abortSignal
+      abortSignal,
+      `filter[${topic.slice(0, 25)}]`
     );
     if (step3Response.toUpperCase() !== "NONE") {
       const filterLines = step3Response.split("\n").filter((l) => l.includes("=") || l.includes("<>"));
@@ -1797,16 +1727,6 @@ Or reply NONE if no extra filters are needed.`,
   }
   return validPlan;
 };
-const LOG_PREFIX$2 = "[SqlPresentationPlanner]";
-const AI_PRESENTATION_TIMEOUT_MS = 3e4;
-const AI_PRESENTATION_TIMEOUT_MESSAGE = `AI presentation planning timed out after ${AI_PRESENTATION_TIMEOUT_MS}ms`;
-const VALID_PRESENTATION_MODES = /* @__PURE__ */ new Set(["table", "chart", "table_then_chart"]);
-const createPresentationTimeoutReason = () => {
-  const reason = new Error(AI_PRESENTATION_TIMEOUT_MESSAGE);
-  reason.name = "AbortError";
-  return reason;
-};
-const isPresentationTimeoutError = (error) => error instanceof Error && error.name === "AbortError" && error.message === AI_PRESENTATION_TIMEOUT_MESSAGE || typeof error === "object" && error !== null && "name" in error && "message" in error && error.name === "AbortError" && error.message === AI_PRESENTATION_TIMEOUT_MESSAGE;
 const isTimeColumn = (column) => column ? ["date", "time"].includes(column.type) : false;
 const findAggregateAliases = (aggregates) => (aggregates ?? []).map((aggregate) => {
   var _a;
@@ -1910,420 +1830,6 @@ const buildDeterministicSqlPresentationPlan = (evidencePlan, summary, columns, o
     defaultHideOthers
   };
 };
-const buildEvidenceSummaryForPrompt = (plan, summary) => {
-  var _a;
-  const lines = [
-    `Query mode: ${plan.queryMode}`,
-    `Rows: ${summary.rowCount}, Columns: ${summary.columnCount}`,
-    `Numeric: ${summary.numericColumns.join(", ") || "none"}`,
-    `Categorical: ${summary.categoricalColumns.join(", ") || "none"}`,
-    `Time: ${summary.timeColumns.join(", ") || "none"}`
-  ];
-  if ((_a = plan.query.groupBy) == null ? void 0 : _a.length) lines.push(`GroupBy: ${plan.query.groupBy.join(", ")}`);
-  if (summary.distinctGroupCount != null) lines.push(`Distinct groups: ${summary.distinctGroupCount}`);
-  lines.push(`Time series candidate: ${summary.isTimeSeriesCandidate ? "yes" : "no"}`);
-  lines.push(`Has secondary metric: ${summary.hasSecondaryMetric ? "yes" : "no"}`);
-  if (summary.previewRows.length > 0) {
-    lines.push("Preview:");
-    summary.previewRows.slice(0, 3).forEach((row) => lines.push(`  ${JSON.stringify(row)}`));
-  }
-  return lines.join("\n");
-};
-const ALLOWED_CHART_FAMILIES = /* @__PURE__ */ new Set(["bar", "line", "area", "combo", "scatter", "pie", "doughnut"]);
-const TABLE_FORCE_REASON_CODES = /* @__PURE__ */ new Set([
-  "helper_dimension",
-  "blocked_dimension",
-  "hierarchy_contamination",
-  "duplicate_label_contamination",
-  "missing_detail_row_filter",
-  "reshape_required",
-  "low_signal_confidence",
-  "unsafe_business_narrative",
-  "not_chart_worthy"
-]);
-const buildReviewContextForPrompt = (options) => {
-  if (!options) return null;
-  const lines = [];
-  const { semanticUnderstanding, valueGate, harnessContext } = options;
-  if (valueGate) {
-    lines.push(`Value gate decision: ${valueGate.decision}`);
-    if (valueGate.reasonCodes.length > 0) {
-      lines.push(`Value gate reason codes: ${valueGate.reasonCodes.join(", ")}`);
-    }
-    if (valueGate.detail) {
-      lines.push(`Value gate detail: ${valueGate.detail}`);
-    }
-  }
-  if (semanticUnderstanding) {
-    if (semanticUnderstanding.helperDimensions.length > 0) {
-      lines.push(`Helper dimensions: ${semanticUnderstanding.helperDimensions.join(", ")}`);
-    }
-    if (semanticUnderstanding.blockedDimensions.length > 0) {
-      lines.push(`Blocked dimensions: ${semanticUnderstanding.blockedDimensions.join(", ")}`);
-    }
-    lines.push(`Business grain confidence: ${semanticUnderstanding.businessGrainConfidence}`);
-    if (semanticUnderstanding.unsafeForBusinessNarrative) {
-      lines.push("Unsafe for business narrative: true");
-    }
-  }
-  if (harnessContext) {
-    if (harnessContext.reportShapeClass) {
-      lines.push(`Canonical report shape class: ${harnessContext.reportShapeClass}`);
-    }
-    if (harnessContext.detailRowPolicy) {
-      lines.push(`Canonical detail row policy: ${harnessContext.detailRowPolicy}`);
-    }
-    if (harnessContext.hierarchyMode) {
-      lines.push(`Canonical hierarchy mode: ${harnessContext.hierarchyMode}`);
-    }
-    if (harnessContext.widePivotMode) {
-      lines.push(`Canonical wide pivot mode: ${harnessContext.widePivotMode}`);
-    }
-    if (harnessContext.signalConfidence) {
-      lines.push(`Canonical signal confidence: ${harnessContext.signalConfidence}`);
-    }
-    if (harnessContext.parentDescriptions.length > 0) {
-      lines.push(`Hierarchy contamination signals: parent labels = ${harnessContext.parentDescriptions.join(", ")}`);
-    }
-    if (harnessContext.duplicateDescriptions.length > 0) {
-      lines.push(`Duplicate label contamination: ${harnessContext.duplicateDescriptions.join(", ")}`);
-    }
-  }
-  return lines.length > 0 ? lines.join("\n    ") : null;
-};
-const emitPresentationPlannerDegrade = (options, reasonCode, detail, meta) => {
-  logPlannerStabilitySignal(options == null ? void 0 : options.telemetryTarget, reasonCode, detail, meta);
-  if (reasonCode !== PLANNER_STABILITY_REASON_CODES.plannerDegradedNonBlocking) {
-    logPlannerStabilitySignal(
-      options == null ? void 0 : options.telemetryTarget,
-      PLANNER_STABILITY_REASON_CODES.plannerDegradedNonBlocking,
-      detail,
-      {
-        reasonCodes: [reasonCode, PLANNER_STABILITY_REASON_CODES.plannerDegradedNonBlocking],
-        ...meta ?? {}
-      }
-    );
-  }
-};
-const applyPresentationSafetyFloor = (plan, summary, evidencePlan, options) => {
-  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t;
-  const valueGate = options == null ? void 0 : options.valueGate;
-  const semanticUnderstanding = options == null ? void 0 : options.semanticUnderstanding;
-  let result = { ...plan };
-  const stripPivotFields = (next) => ({
-    ...next,
-    pivotPresentation: void 0,
-    pivotDecision: void 0,
-    pivotRequest: void 0
-  });
-  if ((valueGate == null ? void 0 : valueGate.decision) === "reject") {
-    return stripPivotFields({ ...result, presentationMode: "hidden", chartType: void 0, bindings: void 0 });
-  }
-  const hasTableForceReason = (valueGate == null ? void 0 : valueGate.reasonCodes.some((c) => TABLE_FORCE_REASON_CODES.has(c))) ?? false;
-  const lowConfidence = (semanticUnderstanding == null ? void 0 : semanticUnderstanding.businessGrainConfidence) === "low";
-  if (hasTableForceReason || lowConfidence) {
-    return stripPivotFields({ ...result, presentationMode: "table", chartType: void 0, bindings: void 0 });
-  }
-  if ((valueGate == null ? void 0 : valueGate.decision) === "table_only" && result.presentationMode === "chart") {
-    result = { ...result, presentationMode: "table_then_chart" };
-  }
-  if (summary.rowCount < 2 || (summary.distinctGroupCount ?? summary.rowCount) <= 1) {
-    return stripPivotFields({ ...result, presentationMode: "table", chartType: void 0, bindings: void 0 });
-  }
-  if (result.presentationMode === "table") {
-    return stripPivotFields({ ...result, chartType: void 0, bindings: void 0 });
-  }
-  if (summary.isWideCategorySet || (summary.distinctGroupCount ?? 0) > 8) {
-    if (result.presentationMode === "chart") {
-      result = { ...result, presentationMode: "table_then_chart" };
-    }
-    result = { ...result, defaultTopN: 8, defaultHideOthers: true };
-  }
-  if (((_a = options == null ? void 0 : options.harnessContext) == null ? void 0 : _a.suggestedHideOthers) && !result.defaultHideOthers) {
-    result = { ...result, defaultHideOthers: true };
-  }
-  const pivotResolution = resolvePivotDecision({
-    pivotPreference: plan.pivotPreference ?? "none",
-    evidencePlan,
-    evidenceSummary: summary,
-    valueGate,
-    harnessContext: (options == null ? void 0 : options.harnessContext) ?? null
-  });
-  if (result.chartType === "bar" && pivotResolution.decision === "prefer_pivot" && pivotResolution.pivotRequest) {
-    result = {
-      ...result,
-      presentationMode: "table_then_chart",
-      pivotPresentation: true,
-      pivotDecision: "prefer_pivot",
-      pivotRequest: pivotResolution.pivotRequest
-    };
-  }
-  if (!result.chartType) return result;
-  const harnessBlockedTypes = new Set(((_b = options == null ? void 0 : options.harnessContext) == null ? void 0 : _b.blockedChartTypes) ?? []);
-  if (result.chartType && harnessBlockedTypes.has(result.chartType)) {
-    if (result.chartType === "line") {
-      const valueColumn = (_c = result.bindings) == null ? void 0 : _c.valueColumn;
-      const groupByCol = ((_d = result.bindings) == null ? void 0 : _d.groupByColumn) ?? ((_e = evidencePlan.query.groupBy) == null ? void 0 : _e[0]);
-      if (valueColumn && groupByCol) {
-        result = { ...result, chartType: "bar" };
-      } else {
-        return { ...result, presentationMode: "table", chartType: void 0, bindings: void 0 };
-      }
-    } else if (result.chartType === "bar") {
-      return stripPivotFields({ ...result, presentationMode: "table", chartType: void 0, bindings: void 0 });
-    } else {
-      return { ...result, presentationMode: "table", chartType: void 0, bindings: void 0 };
-    }
-  }
-  if (!ALLOWED_CHART_FAMILIES.has(result.chartType)) {
-    const groupByColumn = ((_f = result.bindings) == null ? void 0 : _f.groupByColumn) ?? ((_g = evidencePlan.query.groupBy) == null ? void 0 : _g[0]);
-    const valueColumn = (_h = result.bindings) == null ? void 0 : _h.valueColumn;
-    if (evidencePlan.queryMode === "aggregate" && groupByColumn && valueColumn) {
-      result = { ...result, chartType: "bar" };
-    } else {
-      return { ...result, presentationMode: "table", chartType: void 0, bindings: void 0 };
-    }
-  }
-  if ((result.chartType === "pie" || result.chartType === "doughnut") && (summary.distinctGroupCount ?? summary.rowCount) > 8) {
-    result = { ...result, chartType: "bar" };
-  }
-  const aggregateAliases = findAggregateAliases(evidencePlan.query.aggregates);
-  const evidenceColumns = new Set(summary.columns);
-  if (result.chartType === "bar") {
-    const groupByColumn = ((_i = result.bindings) == null ? void 0 : _i.groupByColumn) ?? ((_j = evidencePlan.query.groupBy) == null ? void 0 : _j[0]);
-    const valueColumn = (_k = result.bindings) == null ? void 0 : _k.valueColumn;
-    if (evidencePlan.queryMode !== "aggregate" || !groupByColumn || !valueColumn) {
-      return { ...result, presentationMode: "table", chartType: void 0, bindings: void 0 };
-    }
-    const barPreviewLabels = summary.previewRows.map((row) => row[groupByColumn]).filter((v) => v != null).map(String);
-    if (hasDuplicateNormalizedBuckets(barPreviewLabels)) {
-      return { ...result, presentationMode: "table", chartType: void 0, bindings: void 0 };
-    }
-  }
-  if (result.chartType === "line") {
-    const groupByColumn = ((_l = result.bindings) == null ? void 0 : _l.groupByColumn) ?? ((_m = evidencePlan.query.groupBy) == null ? void 0 : _m[0]);
-    if (evidencePlan.queryMode !== "aggregate" || !groupByColumn) {
-      return { ...result, presentationMode: "table", chartType: void 0, bindings: void 0 };
-    }
-    const previewValues = summary.previewRows.map((row) => row[groupByColumn]).filter((v) => v != null).map(String);
-    if (hasDuplicateNormalizedBuckets(previewValues)) {
-      const valueColumn = (_n = result.bindings) == null ? void 0 : _n.valueColumn;
-      if (valueColumn) {
-        result = { ...result, chartType: "bar" };
-      } else {
-        return { ...result, presentationMode: "table", chartType: void 0, bindings: void 0 };
-      }
-    }
-    if (result.chartType === "line") {
-      let lineAllowed = false;
-      if (summary.timeColumns.includes(groupByColumn) || summary.isTimeSeriesCandidate) {
-        if (previewValues.length < 2) {
-          lineAllowed = true;
-        } else {
-          const timestamps = previewValues.map((v) => new Date(v).getTime());
-          lineAllowed = !timestamps.some(isNaN) && isMonotonicSequence(timestamps);
-        }
-      } else {
-        const ordinalIndices = resolveOrdinalIndices(previewValues);
-        if (ordinalIndices) {
-          lineAllowed = true;
-        }
-      }
-      if (!lineAllowed) {
-        const valueColumn = (_o = result.bindings) == null ? void 0 : _o.valueColumn;
-        if (valueColumn) {
-          result = { ...result, chartType: "bar" };
-        } else {
-          return { ...result, presentationMode: "table", chartType: void 0, bindings: void 0 };
-        }
-      }
-    }
-  }
-  if (result.chartType === "combo") {
-    const comboGroupBy = ((_p = result.bindings) == null ? void 0 : _p.groupByColumn) ?? ((_q = evidencePlan.query.groupBy) == null ? void 0 : _q[0]);
-    if (evidencePlan.queryMode !== "aggregate" || aggregateAliases.length < 2 || summary.rowCount > 12) {
-      const valueColumn = (_r = result.bindings) == null ? void 0 : _r.valueColumn;
-      if (comboGroupBy && valueColumn) {
-        result = { ...result, chartType: "bar", bindings: { ...result.bindings, secondaryValueColumn: void 0 } };
-      } else {
-        return { ...result, presentationMode: "table", chartType: void 0, bindings: void 0 };
-      }
-    }
-    if (result.chartType === "combo" && comboGroupBy) {
-      const comboPreviewLabels = summary.previewRows.map((row) => row[comboGroupBy]).filter((v) => v != null).map(String);
-      if (hasDuplicateNormalizedBuckets(comboPreviewLabels)) {
-        return { ...result, presentationMode: "table", chartType: void 0, bindings: void 0 };
-      }
-    }
-  }
-  if (result.chartType === "scatter") {
-    const xVal = (_s = result.bindings) == null ? void 0 : _s.xValueColumn;
-    const yVal = (_t = result.bindings) == null ? void 0 : _t.yValueColumn;
-    const xNumeric = xVal && summary.numericColumns.includes(xVal);
-    const yNumeric = yVal && summary.numericColumns.includes(yVal);
-    if (evidencePlan.queryMode !== "rowset" || !xNumeric || !yNumeric || summary.rowCount > 60) {
-      return { ...result, presentationMode: "table", chartType: void 0, bindings: void 0 };
-    }
-  }
-  if (result.bindings) {
-    const { groupByColumn, valueColumn, secondaryValueColumn, xValueColumn, yValueColumn } = result.bindings;
-    const invalid = [groupByColumn, valueColumn, secondaryValueColumn, xValueColumn, yValueColumn].filter(Boolean).some((col) => !evidenceColumns.has(col));
-    if (invalid) {
-      return { ...result, presentationMode: "table", chartType: void 0, bindings: void 0 };
-    }
-  }
-  if (result.presentationMode !== "table" && result.chartType && !result.bindings) {
-    return { ...result, presentationMode: "table", chartType: void 0, bindings: void 0 };
-  }
-  if (result.presentationMode === "table" || result.presentationMode === "hidden") {
-    return stripPivotFields({ ...result, chartType: void 0, bindings: void 0 });
-  }
-  return result;
-};
-const callAiPresentationPlan = async (topic, evidencePlan, summary, columns, settings, options) => {
-  var _a, _b, _c, _d;
-  if (!isProviderConfigured(settings)) {
-    return null;
-  }
-  try {
-    const { model, modelId } = createProviderModel(settings, settings.simpleModel);
-    const evidenceText = buildEvidenceSummaryForPrompt(evidencePlan, summary);
-    const evidenceColumnNames = summary.columns;
-    const contextText = `Executed output columns: ${evidenceColumnNames.join(", ")}`;
-    const reviewContext = buildReviewContextForPrompt(options);
-    const prompt = createSqlPresentationPlanPrompt(topic, contextText, evidenceText, reviewContext);
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(createPresentationTimeoutReason()), AI_PRESENTATION_TIMEOUT_MS);
-    try {
-      const result = await withTransientRetry(
-        (fb) => generateText({
-          model: fb ?? model,
-          messages: [
-            { role: "system", content: buildAnalysisPlannerSystemPrompt("presentation") },
-            { role: "user", content: prompt }
-          ],
-          output: output_exports.object({
-            schema: jsonSchema(prepareSchemaForProvider(createSqlPresentationPlanSchema(evidenceColumnNames), settings.provider))
-          }),
-          abortSignal: controller.signal
-        }),
-        { settings, primaryModelId: modelId, label: "sqlPresentationPlanner", abortSignal: controller.signal }
-      );
-      clearTimeout(timeout);
-      const parsed = result.output !== void 0 ? result.output : robustlyParseJsonObject(result.text);
-      if (!parsed || !parsed.presentationMode || !parsed.title) {
-        console.warn(`${LOG_PREFIX$2} AI presentation plan returned invalid structure, falling back.`);
-        return null;
-      }
-      const presentationMode = VALID_PRESENTATION_MODES.has(parsed.presentationMode) ? parsed.presentationMode : "table";
-      const chartType = tryResolveAiChartType(parsed.chartType);
-      let bindings;
-      if (parsed.bindings && typeof parsed.bindings === "object") {
-        const rawBindings = parsed.bindings;
-        const columnSet = new Set(evidenceColumnNames);
-        const validGroupBy = rawBindings.groupByColumn && columnSet.has(rawBindings.groupByColumn) ? rawBindings.groupByColumn : void 0;
-        const validValue = rawBindings.valueColumn && columnSet.has(rawBindings.valueColumn) ? rawBindings.valueColumn : void 0;
-        const validSecondary = rawBindings.secondaryValueColumn && columnSet.has(rawBindings.secondaryValueColumn) ? rawBindings.secondaryValueColumn : void 0;
-        const validX = rawBindings.xValueColumn && columnSet.has(rawBindings.xValueColumn) ? rawBindings.xValueColumn : void 0;
-        const validY = rawBindings.yValueColumn && columnSet.has(rawBindings.yValueColumn) ? rawBindings.yValueColumn : void 0;
-        if (validGroupBy || validValue || validX || validY) {
-          bindings = {
-            ...validGroupBy ? { groupByColumn: validGroupBy } : {},
-            ...validValue ? { valueColumn: validValue } : {},
-            ...validSecondary ? { secondaryValueColumn: validSecondary } : {},
-            ...validX ? { xValueColumn: validX } : {},
-            ...validY ? { yValueColumn: validY } : {}
-          };
-        }
-      }
-      if (presentationMode !== "table" && chartType && !bindings) {
-        return applyPresentationSafetyFloor({
-          title: String(parsed.title),
-          description: String(parsed.description || evidencePlan.intentSummary),
-          presentationMode: "table"
-        }, summary, evidencePlan, options);
-      }
-      const aiPlan = {
-        title: String(parsed.title),
-        description: String(parsed.description || evidencePlan.intentSummary),
-        presentationMode,
-        chartType,
-        bindings,
-        defaultTopN: typeof parsed.defaultTopN === "number" ? parsed.defaultTopN : void 0,
-        defaultHideOthers: typeof parsed.defaultHideOthers === "boolean" ? parsed.defaultHideOthers : void 0
-      };
-      const safePlan = applyPresentationSafetyFloor(aiPlan, summary, evidencePlan, options);
-      if (safePlan.chartType === "bar" && safePlan.presentationMode !== "table" && safePlan.presentationMode !== "hidden") {
-        const recommended = recommendChartType({
-          rowCount: summary.rowCount,
-          distinctGroupCount: summary.distinctGroupCount ?? summary.rowCount,
-          hasNegativeValues: summary.hasNegativeValues,
-          isTimeSeries: summary.isTimeSeriesCandidate,
-          metricCount: ((_a = safePlan.bindings) == null ? void 0 : _a.secondaryValueColumn) ? 2 : 1
-        });
-        if (recommended !== "bar") {
-          safePlan.chartType = recommended;
-        }
-      }
-      const tableForcedByValueGate = safePlan.presentationMode === "table" && aiPlan.presentationMode !== "table" && (((_b = options == null ? void 0 : options.valueGate) == null ? void 0 : _b.reasonCodes.some((code) => TABLE_FORCE_REASON_CODES.has(code))) === true || ((_c = options == null ? void 0 : options.semanticUnderstanding) == null ? void 0 : _c.businessGrainConfidence) === "low");
-      if (tableForcedByValueGate) {
-        emitPresentationPlannerDegrade(
-          options,
-          PLANNER_STABILITY_REASON_CODES.tableForcedByValueGate,
-          `AI presentation planning for "${topic}" was downgraded to table mode by the deterministic safety floor.`,
-          {
-            topic,
-            presentationModeBefore: aiPlan.presentationMode,
-            presentationModeAfter: safePlan.presentationMode,
-            chartTypeBefore: aiPlan.chartType ?? null,
-            chartTypeAfter: safePlan.chartType ?? null,
-            reasonCodes: [
-              PLANNER_STABILITY_REASON_CODES.tableForcedByValueGate,
-              PLANNER_STABILITY_REASON_CODES.plannerDegradedNonBlocking
-            ],
-            valueGateReasonCodes: ((_d = options == null ? void 0 : options.valueGate) == null ? void 0 : _d.reasonCodes) ?? []
-          }
-        );
-      } else if (safePlan.presentationMode !== aiPlan.presentationMode || safePlan.chartType !== aiPlan.chartType) {
-        emitPresentationPlannerDegrade(
-          options,
-          PLANNER_STABILITY_REASON_CODES.plannerDegradedNonBlocking,
-          `AI presentation planning for "${topic}" was adjusted by the deterministic safety floor.`,
-          {
-            topic,
-            presentationModeBefore: aiPlan.presentationMode,
-            presentationModeAfter: safePlan.presentationMode,
-            chartTypeBefore: aiPlan.chartType ?? null,
-            chartTypeAfter: safePlan.chartType ?? null
-          }
-        );
-      }
-      return safePlan;
-    } finally {
-      clearTimeout(timeout);
-    }
-  } catch (error) {
-    if (isPresentationTimeoutError(error)) {
-      emitPresentationPlannerDegrade(
-        options,
-        PLANNER_STABILITY_REASON_CODES.presentationTimeoutFallback,
-        `${AI_PRESENTATION_TIMEOUT_MESSAGE} Deterministic presentation fallback was used for "${topic}".`,
-        {
-          topic,
-          timeoutMs: AI_PRESENTATION_TIMEOUT_MS,
-          reasonCodes: [
-            PLANNER_STABILITY_REASON_CODES.presentationTimeoutFallback,
-            PLANNER_STABILITY_REASON_CODES.plannerDegradedNonBlocking
-          ]
-        }
-      );
-      console.info(`${LOG_PREFIX$2} ${AI_PRESENTATION_TIMEOUT_MESSAGE}, using deterministic fallback.`);
-      return null;
-    }
-    console.warn(`${LOG_PREFIX$2} AI presentation planning failed, falling back to deterministic.`, error);
-    return null;
-  }
-};
 const buildAnalysisPlanFromPresentation = (evidencePlan, presentationPlan, evidenceSummary) => {
   var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q;
   if (presentationPlan.pivotDecision === "prefer_pivot") {
@@ -2395,67 +1901,6 @@ const buildAnalysisPlanFromPresentation = (evidencePlan, presentationPlan, evide
     }
   };
 };
-const LOG_PREFIX$1 = "[TopicProcessor]";
-const MAX_EXECUTION_ATTEMPTS = 3;
-const RETRYABLE_EXECUTION_CODES = /* @__PURE__ */ new Set(["empty_result"]);
-const SOFT_SKIP_CODES = /* @__PURE__ */ new Set(["empty_result"]);
-const EXECUTION_RETRY_LIMIT_BY_CODE = {
-  empty_result: 2
-};
-const EXECUTION_TYPED_REASON_BY_CODE = {
-  empty_result: "empty_result"
-};
-const getExecutionRetryLimit = (code) => EXECUTION_RETRY_LIMIT_BY_CODE[code] ?? MAX_EXECUTION_ATTEMPTS;
-const buildExecutionReplanReasonCode = (code) => {
-  switch (code) {
-    case "empty_result":
-      return "replan_after_empty_result";
-    default:
-      return code;
-  }
-};
-const buildTypedExecutionReasonCode = (code) => EXECUTION_TYPED_REASON_BY_CODE[code] ?? code;
-const buildPlannerFeedbackForExecutionError = (topic, error) => {
-  switch (error.code) {
-    case "empty_result":
-      return `The previous SQL evidence query returned no rows. Rewrite the plan so it still answers "${topic}" but broadens the query enough to produce a non-empty result.`;
-    default:
-      return void 0;
-  }
-};
-const buildLearningHintsFromHistory = (runs, blockedDimensions) => {
-  if (!runs || runs.length === 0) return void 0;
-  const blocked = new Set(blockedDimensions ?? []);
-  const avoidMap = /* @__PURE__ */ new Map();
-  const preferMap = /* @__PURE__ */ new Map();
-  runs.forEach((run) => {
-    run.findings.explorations.forEach((exploration) => {
-      if (!exploration.groupBy || exploration.groupBy.length === 0) return;
-      const key = exploration.groupBy[0];
-      if (!key) return;
-      if (blocked.has(key)) return;
-      if (exploration.verdict === "flat_metric" || exploration.verdict === "no_data") {
-        avoidMap.set(key, (avoidMap.get(key) ?? 0) + 1);
-      } else if (exploration.cardCreated || exploration.verdict === "useful") {
-        preferMap.set(key, (preferMap.get(key) ?? 0) + 1);
-      }
-    });
-  });
-  const toSortedList = (map) => Array.from(map.entries()).filter(([, count]) => count > 0).sort((a, b) => b[1] - a[1]).map(([name]) => name).slice(0, 8);
-  const avoidGroupBys = toSortedList(avoidMap);
-  const preferGroupBys = toSortedList(preferMap);
-  return avoidGroupBys.length > 0 || preferGroupBys.length > 0 ? { avoidGroupBys, preferGroupBys } : void 0;
-};
-const classifyTopicFailure = (error) => {
-  if (isSqlAutoAnalysisError(error)) {
-    return { code: error.code, message: error.message };
-  }
-  const message = error instanceof Error ? error.message : String(error);
-  return {
-    code: "planning_invalid",
-    message
-  };
-};
 const FULL_DATE_VALUE_PATTERN = /^\d{1,4}[/-]\d{1,2}[/-]\d{1,4}$/;
 const DAY_OF_MONTH_PATTERN = /^(?:[1-9]|[12]\d|3[01])$/;
 const normalizeScalarText = (value) => {
@@ -2519,9 +1964,72 @@ const normalizeTemporalTopic = (topic, data, semanticUnderstanding, columnProfil
   const normalizedTopic = topic.replace(/\bday of (?:the )?month\b/ig, fullDateColumn.name);
   return normalizedTopic !== topic ? { topic: normalizedTopic, column: fullDateColumn.name } : null;
 };
+const MAX_EXECUTION_ATTEMPTS = 3;
+const RETRYABLE_EXECUTION_CODES = /* @__PURE__ */ new Set(["empty_result"]);
+const SOFT_SKIP_CODES = /* @__PURE__ */ new Set(["empty_result"]);
+const EXECUTION_RETRY_LIMIT_BY_CODE = {
+  empty_result: 2
+};
+const EXECUTION_TYPED_REASON_BY_CODE = {
+  empty_result: "empty_result"
+};
+const getExecutionRetryLimit = (code) => EXECUTION_RETRY_LIMIT_BY_CODE[code] ?? MAX_EXECUTION_ATTEMPTS;
+const buildExecutionReplanReasonCode = (code) => {
+  switch (code) {
+    case "empty_result":
+      return "replan_after_empty_result";
+    default:
+      return code;
+  }
+};
+const buildTypedExecutionReasonCode = (code) => EXECUTION_TYPED_REASON_BY_CODE[code] ?? code;
+const buildPlannerFeedbackForExecutionError = (topic, error) => {
+  switch (error.code) {
+    case "empty_result":
+      return `The previous SQL evidence query returned no rows. Rewrite the plan so it still answers "${topic}" but broadens the query enough to produce a non-empty result.`;
+    default:
+      return void 0;
+  }
+};
+const classifyTopicFailure = (error) => {
+  if (isSqlAutoAnalysisError(error)) {
+    return { code: error.code, message: error.message };
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    code: "planning_invalid",
+    message
+  };
+};
+const buildLearningHintsFromHistory = (runs, blockedDimensions) => {
+  if (!runs || runs.length === 0) return void 0;
+  const blocked = new Set(blockedDimensions ?? []);
+  const avoidMap = /* @__PURE__ */ new Map();
+  const preferMap = /* @__PURE__ */ new Map();
+  runs.forEach((run) => {
+    run.findings.explorations.forEach((exploration) => {
+      if (!exploration.groupBy || exploration.groupBy.length === 0) return;
+      const key = exploration.groupBy[0];
+      if (!key) return;
+      if (blocked.has(key)) return;
+      if (exploration.verdict === "flat_metric" || exploration.verdict === "no_data") {
+        avoidMap.set(key, (avoidMap.get(key) ?? 0) + 1);
+      } else if (exploration.cardCreated || exploration.verdict === "useful") {
+        preferMap.set(key, (preferMap.get(key) ?? 0) + 1);
+      }
+    });
+  });
+  const toSortedList = (map) => Array.from(map.entries()).filter(([, count]) => count > 0).sort((a, b) => b[1] - a[1]).map(([name]) => name).slice(0, 8);
+  const avoidGroupBys = toSortedList(avoidMap);
+  const preferGroupBys = toSortedList(preferMap);
+  return avoidGroupBys.length > 0 || preferGroupBys.length > 0 ? { avoidGroupBys, preferGroupBys } : void 0;
+};
+const LOG_PREFIX$1 = "[TopicProcessor]";
 const processSingleTopic = async (topic, data, store, binding, existingAcceptedOutputs = [], options) => {
   var _a, _b, _c, _d, _e, _f, _g, _h, _i;
   const { getState } = store;
+  const _t0 = performance.now();
+  const _elapsed = (label) => `[Perf:Topic] "${topic.slice(0, 30)}" ${label}: ${Math.round(performance.now() - _t0)}ms`;
   if (getState().isChangingGoal) {
     return { status: "aborted" };
   }
@@ -2635,11 +2143,14 @@ const processSingleTopic = async (topic, data, store, binding, existingAcceptedO
       });
     };
     const mergePlannerFeedback = (feedback) => [temporalPlanningGuardrail, feedback].filter((value) => typeof value === "string" && value.trim().length > 0).join("\n\n") || void 0;
+    console.log(_elapsed("context_built"));
     for (let attempt = 1; attempt <= MAX_EXECUTION_ATTEMPTS; attempt += 1) {
       const shouldUseSteppedPlanner = attempt === 1 && !escalatedToFull;
       let evidencePlan;
       if (shouldUseSteppedPlanner) {
-        try {
+        if ((options == null ? void 0 : options.preGeneratedPlan) && attempt === 1 && !plannerFeedback) {
+          evidencePlan = options.preGeneratedPlan;
+        } else try {
           evidencePlan = await generateEvidenceQueryPlanStepped(
             planningTopic,
             getState().columnProfiles,
@@ -2684,6 +2195,8 @@ const processSingleTopic = async (topic, data, store, binding, existingAcceptedO
           options == null ? void 0 : options.planningIntent
         );
       }
+      console.log(_elapsed("plan_generated"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
       recordStep({
         type: "plan_probe_query",
         status: "succeeded",
@@ -2830,15 +2343,9 @@ const processSingleTopic = async (topic, data, store, binding, existingAcceptedO
           const score = jaccardScore(newTitleTokens, titleTokens(o.title));
           return score >= 0.6;
         });
-        let highEmbeddingMatch = null;
-        try {
-          const hits = await vectorStore.searchIfReady(evidencePlan.title, 3);
-          const bestHit = hits.find((h) => h.score >= 0.85);
-          if (bestHit) {
-            highEmbeddingMatch = { title: bestHit.text };
-          }
-        } catch {
-        }
+        console.log(_elapsed("jaccard_done"));
+        const highEmbeddingMatch = null;
+        console.log(_elapsed("vectorStore_done"));
         if (highJaccardMatch ?? highEmbeddingMatch) {
           const matchedTitle = (highJaccardMatch == null ? void 0 : highJaccardMatch.title) ?? (highEmbeddingMatch == null ? void 0 : highEmbeddingMatch.title) ?? "";
           recordStep({
@@ -2876,7 +2383,10 @@ const processSingleTopic = async (topic, data, store, binding, existingAcceptedO
         }
       }
       try {
-        const evidenceExecution = await executeEvidenceQuery(evidencePlan, store, binding, { topic, dataset: data });
+        console.log(_elapsed("dedup_done→executing_sql"));
+        const evidenceExecution = await executeEvidenceQuery(evidencePlan, store, binding, { topic, dataset: data, suppressQueryStateUpdates: true });
+        console.log(_elapsed("sql_executed"));
+        await new Promise((resolve) => setTimeout(resolve, 0));
         recordStep({
           type: "execute_probe_query",
           status: "succeeded",
@@ -2955,14 +2465,7 @@ const processSingleTopic = async (topic, data, store, binding, existingAcceptedO
           );
         }
         const harnessContext = (options == null ? void 0 : options.harnessContext) ?? null;
-        const aiEvaluation = await callAiEvidenceEvaluation(
-          planningTopic,
-          evidencePlan,
-          evidenceSummary,
-          semanticUnderstanding,
-          getState().settings,
-          harnessContext
-        );
+        const aiEvaluation = null;
         const valueGate = evaluateEvidenceValue({
           semanticUnderstanding,
           evidencePlan,
@@ -2971,6 +2474,8 @@ const processSingleTopic = async (topic, data, store, binding, existingAcceptedO
           aiEvaluation,
           harnessContext
         });
+        console.log(_elapsed(`value_gate=${valueGate.decision}`));
+        await new Promise((resolve) => setTimeout(resolve, 0));
         recordStep({
           type: "evaluate_evidence",
           status: valueGate.decision === "reject" ? "rejected" : "succeeded",
@@ -3018,21 +2523,7 @@ const processSingleTopic = async (topic, data, store, binding, existingAcceptedO
           };
           break;
         }
-        const shouldUseAiPresentation = valueGate.decision === "pass" && (harnessContext == null ? void 0 : harnessContext.signalConfidence) !== "low";
-        const aiPresentationPlan = shouldUseAiPresentation ? await callAiPresentationPlan(
-          planningTopic,
-          evidencePlan,
-          evidenceSummary,
-          getState().columnProfiles,
-          getState().settings,
-          {
-            semanticUnderstanding,
-            valueGate,
-            harnessContext,
-            telemetryTarget: getState()
-          }
-        ) : null;
-        const presentationPlan = aiPresentationPlan ?? buildDeterministicSqlPresentationPlan(
+        const presentationPlan = buildDeterministicSqlPresentationPlan(
           evidencePlan,
           evidenceSummary,
           getState().columnProfiles,
@@ -3042,6 +2533,7 @@ const processSingleTopic = async (topic, data, store, binding, existingAcceptedO
             harnessContext
           }
         );
+        console.log(_elapsed(`presentation=${presentationPlan.presentationMode}`));
         recordStep({
           type: "plan_presentation",
           status: presentationPlan.presentationMode === "hidden" ? "rejected" : "succeeded",
@@ -3064,6 +2556,7 @@ const processSingleTopic = async (topic, data, store, binding, existingAcceptedO
           hypothesisId: (options == null ? void 0 : options.hypothesisId) ?? null,
           reasonCodes: valueGate.reasonCodes
         });
+        console.log(_elapsed("creating_card→executePresentationPlan"));
         const presentation = await executePresentationPlanAndCreateCard(
           evidencePlan,
           presentationPlan,
@@ -3074,9 +2567,11 @@ const processSingleTopic = async (topic, data, store, binding, existingAcceptedO
             topic: planningTopic,
             valueGate,
             sourceStepIds,
-            analysisSessionRunId: (options == null ? void 0 : options.analysisSessionRunId) ?? null
+            analysisSessionRunId: (options == null ? void 0 : options.analysisSessionRunId) ?? null,
+            existingAcceptedOutputs
           }
         );
+        console.log(_elapsed("card_created"));
         if (presentation.card) {
           recordStep({
             type: "emit_standard_card",
@@ -3308,13 +2803,14 @@ const goalProposer = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.define
 }, Symbol.toStringTag, { value: "Module" }));
 export {
   SqlAutoAnalysisError as S,
-  processSingleTopic as a,
+  generateEvidenceQueryPlanStepped as a,
   buildAnalysisPlanFromPresentation as b,
   callSmallAiStep as c,
-  proposeAnalysisGoals as d,
-  isPlannerStabilityReasonCode as e,
-  goalProposer as f,
+  processSingleTopic as d,
+  proposeAnalysisGoals as e,
+  isPlannerStabilityReasonCode as f,
   generateAnalysisTopics as g,
+  goalProposer as h,
   isSqlAutoAnalysisError as i,
   mergeEvidencePreFilterIntoQuery as m,
   preparePlan as p,

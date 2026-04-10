@@ -1,13 +1,13 @@
-import { W as We, j as jsxRuntimeExports, r as reactExports, a as reactDomExports } from "./csv_data_analysis_vendor-react-core.js";
-import { C as Chart, p as plugin, a as plugin$1, M as Masonry } from "./csv_data_analysis_vendor-ui.js";
+import { j as jsxRuntimeExports, W as We, r as reactExports, a as reactDomExports } from "./csv_data_analysis_vendor-react-core.js";
 import { s as shallow$1 } from "./csv_data_analysis_vendor-state.js";
+import { M as MarkdownRenderer } from "./csv_data_analysis_MarkdownRenderer.js";
+import { I as getTranslation, bW as summarizeDataQualityForEndUser, bX as normalizeCategoryLabel, bY as parseNumericValue, bZ as formatAnalysisValue, aW as formatTemporalDisplayValue, b_ as applyTopNWithOthers, b$ as buildPivotStackedChartState, c0 as DEFAULT_STACKED_PIVOT_COLUMN_TOP_N, c1 as getBarChartReadabilityHints, c2 as PIVOT_FOLDED_OTHERS_KEY, c3 as collectOrderedColumnNames, c4 as getNumericColumns, c5 as getAnalysisColumnLabels, c6 as formatAnalysisCellValue, c7 as getLocalizedText, c8 as getAvailableChartTypes, c9 as buildStackedPivotChartPlan, ca as getPivotCardQualitySummary, cb as isUsableReportTitle, E as resolveEffectiveReportContext, cc as shouldShowDataWarnings } from "./csv_data_analysis_app-agent.js";
+import { u as useAppStore, I as IconWarning, g as getCachedChart, c as computeChartCacheKey, a as computeDataContentHash, s as setCachedChart, E as ErrorBoundary } from "./csv_data_analysis_index.js";
+import { C as Chart, p as plugin, a as plugin$1, M as Masonry } from "./csv_data_analysis_vendor-ui.js";
 import { y as toPng } from "./csv_data_analysis_vendor-misc.js";
 import { p as papaparse_minExports } from "./csv_data_analysis_vendor-data.js";
-import { c3 as normalizeCategoryLabel, c4 as parseNumericValue, c5 as formatAnalysisValue, b6 as formatTemporalDisplayValue, c6 as applyTopNWithOthers, c7 as buildPivotStackedChartState, c8 as DEFAULT_STACKED_PIVOT_COLUMN_TOP_N, O as getTranslation, c9 as getBarChartReadabilityHints, ca as PIVOT_FOLDED_OTHERS_KEY, cb as collectOrderedColumnNames, cc as getNumericColumns, cd as getAnalysisColumnLabels, ce as formatAnalysisCellValue, cf as getLocalizedText, cg as getAvailableChartTypes, ch as buildStackedPivotChartPlan, ci as getPivotCardQualitySummary, cj as summarizeDataQualityForEndUser, ck as isUsableReportTitle, K as resolveEffectiveReportContext, cl as shouldShowDataWarnings } from "./csv_data_analysis_app-agent.js";
-import { u as useAppStore, g as getCachedChart, c as computeChartCacheKey, a as computeDataContentHash, s as setCachedChart, I as IconWarning, E as ErrorBoundary } from "./csv_data_analysis_index.js";
 import { w as resolveDisplayPlanTitle, x as resolveDisplayPlanDescription, e as resolvePlanGroupLabel, f as resolvePlanMetricLabel, y as isLatestReportPartial, z as resolveLatestReportBlockedInfo, q as hasOpenableLatestReport, A as buildExecutiveKpis } from "./csv_data_analysis_app-reporting.js";
-import { M as MarkdownRenderer } from "./csv_data_analysis_MarkdownRenderer.js";
-import { i as isProviderConfigured, m as createProviderModel, T as generateVisualGroundedSummary, U as evaluateChartPresentation } from "./csv_data_analysis_app-ai.js";
+import { i as isProviderConfigured, v as createProviderModel, a2 as evaluateChartPresentation } from "./csv_data_analysis_app-ai.js";
 import { I as IconClose } from "./csv_data_analysis_IconClose.js";
 import { T as TabulatorTable } from "./csv_data_analysis_TabulatorTable.js";
 import { V as ViewModeToggle, G as GroupByTest, f as formatNumber, D as DataTable$1, C as CleaningRunBanner } from "./csv_data_analysis_CleaningRunBanner.js";
@@ -17,6 +17,123 @@ import "./csv_data_analysis_vendor-monaco.js";
 import "./csv_data_analysis_app-agent-planning.js";
 import "./csv_data_analysis_vendor-storage.js";
 import "./csv_data_analysis_IconThinking.js";
+const IconInsights = (props) => /* @__PURE__ */ jsxRuntimeExports.jsx("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-5 w-5", fill: "none", viewBox: "0 0 24 24", stroke: "currentColor", strokeWidth: "2", ...props, children: /* @__PURE__ */ jsxRuntimeExports.jsx("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" }) });
+const PREVIEW_CHAR_LIMIT = 180;
+const extractPreview = (text) => {
+  const trimmed = text.trim();
+  const plain = trimmed.replace(/^#{1,3}\s+/gm, "").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\*([^*]+)\*/g, "$1").replace(/`([^`]+)`/g, "$1").replace(/\n+/g, " ").trim();
+  if (plain.length <= PREVIEW_CHAR_LIMIT) return plain;
+  const truncated = plain.slice(0, PREVIEW_CHAR_LIMIT);
+  const lastSpace = truncated.lastIndexOf(" ");
+  return (lastSpace > PREVIEW_CHAR_LIMIT * 0.6 ? truncated.slice(0, lastSpace) : truncated) + "…";
+};
+const FinalSummaryComponent = ({ title, summary, language }) => {
+  const [isExpanded, setIsExpanded] = reactExports.useState(true);
+  const contentRef = reactExports.useRef(null);
+  const generatedInLabel = summary.language !== language ? getTranslation("summary_generated_in", language, { language: summary.language }) : null;
+  const preview = reactExports.useMemo(() => extractPreview(summary.text), [summary.text]);
+  const expandLabel = getTranslation("insights_expand", language);
+  const collapseLabel = getTranslation("insights_collapse", language);
+  const toggle = reactExports.useCallback(() => setIsExpanded((prev) => !prev), []);
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+    "section",
+    {
+      className: "relative overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition-shadow hover:shadow-md",
+      "aria-label": title,
+      children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "absolute inset-x-0 top-0 h-[3px] bg-indigo-500", "aria-hidden": "true" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs(
+          "button",
+          {
+            type: "button",
+            className: "flex w-full items-center gap-3 px-5 pt-5 pb-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2",
+            onClick: toggle,
+            "aria-expanded": isExpanded,
+            children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "inline-flex shrink-0 items-center justify-center rounded-lg bg-indigo-100 p-2 text-indigo-600", children: /* @__PURE__ */ jsxRuntimeExports.jsx(IconInsights, { className: "h-5 w-5" }) }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "min-w-0 flex-1", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-2", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { className: "text-lg font-bold text-slate-900", children: title }),
+                  generatedInLabel && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600", children: generatedInLabel })
+                ] }),
+                !isExpanded && /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-1 truncate text-sm text-slate-500", children: preview })
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "svg",
+                {
+                  xmlns: "http://www.w3.org/2000/svg",
+                  className: `h-5 w-5 shrink-0 text-slate-400 transition-transform duration-200 ${isExpanded ? "rotate-180" : ""}`,
+                  fill: "none",
+                  viewBox: "0 0 24 24",
+                  stroke: "currentColor",
+                  strokeWidth: 2,
+                  "aria-hidden": "true",
+                  children: /* @__PURE__ */ jsxRuntimeExports.jsx("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M19 9l-7 7-7-7" })
+                }
+              )
+            ]
+          }
+        ),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center justify-end px-5 pb-1", children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-xs font-medium text-slate-400", children: isExpanded ? collapseLabel : expandLabel }) }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(
+          "div",
+          {
+            ref: contentRef,
+            className: `overflow-hidden transition-all duration-300 ease-in-out ${isExpanded ? "max-h-[2000px] opacity-100" : "max-h-0 opacity-0"}`,
+            children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "border-t border-slate-100 px-5 pb-5 pt-4", children: /* @__PURE__ */ jsxRuntimeExports.jsx(MarkdownRenderer, { content: summary.text }) })
+          }
+        )
+      ]
+    }
+  );
+};
+const FinalSummary = We.memo(FinalSummaryComponent);
+const DataQualityWarningsComponent = () => {
+  const { dataWarnings, intakeWarnings, language } = useAppStore((state) => {
+    var _a, _b, _c;
+    return {
+      dataWarnings: ((_a = state.agentMemoryRun) == null ? void 0 : _a.findings.warnings.map((w) => w.message)) ?? state.dataQualityIssues ?? [],
+      intakeWarnings: ((_c = (_b = state.csvData) == null ? void 0 : _b.intakeDetection) == null ? void 0 : _c.warnings) ?? [],
+      language: state.settings.language
+    };
+  }, shallow$1);
+  const [showTechnical, setShowTechnical] = reactExports.useState(false);
+  const warningMessages = Array.isArray(dataWarnings) ? dataWarnings : [];
+  const intakeWarningMessages = intakeWarnings.map((warning) => warning.message);
+  const hasWarnings = warningMessages.length > 0 || intakeWarningMessages.length > 0;
+  if (!hasWarnings) return null;
+  const endUserResult = warningMessages.length > 0 ? summarizeDataQualityForEndUser(warningMessages) : null;
+  const userSummary = (endUserResult == null ? void 0 : endUserResult.userSummary) ?? getTranslation("data_warnings_intake_reported", language, { count: intakeWarningMessages.length });
+  const technicalDetail = (endUserResult == null ? void 0 : endUserResult.technicalDetail) ?? null;
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "bg-amber-50 border border-amber-200 rounded-card p-4 shadow-sm", children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center mb-2", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx(IconWarning, { className: "text-amber-600 w-5 h-5 mr-2" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { className: "text-amber-800 font-semibold text-sm uppercase tracking-wide", children: getTranslation("data_warnings_title", language) })
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm text-amber-800", children: userSummary }),
+    intakeWarningMessages.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-3 rounded-md border border-amber-200 bg-white/50 p-3", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-xs font-semibold uppercase tracking-wide text-amber-700", children: getTranslation("data_warnings_intake_label", language) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("ul", { className: "mt-2 space-y-1 text-xs text-amber-800", children: intakeWarningMessages.slice(0, 3).map((message) => /* @__PURE__ */ jsxRuntimeExports.jsxs("li", { children: [
+        "- ",
+        message
+      ] }, message)) })
+    ] }),
+    technicalDetail && /* @__PURE__ */ jsxRuntimeExports.jsxs(
+      "details",
+      {
+        open: showTechnical,
+        onToggle: (e) => setShowTechnical(e.target.open),
+        className: "mt-2",
+        children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("summary", { className: "cursor-pointer text-xs font-medium text-amber-600 hover:text-amber-800", children: getTranslation("data_warnings_technical_toggle", language) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-1 rounded-md bg-white/50 p-2 text-xs text-amber-700 font-mono", children: technicalDetail })
+        ]
+      }
+    ),
+    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-2 text-xs text-amber-700", children: getTranslation("data_warnings_footer", language) })
+  ] });
+};
+const DataQualityWarnings = We.memo(DataQualityWarningsComponent);
 const EXPORT_THEME = {
   bgWhite: "#ffffff",
   bgHeader: "#f2f2f2",
@@ -2011,6 +2128,7 @@ const AnalysisCardChart = We.memo(({
   ] })
 ] }));
 const AnalysisCardSummaryComponent = ({
+  cardId,
   plan,
   totalValue,
   overallTotalValue,
@@ -2029,6 +2147,16 @@ const AnalysisCardSummaryComponent = ({
   pivotQualitySummary
 }) => {
   const [isExpanded, setIsExpanded] = reactExports.useState(false);
+  reactExports.useEffect(() => {
+    const handler = (e) => {
+      var _a;
+      if (((_a = e.detail) == null ? void 0 : _a.cardId) === cardId) {
+        setIsExpanded(true);
+      }
+    };
+    window.addEventListener("card:expand-narrative", handler);
+    return () => window.removeEventListener("card:expand-narrative", handler);
+  }, [cardId]);
   const effectiveSummary = visualSummary ?? summary;
   const primarySummary = reactExports.useMemo(() => (effectiveSummary == null ? void 0 : effectiveSummary.text.trim()) || "", [effectiveSummary]);
   const hasExpandableContent = primarySummary.length > 0;
@@ -2169,7 +2297,7 @@ const AnalysisCardSummaryComponent = ({
       /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "font-semibold", children: getTranslation("analysis_card_quality_title", language) }),
       /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "mt-1 space-y-1", children: qualityLines.map((line, index) => /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "leading-relaxed", children: line }, `quality-line-${index}`)) })
     ] }),
-    !primarySummary ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-3 text-slate-500", children: summaryPlaceholder }) : isExpanded ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-4 border-t border-slate-200 pt-4", children: [
+    !primarySummary ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-3 text-slate-500", children: summaryPlaceholder }) : isExpanded ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { id: `narrative-${cardId}`, className: "mt-4 border-t border-slate-200 pt-4", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500", children: getTranslation("analysis_card_ai_narrative_label", language) }),
       /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "prose prose-sm text-slate-800 max-w-none", children: /* @__PURE__ */ jsxRuntimeExports.jsx(MarkdownRenderer, { content: primarySummary, compact: true }) })
     ] }) : null,
@@ -2333,7 +2461,8 @@ const SortIndicator = ({ column, sort }) => {
   }
   return /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ml-1 text-blue-500", children: sort.direction === "asc" ? "▲" : "▼" });
 };
-const DataTableComponent = ({ data, plan, displayColumnLabels, sort, onSortChange, language = "Mandarin" }) => {
+const DataTableComponent = ({ data, plan, displayColumnLabels, sort, onSortChange }) => {
+  const language = useAppStore((state) => state.settings.language);
   if (!data || data.length === 0) {
     return /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-slate-500", children: "No data to display." });
   }
@@ -2902,7 +3031,7 @@ const VERDICT_LABELS = {
 const AI_EXPLAIN_TIMEOUT_MS = 2e4;
 const LOG_PREFIX = "[VerdictExplainer]";
 const buildExplainPrompt = (verdict, reasonCodes, detail, cardTitle, language) => {
-  const langInstruction = language === "Mandarin" ? "请用简体中文回答。" : language === "Japanese" ? "日本語で回答してください。" : "Reply in English.";
+  const langInstruction = getTranslation("ai_prompt_reply_language", language);
   return [
     `You are a data analysis quality advisor. A user is looking at an analysis card titled "${cardTitle}".`,
     `The system evaluated this card and assigned verdict: "${verdict}".`,
@@ -3139,7 +3268,6 @@ const AnalysisCard = We.memo(({ cardId, isSpotlighted = false, expandOverrideKey
   var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
   const {
     handleChartTypeChange,
-    handleToggleDataVisibility,
     handleTopNChange,
     handleHideOthersChange,
     handleHideZeroValueRowsChange,
@@ -3151,14 +3279,12 @@ const AnalysisCard = We.memo(({ cardId, isSpotlighted = false, expandOverrideKey
     handleToggleDataLabels,
     handleTableSortChange,
     deleteAnalysisCard,
-    updateCardVisualSummary,
     updateCardVisualEvaluation,
     language,
     settings,
     dataPreparationPlan
   } = useAppStore((state) => ({
     handleChartTypeChange: state.handleChartTypeChange,
-    handleToggleDataVisibility: state.handleToggleDataVisibility,
     handleTopNChange: state.handleTopNChange,
     handleHideOthersChange: state.handleHideOthersChange,
     handleHideZeroValueRowsChange: state.handleHideZeroValueRowsChange,
@@ -3170,7 +3296,6 @@ const AnalysisCard = We.memo(({ cardId, isSpotlighted = false, expandOverrideKey
     handleToggleDataLabels: state.handleToggleDataLabels,
     handleTableSortChange: state.handleTableSortChange,
     deleteAnalysisCard: state.deleteAnalysisCard,
-    updateCardVisualSummary: state.updateCardVisualSummary,
     updateCardVisualEvaluation: state.updateCardVisualEvaluation,
     language: state.settings.language,
     settings: state.settings,
@@ -3201,8 +3326,9 @@ const AnalysisCard = We.memo(({ cardId, isSpotlighted = false, expandOverrideKey
   const [isCardExpanded, setIsCardExpanded] = reactExports.useState(!!isSpotlighted);
   const [isProvenanceOpen, setIsProvenanceOpen] = reactExports.useState(false);
   const [isVerdictExplainerOpen, setIsVerdictExplainerOpen] = reactExports.useState(false);
-  const [isChartVisible, setIsChartVisible] = reactExports.useState(false);
-  const onToggleDataVisibility = reactExports.useCallback(() => handleToggleDataVisibility(cardId), [handleToggleDataVisibility, cardId]);
+  const [isChartVisible, setIsChartVisible] = reactExports.useState(true);
+  const [localDataVisible, setLocalDataVisible] = reactExports.useState(false);
+  const onToggleDataVisibility = reactExports.useCallback(() => setLocalDataVisible((prev) => !prev), []);
   const onChartTypeSelect = reactExports.useCallback((type) => handleChartTypeChange(cardId, type), [handleChartTypeChange, cardId]);
   const onTopNChange = reactExports.useCallback((e) => {
     const value = e.target.value === "all" ? null : parseInt(e.target.value, 10);
@@ -3293,31 +3419,8 @@ const AnalysisCard = We.memo(({ cardId, isSpotlighted = false, expandOverrideKey
     return () => observer.disconnect();
   }, []);
   reactExports.useEffect(() => {
-    if (!isChartVisible || (cardData == null ? void 0 : cardData.visuallyGrounded)) return;
-    const timer = setTimeout(async () => {
-      var _a2;
-      const image = (_a2 = chartRendererRef.current) == null ? void 0 : _a2.captureImage();
-      if (!image || !cardData) return;
-      try {
-        const currentSettings = useAppStore.getState().settings;
-        const result = await generateVisualGroundedSummary(
-          cardData.plan.title ?? "",
-          image,
-          cardData.aggregatedData.slice(0, 8),
-          currentSettings,
-          currentSettings.language
-        );
-        if (result) {
-          updateCardVisualSummary(cardId, result);
-        }
-      } catch {
-      }
-    }, 800);
-    return () => clearTimeout(timer);
-  }, [isChartVisible, cardId, cardData == null ? void 0 : cardData.visuallyGrounded]);
-  reactExports.useEffect(() => {
     if (!settings.enableVisualEvaluation) return;
-    if (!isChartVisible || !(cardData == null ? void 0 : cardData.visuallyGrounded) || (cardData == null ? void 0 : cardData.visuallyEvaluated)) return;
+    if (!isChartVisible || (cardData == null ? void 0 : cardData.visuallyEvaluated)) return;
     const timer = setTimeout(async () => {
       var _a2;
       const image = (_a2 = chartRendererRef.current) == null ? void 0 : _a2.captureImage();
@@ -3343,14 +3446,20 @@ const AnalysisCard = We.memo(({ cardId, isSpotlighted = false, expandOverrideKey
       }
     }, 500);
     return () => clearTimeout(timer);
-  }, [isChartVisible, cardId, cardData == null ? void 0 : cardData.visuallyGrounded, cardData == null ? void 0 : cardData.visuallyEvaluated, settings.enableVisualEvaluation]);
+  }, [isChartVisible, cardId, cardData == null ? void 0 : cardData.visuallyEvaluated, settings.enableVisualEvaluation]);
+  const storeDataVisible = (cardData == null ? void 0 : cardData.isDataVisible) ?? false;
+  reactExports.useEffect(() => {
+    setLocalDataVisible(storeDataVisible);
+  }, [storeDataVisible]);
+  const isDataVisible = localDataVisible;
   if (!cardData) return null;
   const {
     id,
     plan,
     aggregatedData,
     displayChartType,
-    isDataVisible,
+    isDataVisible: _storeDataVisible,
+    // shadowed by local state above
     topN,
     hideOthers,
     hideZeroValueRows = false,
@@ -3559,6 +3668,7 @@ const AnalysisCard = We.memo(({ cardId, isSpotlighted = false, expandOverrideKey
           /* @__PURE__ */ jsxRuntimeExports.jsx(
             AnalysisCardSummary,
             {
+              cardId,
               plan,
               totalValue: displayedTotalValue,
               overallTotalValue: totalValue,
@@ -3639,123 +3749,6 @@ const AnalysisCard = We.memo(({ cardId, isSpotlighted = false, expandOverrideKey
     }
   );
 });
-const IconInsights = (props) => /* @__PURE__ */ jsxRuntimeExports.jsx("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-5 w-5", fill: "none", viewBox: "0 0 24 24", stroke: "currentColor", strokeWidth: "2", ...props, children: /* @__PURE__ */ jsxRuntimeExports.jsx("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" }) });
-const PREVIEW_CHAR_LIMIT = 180;
-const extractPreview = (text) => {
-  const trimmed = text.trim();
-  const plain = trimmed.replace(/^#{1,3}\s+/gm, "").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\*([^*]+)\*/g, "$1").replace(/`([^`]+)`/g, "$1").replace(/\n+/g, " ").trim();
-  if (plain.length <= PREVIEW_CHAR_LIMIT) return plain;
-  const truncated = plain.slice(0, PREVIEW_CHAR_LIMIT);
-  const lastSpace = truncated.lastIndexOf(" ");
-  return (lastSpace > PREVIEW_CHAR_LIMIT * 0.6 ? truncated.slice(0, lastSpace) : truncated) + "…";
-};
-const FinalSummaryComponent = ({ title, summary, language }) => {
-  const [isExpanded, setIsExpanded] = reactExports.useState(true);
-  const contentRef = reactExports.useRef(null);
-  const generatedInLabel = summary.language !== language ? getTranslation("summary_generated_in", language, { language: summary.language }) : null;
-  const preview = reactExports.useMemo(() => extractPreview(summary.text), [summary.text]);
-  const expandLabel = getTranslation("insights_expand", language);
-  const collapseLabel = getTranslation("insights_collapse", language);
-  const toggle = reactExports.useCallback(() => setIsExpanded((prev) => !prev), []);
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs(
-    "section",
-    {
-      className: "relative overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition-shadow hover:shadow-md",
-      "aria-label": title,
-      children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "absolute inset-x-0 top-0 h-[3px] bg-indigo-500", "aria-hidden": "true" }),
-        /* @__PURE__ */ jsxRuntimeExports.jsxs(
-          "button",
-          {
-            type: "button",
-            className: "flex w-full items-center gap-3 px-5 pt-5 pb-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2",
-            onClick: toggle,
-            "aria-expanded": isExpanded,
-            children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "inline-flex shrink-0 items-center justify-center rounded-lg bg-indigo-100 p-2 text-indigo-600", children: /* @__PURE__ */ jsxRuntimeExports.jsx(IconInsights, { className: "h-5 w-5" }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "min-w-0 flex-1", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-2", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { className: "text-lg font-bold text-slate-900", children: title }),
-                  generatedInLabel && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600", children: generatedInLabel })
-                ] }),
-                !isExpanded && /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-1 truncate text-sm text-slate-500", children: preview })
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx(
-                "svg",
-                {
-                  xmlns: "http://www.w3.org/2000/svg",
-                  className: `h-5 w-5 shrink-0 text-slate-400 transition-transform duration-200 ${isExpanded ? "rotate-180" : ""}`,
-                  fill: "none",
-                  viewBox: "0 0 24 24",
-                  stroke: "currentColor",
-                  strokeWidth: 2,
-                  "aria-hidden": "true",
-                  children: /* @__PURE__ */ jsxRuntimeExports.jsx("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M19 9l-7 7-7-7" })
-                }
-              )
-            ]
-          }
-        ),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center justify-end px-5 pb-1", children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-xs font-medium text-slate-400", children: isExpanded ? collapseLabel : expandLabel }) }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx(
-          "div",
-          {
-            ref: contentRef,
-            className: `overflow-hidden transition-all duration-300 ease-in-out ${isExpanded ? "max-h-[2000px] opacity-100" : "max-h-0 opacity-0"}`,
-            children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "border-t border-slate-100 px-5 pb-5 pt-4", children: /* @__PURE__ */ jsxRuntimeExports.jsx(MarkdownRenderer, { content: summary.text }) })
-          }
-        )
-      ]
-    }
-  );
-};
-const FinalSummary = We.memo(FinalSummaryComponent);
-const DataQualityWarningsComponent = () => {
-  const { dataWarnings, intakeWarnings, language } = useAppStore((state) => {
-    var _a, _b, _c;
-    return {
-      dataWarnings: ((_a = state.agentMemoryRun) == null ? void 0 : _a.findings.warnings.map((w) => w.message)) ?? state.dataQualityIssues ?? [],
-      intakeWarnings: ((_c = (_b = state.csvData) == null ? void 0 : _b.intakeDetection) == null ? void 0 : _c.warnings) ?? [],
-      language: state.settings.language
-    };
-  }, shallow$1);
-  const [showTechnical, setShowTechnical] = reactExports.useState(false);
-  const warningMessages = Array.isArray(dataWarnings) ? dataWarnings : [];
-  const intakeWarningMessages = intakeWarnings.map((warning) => warning.message);
-  const hasWarnings = warningMessages.length > 0 || intakeWarningMessages.length > 0;
-  if (!hasWarnings) return null;
-  const endUserResult = warningMessages.length > 0 ? summarizeDataQualityForEndUser(warningMessages) : null;
-  const userSummary = (endUserResult == null ? void 0 : endUserResult.userSummary) ?? getTranslation("data_warnings_intake_reported", language, { count: intakeWarningMessages.length });
-  const technicalDetail = (endUserResult == null ? void 0 : endUserResult.technicalDetail) ?? null;
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "bg-amber-50 border border-amber-200 rounded-card p-4 shadow-sm", children: [
-    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center mb-2", children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx(IconWarning, { className: "text-amber-600 w-5 h-5 mr-2" }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { className: "text-amber-800 font-semibold text-sm uppercase tracking-wide", children: getTranslation("data_warnings_title", language) })
-    ] }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm text-amber-800", children: userSummary }),
-    intakeWarningMessages.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-3 rounded-md border border-amber-200 bg-white/50 p-3", children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-xs font-semibold uppercase tracking-wide text-amber-700", children: getTranslation("data_warnings_intake_label", language) }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("ul", { className: "mt-2 space-y-1 text-xs text-amber-800", children: intakeWarningMessages.slice(0, 3).map((message) => /* @__PURE__ */ jsxRuntimeExports.jsxs("li", { children: [
-        "- ",
-        message
-      ] }, message)) })
-    ] }),
-    technicalDetail && /* @__PURE__ */ jsxRuntimeExports.jsxs(
-      "details",
-      {
-        open: showTechnical,
-        onToggle: (e) => setShowTechnical(e.target.open),
-        className: "mt-2",
-        children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("summary", { className: "cursor-pointer text-xs font-medium text-amber-600 hover:text-amber-800", children: getTranslation("data_warnings_technical_toggle", language) }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-1 rounded-md bg-white/50 p-2 text-xs text-amber-700 font-mono", children: technicalDetail })
-        ]
-      }
-    ),
-    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-2 text-xs text-amber-700", children: getTranslation("data_warnings_footer", language) })
-  ] });
-};
-const DataQualityWarnings = We.memo(DataQualityWarningsComponent);
 const SkeletonCard = () => {
   return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "bg-white rounded-card shadow-lg p-4 w-full mx-auto border border-slate-200", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "animate-pulse flex flex-col space-y-4", children: [
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex justify-between items-start", children: [
@@ -3773,6 +3766,62 @@ const SkeletonCard = () => {
     ] }) })
   ] }) });
 };
+const AnalysisCardGrid = reactExports.memo(({
+  cardIds,
+  skeletonCount,
+  columnCount,
+  spotlightCardId,
+  expandOverrideKey,
+  expandOverrideValue
+}) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
+  Masonry,
+  {
+    breakpointCols: columnCount,
+    className: "my-masonry-grid",
+    columnClassName: "my-masonry-grid_column",
+    children: [
+      cardIds.map((cardId, index) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+        "div",
+        {
+          "data-card-id": cardId,
+          className: "mb-6 animate-fade-in",
+          style: { animationDelay: `${Math.min(index, 5) * 50}ms` },
+          children: /* @__PURE__ */ jsxRuntimeExports.jsx(ErrorBoundary, { children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+            AnalysisCard,
+            {
+              cardId,
+              isSpotlighted: cardId === spotlightCardId,
+              expandOverrideKey,
+              expandOverrideValue
+            }
+          ) })
+        },
+        cardId
+      )),
+      Array.from({ length: skeletonCount }).map((_, index) => /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "mb-6", children: /* @__PURE__ */ jsxRuntimeExports.jsx(SkeletonCard, {}) }, `skeleton-${index}`))
+    ]
+  }
+));
+AnalysisCardGrid.displayName = "AnalysisCardGrid";
+const AnalysisStatusSection = reactExports.memo(() => {
+  const { aiTaskStatus, hasCards, hasFinalSummary } = useAppStore(
+    (state) => ({
+      aiTaskStatus: state.aiTaskStatus,
+      hasCards: state.analysisCards.length > 0,
+      hasFinalSummary: !!state.finalSummary
+    }),
+    shallow$1
+  );
+  if (!aiTaskStatus) return null;
+  return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+    AiTaskStatusBubble,
+    {
+      task: aiTaskStatus,
+      variant: !hasCards && !hasFinalSummary ? "default" : "compact"
+    }
+  ) });
+});
+AnalysisStatusSection.displayName = "AnalysisStatusSection";
 const toneCardClasses = {
   primary: "border-blue-100 bg-gradient-to-br from-blue-50/60 via-white to-white",
   neutral: "border-slate-200 bg-white",
@@ -3792,7 +3841,7 @@ const toneIconBg = {
   warning: "bg-amber-100 text-amber-600"
 };
 const hierarchyClasses = {
-  primary: "xl:col-span-2 p-5",
+  primary: "p-5",
   secondary: "p-5",
   insight: "p-5"
 };
@@ -3869,12 +3918,12 @@ const ExecutiveKpiRowComponent = ({ title, subtitle, kpis, actionLabel, onKpiAct
   if (kpis.length === 0) {
     return null;
   }
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs("section", { className: "rounded-xl border border-slate-200 bg-slate-50/60 p-4 shadow-sm", "aria-label": title, children: [
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("section", { className: "rounded-xl border border-slate-200 bg-white p-5 shadow-sm", "aria-label": title, children: [
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mb-4", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-xs font-semibold uppercase tracking-[0.18em] text-slate-500", children: title }),
       /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-1 text-sm text-slate-500", children: subtitle })
     ] }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4", children: kpis.map((kpi) => {
+    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4", children: kpis.map((kpi) => {
       var _a;
       const isActionable = ((_a = kpi.action) == null ? void 0 : _a.type) === "show-card" && Boolean(kpi.sourceCardId) && Boolean(onKpiAction);
       const cardClasses = [
@@ -4158,6 +4207,7 @@ const ReportDeliveryComponent = ({
   reportTemplate,
   onTemplateChange,
   onGenerate,
+  onCancel,
   onOpen,
   onExportPdf,
   isGenerating,
@@ -4174,7 +4224,10 @@ const ReportDeliveryComponent = ({
   const actionsLabel = getTranslation("report_actions_label", language);
   const openLabel = getTranslation("report_open", language);
   const exportLabel = getTranslation("report_export_pdf", language);
+  const cancelLabel = getTranslation("report_cancel", language);
+  const blockedTitle = getTranslation("report_blocked_title", language);
   const isBlocked = Boolean(blockedInfo) && !hasReport && !isGenerating;
+  const isButtonDisabled = isGenerating || isBlocked;
   return /* @__PURE__ */ jsxRuntimeExports.jsxs(
     "section",
     {
@@ -4197,11 +4250,11 @@ const ReportDeliveryComponent = ({
               {
                 type: "button",
                 onClick: onGenerate,
-                disabled: isGenerating,
-                title: isGenerating ? runningLabel : generateLabel,
+                disabled: isButtonDisabled,
+                title: isGenerating ? runningLabel : isBlocked ? blockedTitle : generateLabel,
                 className: [
                   "inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg px-5 text-sm font-semibold transition-all sm:w-auto sm:min-w-[180px] sm:whitespace-nowrap",
-                  isGenerating ? "cursor-not-allowed border border-violet-200 bg-violet-50 text-violet-500" : "border border-violet-600 bg-violet-600 text-white shadow-sm hover:bg-violet-700 hover:shadow-md active:bg-violet-800"
+                  isGenerating ? "cursor-not-allowed border border-violet-200 bg-violet-50 text-violet-500" : isBlocked ? "cursor-not-allowed border border-amber-200 bg-amber-50 text-amber-500" : "border border-violet-600 bg-violet-600 text-white shadow-sm hover:bg-violet-700 hover:shadow-md active:bg-violet-800"
                 ].join(" "),
                 children: isGenerating ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
                   /* @__PURE__ */ jsxRuntimeExports.jsx(LoadingSpinner, {}),
@@ -4244,8 +4297,30 @@ const ReportDeliveryComponent = ({
               );
             }) })
           ] }),
-          isGenerating && progressLabel && /* @__PURE__ */ jsxRuntimeExports.jsx(GenerationStepIndicator, { progressLabel, language }),
-          isGenerating && !progressLabel && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "mt-4", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "h-1.5 overflow-hidden rounded-full bg-violet-100", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "h-full w-[30%] animate-pulse rounded-full bg-violet-400" }) }) }),
+          isGenerating && progressLabel && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-4", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx(GenerationStepIndicator, { progressLabel, language }),
+            onCancel && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "mt-2 flex justify-end", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                type: "button",
+                onClick: onCancel,
+                className: "inline-flex items-center gap-1 rounded-md px-3 py-1 text-xs font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700",
+                children: cancelLabel
+              }
+            ) })
+          ] }),
+          isGenerating && !progressLabel && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-4", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "h-1.5 overflow-hidden rounded-full bg-violet-100", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "h-full w-[30%] animate-pulse rounded-full bg-violet-400" }) }),
+            onCancel && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "mt-2 flex justify-end", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                type: "button",
+                onClick: onCancel,
+                className: "inline-flex items-center gap-1 rounded-md px-3 py-1 text-xs font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700",
+                children: cancelLabel
+              }
+            ) })
+          ] }),
           isBlocked && blockedInfo && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4", role: "alert", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-start gap-3", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-600", children: /* @__PURE__ */ jsxRuntimeExports.jsx(ShieldBlockIcon, {}) }),
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "min-w-0 flex-1", children: [
@@ -4259,7 +4334,7 @@ const ReportDeliveryComponent = ({
                 reason
               ] }, reason)) }),
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-3 border-t border-amber-200 pt-3", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-[11px] font-semibold uppercase tracking-[0.15em] text-amber-600", children: "What to do next" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-[11px] font-semibold uppercase tracking-[0.15em] text-amber-600", children: getTranslation("report_blocked_what_to_do_label", language) }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-1 text-xs leading-relaxed text-amber-700", children: getTranslation("report_blocked_what_to_do", language) })
               ] })
             ] })
@@ -4516,7 +4591,8 @@ const SQL_PRECHECK_PREVIEW_LIMIT = 25;
 const INITIAL_VISIBLE_CARDS = 6;
 const CARD_LOAD_INCREMENT = 4;
 const AnalysisPanelComponent = () => {
-  const { cards, finalSummary, isGeneratingReport, language, reportTemplate, setReportTemplate, reportGenerationProgress, aiTaskStatus, cleaningRun, isSpreadsheetVisible, resumeCleaningRun, restartCleaningRun, generateAnalystReport, openLatestAnalystReport, exportLatestAnalystReportPdf, csvData, canonicalCsvData, rawCsvData, reportContextResolution, columnProfiles, dataPreparationPlan, runWorkspaceDataQuery, setIsSpreadsheetVisible, addProgress, handleShowCardFromChat, setIsWorkspaceModalOpen, hasLatestAnalystReport, reportBlockedInfo, isReportPartial, initialAnalysisStatus, latestAnalysisSession, visibleAnalysisTrace } = useAppStore(
+  const _renderT0 = performance.now();
+  const { cards, finalSummary, isGeneratingReport, language, reportTemplate, setReportTemplate, reportGenerationProgress, aiTaskDone, cleaningRun, isSpreadsheetVisible, resumeCleaningRun, restartCleaningRun, generateAnalystReport, cancelReportGeneration, openLatestAnalystReport, exportLatestAnalystReportPdf, csvData, canonicalCsvData, rawCsvData, reportContextResolution, columnProfiles, dataPreparationPlan, runWorkspaceDataQuery, setIsSpreadsheetVisible, addProgress, handleShowCardFromChat, setIsWorkspaceModalOpen, hasLatestAnalystReport, reportBlockedInfo, isReportPartial, initialAnalysisStatus, latestAnalysisSession, visibleAnalysisTrace } = useAppStore(
     (state) => ({
       cards: state.analysisCards,
       finalSummary: state.finalSummary,
@@ -4525,12 +4601,15 @@ const AnalysisPanelComponent = () => {
       reportTemplate: state.settings.reportTemplate ?? "management_review",
       setReportTemplate: state.setReportTemplate,
       reportGenerationProgress: state.reportGenerationProgress,
-      aiTaskStatus: state.aiTaskStatus,
+      // PERF-303: Only track whether AI task is finished (boolean), not the full object.
+      // Full aiTaskStatus rendering is handled by AnalysisStatusSection.
+      aiTaskDone: !state.aiTaskStatus || state.aiTaskStatus.status === "done" || state.aiTaskStatus.status === "error",
       cleaningRun: state.cleaningRun,
       isSpreadsheetVisible: state.isSpreadsheetVisible,
       resumeCleaningRun: state.resumeCleaningRun,
       restartCleaningRun: state.restartCleaningRun,
       generateAnalystReport: state.generateAnalystReport,
+      cancelReportGeneration: state.cancelReportGeneration,
       openLatestAnalystReport: state.openLatestAnalystReport,
       exportLatestAnalystReportPdf: state.exportLatestAnalystReportPdf,
       csvData: state.csvData,
@@ -4564,6 +4643,16 @@ const AnalysisPanelComponent = () => {
   const [visibleCardCount, setVisibleCardCount] = reactExports.useState(INITIAL_VISIBLE_CARDS);
   const [expandOverrideKey, setExpandOverrideKey] = reactExports.useState(1);
   const [expandOverrideValue, setExpandOverrideValue] = reactExports.useState(true);
+  const prevCardIdsRef = reactExports.useRef([]);
+  const stableCardIds = reactExports.useMemo(() => {
+    const nextIds = cards.slice(0, visibleCardCount).map((c) => c.id);
+    const prev = prevCardIdsRef.current;
+    if (nextIds.length === prev.length && nextIds.every((id, i) => id === prev[i])) {
+      return prev;
+    }
+    prevCardIdsRef.current = nextIds;
+    return nextIds;
+  }, [cards, visibleCardCount]);
   const handleToggleAllCards = reactExports.useCallback(() => {
     setExpandOverrideValue((prev) => !prev);
     setExpandOverrideKey((prev) => prev + 1);
@@ -4729,7 +4818,7 @@ const AnalysisPanelComponent = () => {
     const showCleaningBanner = cleaningRun && (cleaningRun.status !== "completed" || ((_a = dataPreparationPlan == null ? void 0 : dataPreparationPlan.sqlPrecheck) == null ? void 0 : _a.status) === "blocked" || ((_b = dataPreparationPlan == null ? void 0 : dataPreparationPlan.sqlPrecheck) == null ? void 0 : _b.status) === "warning") && !isSpreadsheetVisible && !analysisAlreadyStarted;
     const showReportHeader = Boolean(reportContext && csvData);
     const analysisComplete = initialAnalysisStatus === "ready" || initialAnalysisStatus === "degraded";
-    const showHeadlineSections = !aiTaskStatus || aiTaskStatus.status === "done" || aiTaskStatus.status === "error";
+    const showHeadlineSections = aiTaskDone;
     const showAnalystReportAction = analysisComplete && cards.length > 0;
     const isArtifactReportGeneration = (reportGenerationProgress == null ? void 0 : reportGenerationProgress.mode) === "artifact";
     const reportProgressLabel = isArtifactReportGeneration && reportGenerationProgress ? `${reportGenerationProgress.completed}/${reportGenerationProgress.total}` : null;
@@ -4740,6 +4829,7 @@ const AnalysisPanelComponent = () => {
         reportTemplate,
         onTemplateChange: setReportTemplate,
         onGenerate: () => void generateAnalystReport(),
+        onCancel: cancelReportGeneration,
         onOpen: openLatestAnalystReport,
         onExportPdf: exportLatestAnalystReportPdf,
         isGenerating: isGeneratingReport,
@@ -4750,7 +4840,7 @@ const AnalysisPanelComponent = () => {
       }
     ) : null;
     const skeletonCount = isGeneratingReport && reportGenerationProgress && reportGenerationProgress.mode !== "artifact" ? Math.max(0, reportGenerationProgress.total - cards.length) : 0;
-    if (cards.length === 0 && !isGeneratingReport && skeletonCount === 0 && !aiTaskStatus && visibleAnalysisTrace.length === 0 && !showWarnings && !showCleaningBanner) {
+    if (cards.length === 0 && !isGeneratingReport && skeletonCount === 0 && aiTaskDone && visibleAnalysisTrace.length === 0 && !showWarnings && !showCleaningBanner) {
       return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { id: "analysis-results-section", className: "scroll-mt-6 space-y-4", children: [
         showReportHeader && /* @__PURE__ */ jsxRuntimeExports.jsx(
           ReportHeader,
@@ -4768,6 +4858,7 @@ const AnalysisPanelComponent = () => {
         /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center justify-center h-full", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "text-center p-4", children: /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-slate-500", children: getTranslation("analysis_results_placeholder", language) }) }) })
       ] });
     }
+    console.log(`[Perf:Diag] AnalysisPanel render: ${Math.round(performance.now() - _renderT0)}ms | cards=${cards.length}`);
     return /* @__PURE__ */ jsxRuntimeExports.jsx(jsxRuntimeExports.Fragment, { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { id: "analysis-results-section", className: "scroll-mt-6 space-y-4", children: [
       showReportHeader && /* @__PURE__ */ jsxRuntimeExports.jsx(
         ReportHeader,
@@ -4781,13 +4872,7 @@ const AnalysisPanelComponent = () => {
           language
         }
       ),
-      aiTaskStatus && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { children: /* @__PURE__ */ jsxRuntimeExports.jsx(
-        AiTaskStatusBubble,
-        {
-          task: aiTaskStatus,
-          variant: cards.length === 0 && !finalSummary ? "default" : "compact"
-        }
-      ) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx(AnalysisStatusSection, {}),
       showHeadlineSections && credibilitySummary && /* @__PURE__ */ jsxRuntimeExports.jsx(
         CredibilityBanner,
         {
@@ -4822,33 +4907,15 @@ const AnalysisPanelComponent = () => {
             ]
           }
         ) }),
-        /* @__PURE__ */ jsxRuntimeExports.jsxs(
-          Masonry,
+        /* @__PURE__ */ jsxRuntimeExports.jsx(
+          AnalysisCardGrid,
           {
-            breakpointCols: columnCount,
-            className: "my-masonry-grid",
-            columnClassName: "my-masonry-grid_column",
-            children: [
-              cards.slice(0, visibleCardCount).map((card, index) => /* @__PURE__ */ jsxRuntimeExports.jsx(
-                "div",
-                {
-                  "data-card-id": card.id,
-                  className: "mb-6 animate-fade-in",
-                  style: { animationDelay: `${Math.min(index, 5) * 50}ms` },
-                  children: /* @__PURE__ */ jsxRuntimeExports.jsx(ErrorBoundary, { children: /* @__PURE__ */ jsxRuntimeExports.jsx(
-                    AnalysisCard,
-                    {
-                      cardId: card.id,
-                      isSpotlighted: card.id === spotlightCardId,
-                      expandOverrideKey,
-                      expandOverrideValue
-                    }
-                  ) })
-                },
-                card.id
-              )),
-              Array.from({ length: skeletonCount }).map((_, index) => /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "mb-6", children: /* @__PURE__ */ jsxRuntimeExports.jsx(SkeletonCard, {}) }, `skeleton-${index}`))
-            ]
+            cardIds: stableCardIds,
+            skeletonCount,
+            columnCount,
+            spotlightCardId,
+            expandOverrideKey,
+            expandOverrideValue
           }
         ),
         visibleCardCount < cards.length && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { ref: loadMoreSentinelRef, className: "flex justify-center py-4", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "text-xs text-slate-400", children: [

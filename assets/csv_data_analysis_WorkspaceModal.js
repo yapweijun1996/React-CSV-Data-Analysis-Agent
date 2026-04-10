@@ -1,5 +1,5 @@
 const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["./csv_data_analysis_WorkspaceModalEditor.js","./csv_data_analysis_vendor-data.js","./csv_data_analysis_vendor-ai-sdk.js","./csv_data_analysis_vendor-misc.js","./csv_data_analysis_app-reporting.js","./csv_data_analysis_vendor-storage.js","./csv_data_analysis_vendor-react-core.js"])))=>i.map(i=>d[i]);
-import { cF as buildWorkspaceBundle, cG as isWorkspaceWritablePath, a7 as __vitePreload } from "./csv_data_analysis_app-agent.js";
+import { cy as buildWorkspaceBundle, cz as isWorkspaceWritablePath, a5 as __vitePreload } from "./csv_data_analysis_app-agent.js";
 import { r as reactExports, j as jsxRuntimeExports } from "./csv_data_analysis_vendor-react-core.js";
 import { s as shallow$1 } from "./csv_data_analysis_vendor-state.js";
 import { u as useAppStore } from "./csv_data_analysis_index.js";

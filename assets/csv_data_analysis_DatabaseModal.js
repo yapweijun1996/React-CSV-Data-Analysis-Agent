@@ -3,7 +3,7 @@ import { s as shallow$1 } from "./csv_data_analysis_vendor-state.js";
 import { T as TabulatorTable } from "./csv_data_analysis_TabulatorTable.js";
 import { u as useAppStore } from "./csv_data_analysis_index.js";
 import { I as IconClose } from "./csv_data_analysis_IconClose.js";
-import { cA as summarizeTraceContract, cB as WORKSPACE_QUERY_LIMIT_OPTIONS, cC as DEFAULT_WORKSPACE_QUERY_LIMIT, cD as WORKSPACE_QUERY_TEMPLATE_OPTIONS, bx as buildEffectiveColumnRegistryFromState, cE as createDefaultWorkspaceQueryDrafts, bq as createIdleDuckDbSessionStatus } from "./csv_data_analysis_app-agent.js";
+import { ct as summarizeTraceContract, cu as WORKSPACE_QUERY_LIMIT_OPTIONS, cv as DEFAULT_WORKSPACE_QUERY_LIMIT, cw as WORKSPACE_QUERY_TEMPLATE_OPTIONS, bm as buildEffectiveColumnRegistryFromState, cx as createDefaultWorkspaceQueryDrafts, be as createIdleDuckDbSessionStatus } from "./csv_data_analysis_app-agent.js";
 import "./csv_data_analysis_vendor-data.js";
 import "./csv_data_analysis_vendor-monaco.js";
 import "./csv_data_analysis_vendor-misc.js";

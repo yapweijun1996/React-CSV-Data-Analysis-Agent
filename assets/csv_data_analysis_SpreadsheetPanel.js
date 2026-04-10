@@ -1,6 +1,6 @@
 import { r as reactExports, j as jsxRuntimeExports, W as We } from "./csv_data_analysis_vendor-react-core.js";
 import { T as TabulatorTable } from "./csv_data_analysis_TabulatorTable.js";
-import { O as getTranslation, cm as applySpreadsheetFilterOperation, a$ as buildDataPreparationWorkflowBundle, cn as resolveDatasetBindingTarget, cb as collectOrderedColumnNames, bx as buildEffectiveColumnRegistryFromState, co as buildDisplayLabelMap, cp as getSemanticHiddenRowCount, cq as isPreviewDataQuery } from "./csv_data_analysis_app-agent.js";
+import { I as getTranslation, cd as applySpreadsheetFilterOperation, aO as buildDataPreparationWorkflowBundle, ce as resolveDatasetBindingTarget, c3 as collectOrderedColumnNames, bm as buildEffectiveColumnRegistryFromState, cf as buildDisplayLabelMap, cg as getSemanticHiddenRowCount, ch as isPreviewDataQuery } from "./csv_data_analysis_app-agent.js";
 import { u as useAppStore, b as IconLoadingSpinner } from "./csv_data_analysis_index.js";
 import { I as IconClose } from "./csv_data_analysis_IconClose.js";
 import { I as IconAi } from "./csv_data_analysis_IconAi.js";
@@ -27,7 +27,7 @@ const ColumnAnnotationPopover = ({
   columnType,
   existingAnnotation,
   anchorRect,
-  language = "Mandarin",
+  language = "English",
   onSave,
   onRemove,
   onClose
@@ -212,31 +212,32 @@ const SpreadsheetControls = ({
 const useSpreadsheetData = (csvData, filterText, spreadsheetFilterFunction) => {
   return reactExports.useMemo(() => {
     if (!csvData) return [];
-    let dataToProcess = [...csvData.data];
     if (spreadsheetFilterFunction) {
       try {
-        dataToProcess = applySpreadsheetFilterOperation(dataToProcess, spreadsheetFilterFunction).data;
+        return applySpreadsheetFilterOperation([...csvData.data], spreadsheetFilterFunction).data;
       } catch (error) {
         console.error("AI filter execution failed:", error);
+        return csvData.data;
       }
-    } else if (filterText) {
+    }
+    if (filterText) {
       const lowercasedFilter = filterText.toLowerCase();
-      dataToProcess = dataToProcess.filter(
+      return csvData.data.filter(
         (row) => Object.values(row).some(
           (value) => String(value).toLowerCase().includes(lowercasedFilter)
         )
       );
     }
-    return dataToProcess;
+    return csvData.data;
   }, [csvData, filterText, spreadsheetFilterFunction]);
 };
 const PAGE_SIZE = 50;
 const useSpreadsheetLogic = (isVisible) => {
+  const _hookT0 = performance.now();
   const {
     csvData,
     canonicalCsvData,
     rawCsvData,
-    analysisCards,
     spreadsheetFilterFunction,
     activeDataQuery,
     activeSpreadsheetFilter,
@@ -253,12 +254,14 @@ const useSpreadsheetLogic = (isVisible) => {
     columnRegistry,
     columnProfiles,
     userColumnAnnotations,
-    latestAnalysisSession
+    dataPreparationPlan
   } = useAppStore((state) => ({
     csvData: state.csvData,
     canonicalCsvData: state.canonicalCsvData,
     rawCsvData: state.rawCsvData,
-    analysisCards: state.analysisCards,
+    // PERF-306: cardCount subscription REMOVED. Was triggering Tabulator
+    // 885-row re-render on every card insertion (1-2s each × 5 cards = 5-10s).
+    // displayColumnLabels now reads cards lazily via getState() with no deps.
     spreadsheetFilterFunction: state.spreadsheetFilterFunction,
     activeDataQuery: state.activeDataQuery,
     activeSpreadsheetFilter: state.activeSpreadsheetFilter,
@@ -275,21 +278,23 @@ const useSpreadsheetLogic = (isVisible) => {
     columnRegistry: state.columnRegistry,
     columnProfiles: state.columnProfiles,
     userColumnAnnotations: state.userColumnAnnotations,
-    latestAnalysisSession: state.latestAnalysisSession
+    // PERF-312: analysisSteering subscription REMOVED. Was triggering 2.3s
+    // SpreadsheetPanel re-render 20+ times during post-analysis phase.
+    // Now read lazily via getState() in useMemo — only recomputes when
+    // dataPreparationPlan changes (stable scalar dep).
+    dataPreparationPlan: state.dataPreparationPlan
   }), shallow$1);
-  const inferredColumnLabels = useAppStore(
-    (state) => {
-      var _a, _b;
-      return ((_b = (_a = state.latestAnalysisSession) == null ? void 0 : _a.analysisSteering) == null ? void 0 : _b.inferredColumnLabels) ?? {};
-    }
-  );
   const preferredDataset = reactExports.useMemo(
     () => canonicalCsvData ?? csvData,
     [canonicalCsvData, csvData]
   );
   const [filterText, setFilterText] = reactExports.useState("");
   const [viewMode, setViewMode] = reactExports.useState("semantic_default");
-  const workflowBundle = useAppStore((state) => buildDataPreparationWorkflowBundle(state));
+  const workflowBundle = reactExports.useMemo(
+    () => buildDataPreparationWorkflowBundle(useAppStore.getState()),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [dataPreparationPlan]
+  );
   reactExports.useEffect(() => {
     if (!rawCsvData && viewMode === "raw") {
       setViewMode("semantic_default");
@@ -346,20 +351,25 @@ const useSpreadsheetLogic = (isVisible) => {
     return collectOrderedColumnNames((activeDataset == null ? void 0 : activeDataset.data) ?? []);
   }, [activeDataQuery, activeDataset, viewMode]);
   const isQueryResultView = viewMode !== "raw" && Boolean(activeDataQuery);
+  const _vcr0 = performance.now();
   const viewColumnRegistry = reactExports.useMemo(
-    () => buildEffectiveColumnRegistryFromState({
-      csvData,
-      canonicalCsvData,
-      columnProfiles,
-      datasetSemanticSnapshot,
-      userColumnAnnotations,
-      latestAnalysisSession,
-      columnRegistry
-    }, {
-      datasetOverride: activeDataset,
-      semanticSnapshotOverride: viewMode === "raw" ? null : datasetSemanticSnapshot
-    }),
-    [activeDataset, columnProfiles, columnRegistry, datasetSemanticSnapshot, latestAnalysisSession == null ? void 0 : latestAnalysisSession.analysisSteering, userColumnAnnotations, viewMode]
+    () => {
+      var _a;
+      const steering = ((_a = useAppStore.getState().latestAnalysisSession) == null ? void 0 : _a.analysisSteering) ?? null;
+      return buildEffectiveColumnRegistryFromState({
+        csvData,
+        canonicalCsvData,
+        columnProfiles,
+        datasetSemanticSnapshot,
+        userColumnAnnotations,
+        latestAnalysisSession: steering ? { analysisSteering: steering } : void 0,
+        columnRegistry
+      }, {
+        datasetOverride: activeDataset,
+        semanticSnapshotOverride: viewMode === "raw" ? null : datasetSemanticSnapshot
+      });
+    },
+    [activeDataset, columnProfiles, columnRegistry, datasetSemanticSnapshot, userColumnAnnotations, viewMode]
   );
   const handleQuerySubmit = () => {
     if (filterText.trim()) {
@@ -368,7 +378,9 @@ const useSpreadsheetLogic = (isVisible) => {
     }
   };
   const effectiveFilterFunction = viewMode !== "raw" ? spreadsheetFilterFunction : null;
+  const _pd0 = performance.now();
   const processedData = useSpreadsheetData(activeDataset, filterText, effectiveFilterFunction);
+  const _pd1 = performance.now();
   const displayColumns = reactExports.useMemo(() => {
     if (isQueryResultView) {
       return (activeDataQuery == null ? void 0 : activeDataQuery.result.selectedColumns) ?? [];
@@ -381,11 +393,17 @@ const useSpreadsheetLogic = (isVisible) => {
       displayColumns.map((column) => [column, displayLabelMap[column]]).filter((entry) => Boolean(entry[1] && entry[1] !== entry[0]))
     );
   }, [displayColumns, viewColumnRegistry]);
-  const displayColumnLabels = reactExports.useMemo(() => ({
-    ...buildColumnDisplayLabels(headers, analysisCards.map((card) => card.plan), inferredColumnLabels),
-    ...registryDisplayLabels
-  }), [analysisCards, headers, inferredColumnLabels, registryDisplayLabels]);
+  const displayColumnLabels = reactExports.useMemo(() => {
+    var _a, _b;
+    const plans = useAppStore.getState().analysisCards.map((c) => c.plan);
+    const labels = ((_b = (_a = useAppStore.getState().latestAnalysisSession) == null ? void 0 : _a.analysisSteering) == null ? void 0 : _b.inferredColumnLabels) ?? {};
+    return {
+      ...buildColumnDisplayLabels(headers, plans, labels),
+      ...registryDisplayLabels
+    };
+  }, [headers, registryDisplayLabels]);
   const semanticHiddenRowCount = getSemanticHiddenRowCount(datasetSemanticSnapshot, semanticDatasetVersion, preferredDataset);
+  console.log(`[Perf:Diag] useSpreadsheetLogic: ${Math.round(performance.now() - _hookT0)}ms (registry=${Math.round(_pd0 - _vcr0)}ms, processedData=${Math.round(_pd1 - _pd0)}ms)`);
   return {
     activeDataset,
     processedData,
@@ -582,7 +600,12 @@ const SpreadsheetPanel = ({ isVisible }) => {
               rows: processedData,
               language,
               accentColor: "slate",
-              onRequestCard: (msg) => void useAppStore.getState().handleChatMessage(msg, { source: "action" })
+              onRequestCard: (msg, precomputedData) => {
+                if (precomputedData == null ? void 0 : precomputedData.length) {
+                  useAppStore.getState().setPendingPrecomputedCardData(precomputedData);
+                }
+                void useAppStore.getState().handleChatMessage(msg, { source: "action" });
+              }
             }
           )
         }

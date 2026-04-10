@@ -19470,6 +19470,181 @@ var DefaultStreamTextResult = class {
 };
 createIdGenerator({ prefix: "aiobj", size: 24 });
 createIdGenerator({ prefix: "aiobj", size: 24 });
+function defaultTransform(text2) {
+  return text2.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "").trim();
+}
+function extractJsonMiddleware(options) {
+  var _a21;
+  const transform = (_a21 = void 0) != null ? _a21 : defaultTransform;
+  return {
+    specificationVersion: "v3",
+    wrapGenerate: async ({ doGenerate }) => {
+      const { content, ...rest } = await doGenerate();
+      const transformedContent = [];
+      for (const part of content) {
+        if (part.type !== "text") {
+          transformedContent.push(part);
+          continue;
+        }
+        transformedContent.push({
+          ...part,
+          text: transform(part.text)
+        });
+      }
+      return { content: transformedContent, ...rest };
+    },
+    wrapStream: async ({ doStream }) => {
+      const { stream, ...rest } = await doStream();
+      const textBlocks = {};
+      const SUFFIX_BUFFER_SIZE = 12;
+      return {
+        stream: stream.pipeThrough(
+          new TransformStream({
+            transform: (chunk, controller) => {
+              if (chunk.type === "text-start") {
+                textBlocks[chunk.id] = {
+                  startEvent: chunk,
+                  // Custom transforms need to buffer all content
+                  phase: "prefix",
+                  buffer: "",
+                  prefixStripped: false
+                };
+                return;
+              }
+              if (chunk.type === "text-delta") {
+                const block = textBlocks[chunk.id];
+                if (!block) {
+                  controller.enqueue(chunk);
+                  return;
+                }
+                block.buffer += chunk.delta;
+                if (block.phase === "buffering") {
+                  return;
+                }
+                if (block.phase === "prefix") {
+                  if (block.buffer.length > 0 && !block.buffer.startsWith("`")) {
+                    block.phase = "streaming";
+                    controller.enqueue(block.startEvent);
+                  } else if (block.buffer.startsWith("```")) {
+                    if (block.buffer.includes("\n")) {
+                      const prefixMatch = block.buffer.match(/^```(?:json)?\s*\n/);
+                      if (prefixMatch) {
+                        block.buffer = block.buffer.slice(
+                          prefixMatch[0].length
+                        );
+                        block.prefixStripped = true;
+                        block.phase = "streaming";
+                        controller.enqueue(block.startEvent);
+                      } else {
+                        block.phase = "streaming";
+                        controller.enqueue(block.startEvent);
+                      }
+                    }
+                  } else if (block.buffer.length >= 3 && !block.buffer.startsWith("```")) {
+                    block.phase = "streaming";
+                    controller.enqueue(block.startEvent);
+                  }
+                }
+                if (block.phase === "streaming" && block.buffer.length > SUFFIX_BUFFER_SIZE) {
+                  const toStream = block.buffer.slice(0, -SUFFIX_BUFFER_SIZE);
+                  block.buffer = block.buffer.slice(-SUFFIX_BUFFER_SIZE);
+                  controller.enqueue({
+                    type: "text-delta",
+                    id: chunk.id,
+                    delta: toStream
+                  });
+                }
+                return;
+              }
+              if (chunk.type === "text-end") {
+                const block = textBlocks[chunk.id];
+                if (block) {
+                  if (block.phase === "prefix" || block.phase === "buffering") {
+                    controller.enqueue(block.startEvent);
+                  }
+                  let remaining = block.buffer;
+                  if (block.phase === "buffering") {
+                    remaining = transform(remaining);
+                  } else if (block.prefixStripped) {
+                    remaining = remaining.replace(/\n?```\s*$/, "").trimEnd();
+                  } else {
+                    remaining = transform(remaining);
+                  }
+                  if (remaining.length > 0) {
+                    controller.enqueue({
+                      type: "text-delta",
+                      id: chunk.id,
+                      delta: remaining
+                    });
+                  }
+                  controller.enqueue(chunk);
+                  delete textBlocks[chunk.id];
+                  return;
+                }
+              }
+              controller.enqueue(chunk);
+            }
+          })
+        ),
+        ...rest
+      };
+    }
+  };
+}
+var wrapLanguageModel = ({
+  model,
+  middleware: middlewareArg,
+  modelId,
+  providerId
+}) => {
+  return [...asArray(middlewareArg)].reverse().reduce((wrappedModel, middleware) => {
+    return doWrap({ model: wrappedModel, middleware, modelId, providerId });
+  }, model);
+};
+var doWrap = ({
+  model,
+  middleware: {
+    transformParams,
+    wrapGenerate,
+    wrapStream,
+    overrideProvider,
+    overrideModelId,
+    overrideSupportedUrls
+  },
+  modelId,
+  providerId
+}) => {
+  var _a21, _b9, _c;
+  async function doTransform({
+    params,
+    type
+  }) {
+    return transformParams ? await transformParams({ params, type, model }) : params;
+  }
+  return {
+    specificationVersion: "v3",
+    provider: (_a21 = providerId != null ? providerId : overrideProvider == null ? void 0 : overrideProvider({ model })) != null ? _a21 : model.provider,
+    modelId: (_b9 = modelId != null ? modelId : overrideModelId == null ? void 0 : overrideModelId({ model })) != null ? _b9 : model.modelId,
+    supportedUrls: (_c = overrideSupportedUrls == null ? void 0 : overrideSupportedUrls({ model })) != null ? _c : model.supportedUrls,
+    async doGenerate(params) {
+      const transformedParams = await doTransform({ params, type: "generate" });
+      const doGenerate = async () => model.doGenerate(transformedParams);
+      const doStream = async () => model.doStream(transformedParams);
+      return wrapGenerate ? wrapGenerate({
+        doGenerate,
+        doStream,
+        params: transformedParams,
+        model
+      }) : doGenerate();
+    },
+    async doStream(params) {
+      const transformedParams = await doTransform({ params, type: "stream" });
+      const doGenerate = async () => model.doGenerate(transformedParams);
+      const doStream = async () => model.doStream(transformedParams);
+      return wrapStream ? wrapStream({ doGenerate, doStream, params: transformedParams, model }) : doStream();
+    }
+  };
+};
 const index = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   AISDKError,
@@ -19507,6 +19682,7 @@ const index = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.definePropert
   createIdGenerator,
   createTextStreamResponse,
   createUIMessageStreamResponse,
+  extractJsonMiddleware,
   gateway,
   generateId,
   generateText,
@@ -19525,14 +19701,17 @@ const index = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.definePropert
   tool,
   toolModelMessageSchema,
   userModelMessageSchema,
+  wrapLanguageModel,
   zodSchema
 }, Symbol.toStringTag, { value: "Module" }));
 export {
   createGoogleGenerativeAI as a,
   createOpenAI as c,
+  extractJsonMiddleware as e,
   generateText as g,
   index as i,
   jsonSchema as j,
   output_exports as o,
-  streamText as s
+  streamText as s,
+  wrapLanguageModel as w
 };

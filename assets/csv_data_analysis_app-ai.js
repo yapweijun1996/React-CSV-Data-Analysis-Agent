@@ -1,6 +1,6 @@
-import { c as createOpenAI, a as createGoogleGenerativeAI, g as generateText, o as output_exports, j as jsonSchema } from "./csv_data_analysis_vendor-ai-sdk.js";
-import { R as PROVIDER_GEMINI_CONTEXT_WINDOW, S as PROVIDER_MIN_KEEP_RECENT_TOKENS, T as PROVIDER_KEEP_RECENT_RATIO, U as PROVIDER_MIN_RESERVE_TOKENS, V as PROVIDER_RESERVE_RATIO, W as PROVIDER_GPT_CONTEXT_WINDOW, X as getForceFallbackModel, b as isRuntimeAbortError, Y as safeJsonStringify, Z as resolveLongSessionContextPolicy, _ as getDataQueryTraceLabel, $ as evaluateAutoAnalysisCards, a0 as resolveToolOutputCutoff, a1 as CONTEXT_CHAT_SOFT_BUDGET_CAP, a2 as CONTEXT_PLANNER_SOFT_BUDGET_CAP, a3 as CONTEXT_SUMMARY_SOFT_BUDGET_CAP, a4 as CONTEXT_RUNTIME_EVAL_SOFT_BUDGET_CAP, t as throwIfAborted, a5 as CONTEXT_SUMMARY_TRIGGER_LENGTH, a6 as CONTEXT_SUMMARY_REFRESH_DELTA, a7 as __vitePreload, a8 as CONTEXT_COMPACTION_SUMMARY_MAX_PARTS, a9 as CONTEXT_COMPACTION_SUMMARY_OVERHEAD_TOKENS, aa as CONTEXT_COMPACTION_SAFETY_MARGIN, ab as buildMergedBoundaryHeaders, ac as reportStructureProposalSchema, ad as normalizeReportCellText, ae as intakeStructureBoundarySchema, af as reportContextExtractionSchema, ag as sanitizeAiExtractedReportContext, ah as mergeAiExtractedReportContextWithFallback, ai as createFallbackReportContext, aj as applyDataOperations, ak as reconcileAiCleaningStep, al as isRepeatedAttributeBundleTable, am as ensureStructuralMetadataOutputColumns, an as detectReportShape, ao as buildWideReshapeFallbackAction, ap as buildDeterministicCleaningFallbackAction, aq as normalizeUnpivotHierarchyDepthMappings, ar as verifyCleanedDatasetShape, as as buildReshapeHypotheses, at as getDataPreparationProviderSchema, au as normalizeDataPreparationPlan, av as isWideReportShape, aw as createAiCleaningProgramFromPlan, ax as createId, ay as sqlPrecheckAssessmentSchema, az as buildRuntimeStepContract, aA as resolveAllowedTools, aB as buildToolAvailabilityContext, aC as buildBuiltinToolRegistry, aD as ALL_RUNTIME_TOOLS, z as buildAnalysisIntentBrief, K as resolveEffectiveReportContext, aE as formatAnalystCapabilitySelection, aF as formatDatasetSemanticsForPrompt, aG as formatAnalysisIntentBrief, aH as formatReportContextForPrompt, aI as formatRuntimeStepContract, aJ as createChatDecisionSchema, aK as filterFunctionSchema, aL as emitSilentFailure, P as buildAnalysisRankingHints, aM as analysisGoalCandidateSchema, r as robustlyParseJsonObject, aN as proactiveInsightSchema, aO as normalizeToolAvailabilityContext, aP as getWorkspaceRuleViolation, aQ as buildSemanticDatasetVersion, x as buildDatasetContext, aR as datasetSemanticAnnotationSchema, aS as sanitizeDatasetSemanticSnapshot, aT as inferTabularShapeContext, aU as detectTabularRowRole, aV as cardEnhancementSuggestionsSchema } from "./csv_data_analysis_app-agent.js";
-import { s as selectNarrativeAnalysisInputs, c as buildNarrativeAnalysisIrInputList, i as formatNarrativeAnalysisInputs, j as buildDisplayCardContext, h as formatColumnDisplayHints } from "./csv_data_analysis_app-reporting.js";
+import { w as wrapLanguageModel, c as createOpenAI, a as createGoogleGenerativeAI, g as generateText, e as extractJsonMiddleware, s as streamText, o as output_exports, j as jsonSchema } from "./csv_data_analysis_vendor-ai-sdk.js";
+import { P as PROVIDER_GEMINI_CONTEXT_WINDOW, L as PROVIDER_MIN_KEEP_RECENT_TOKENS, M as PROVIDER_KEEP_RECENT_RATIO, N as PROVIDER_MIN_RESERVE_TOKENS, O as PROVIDER_RESERVE_RATIO, Q as PROVIDER_GEMMA_CONTEXT_WINDOW, R as PROVIDER_GPT_CONTEXT_WINDOW, S as getForceFallbackModel, T as raceWithActivityTimeout, b as isRuntimeAbortError, U as getDataOperationSchemaForTypes, V as getDataOperationSchema, W as safeJsonStringify, X as resolveLongSessionContextPolicy, Y as getDataQueryTraceLabel, Z as evaluateAutoAnalysisCards, _ as resolveToolOutputCutoff, $ as CONTEXT_CHAT_SOFT_BUDGET_CAP, a0 as CONTEXT_PLANNER_SOFT_BUDGET_CAP, a1 as CONTEXT_SUMMARY_SOFT_BUDGET_CAP, a2 as CONTEXT_RUNTIME_EVAL_SOFT_BUDGET_CAP, t as throwIfAborted, a3 as CONTEXT_SUMMARY_TRIGGER_LENGTH, a4 as CONTEXT_SUMMARY_REFRESH_DELTA, a5 as __vitePreload, a6 as CONTEXT_COMPACTION_SUMMARY_MAX_PARTS, a7 as CONTEXT_COMPACTION_SUMMARY_OVERHEAD_TOKENS, a8 as CONTEXT_COMPACTION_SAFETY_MARGIN, a9 as buildMergedBoundaryHeaders, aa as normalizeReportCellText, ab as sanitizeAiExtractedReportContext, ac as mergeAiExtractedReportContextWithFallback, ad as createFallbackReportContext, ae as applyDataOperations, af as reconcileAiCleaningStep, ag as isRepeatedAttributeBundleTable, ah as ensureStructuralMetadataOutputColumns, ai as detectReportShape, aj as buildWideReshapeFallbackAction, ak as buildDeterministicCleaningFallbackAction, al as normalizeUnpivotHierarchyDepthMappings, am as verifyCleanedDatasetShape, an as buildReshapeHypotheses, ao as normalizeDataPreparationPlan, ap as isWideReportShape, aq as createAiCleaningProgramFromPlan, ar as createId, as as buildRuntimeStepContract, at as resolveAllowedTools, au as buildToolAvailabilityContext, av as buildBuiltinToolRegistry, aw as ALL_RUNTIME_TOOLS, u as buildAnalysisIntentBrief, E as resolveEffectiveReportContext, ax as formatAnalystCapabilitySelection, ay as formatDatasetSemanticsForPrompt, az as formatAnalysisIntentBrief, aA as formatReportContextForPrompt, aB as formatRuntimeStepContract, aC as emitSilentFailure, J as buildAnalysisRankingHints, r as robustlyParseJsonObject, aD as normalizeToolAvailabilityContext, aE as getWorkspaceRuleViolation, aF as buildSemanticDatasetVersion, q as buildDatasetContext, aG as sanitizeDatasetSemanticSnapshot, aH as inferTabularShapeContext, aI as detectTabularRowRole } from "./csv_data_analysis_app-agent.js";
+import { h as formatColumnDisplayHints, s as selectNarrativeAnalysisInputs, c as buildNarrativeAnalysisIrInputList, i as formatNarrativeAnalysisInputs, j as buildDisplayCardContext } from "./csv_data_analysis_app-reporting.js";
 const GOOGLE_MODELS = [
   "gemini-3.1-pro-preview",
   "gemini-3.1-flash-lite-preview",
@@ -8,7 +8,9 @@ const GOOGLE_MODELS = [
   "gemini-3-flash-preview",
   "gemini-2.5-flash-lite",
   "gemini-2.5-flash",
-  "gemini-2.5-pro"
+  "gemini-2.5-pro",
+  "gemma-4-31b-it",
+  "gemma-4-26b-a4b-it"
 ];
 const OPENAI_MODELS = [
   "gpt-5-nano",
@@ -39,6 +41,15 @@ const resolveModelContextProfile = (settings, modelOverride) => {
       strategy: "model_aware"
     };
   }
+  if (settings.provider === "google" && modelId.startsWith("gemma")) {
+    const contextWindow = PROVIDER_GEMMA_CONTEXT_WINDOW;
+    return {
+      contextWindow,
+      reserveTokens: Math.max(PROVIDER_MIN_RESERVE_TOKENS, Math.floor(contextWindow * PROVIDER_RESERVE_RATIO)),
+      keepRecentTokens: Math.max(PROVIDER_MIN_KEEP_RECENT_TOKENS, Math.floor(contextWindow * PROVIDER_KEEP_RECENT_RATIO)),
+      strategy: "model_aware"
+    };
+  }
   if (settings.provider === "openai" && modelId.startsWith("gpt-")) {
     const contextWindow = PROVIDER_GPT_CONTEXT_WINDOW;
     return {
@@ -55,18 +66,25 @@ const resolveModelContextProfile = (settings, modelOverride) => {
     strategy: "fallback_static"
   };
 };
+const jsonFenceMiddleware = extractJsonMiddleware();
 const createProviderModel = (settings, modelOverride) => {
   const modelId = resolveProviderModelId(settings, modelOverride);
   const apiKey = resolveProviderApiKey(settings);
   if (settings.provider === "openai") {
     return {
       modelId,
-      model: createOpenAI({ apiKey })(modelId)
+      model: wrapLanguageModel({
+        model: createOpenAI({ apiKey })(modelId),
+        middleware: jsonFenceMiddleware
+      })
     };
   }
   return {
     modelId,
-    model: createGoogleGenerativeAI({ apiKey })(modelId)
+    model: wrapLanguageModel({
+      model: createGoogleGenerativeAI({ apiKey })(modelId),
+      middleware: jsonFenceMiddleware
+    })
   };
 };
 const resolveFallbackModelId = (settings, primaryModelId) => {
@@ -155,6 +173,30 @@ const providerConfig = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defi
   resolveProviderModelId,
   validateProviderHealth
 }, Symbol.toStringTag, { value: "Module" }));
+const DEFAULT_ACTIVITY_TIMEOUT_MS = 3e4;
+const streamGenerateText = async (options) => {
+  const { activityTimeoutMs = DEFAULT_ACTIVITY_TIMEOUT_MS, ...streamOptions } = options;
+  const stream = streamText(streamOptions);
+  const { promise, signalActivity } = raceWithActivityTimeout(
+    (async () => {
+      for await (const part of stream.fullStream) {
+        signalActivity();
+      }
+      const [text, finishReason] = await Promise.all([
+        stream.text,
+        stream.finishReason
+      ]);
+      let output = void 0;
+      try {
+        output = await stream.output;
+      } catch {
+      }
+      return { text, finishReason, output };
+    })(),
+    activityTimeoutMs
+  );
+  return promise;
+};
 const cloneSchema = (value) => JSON.parse(JSON.stringify(value));
 const isRecord = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 const inferEnumType = (values) => {
@@ -296,7 +338,7 @@ const prepareSchemaForProvider = (schema, provider) => {
   if (provider === "google") return sanitizeGoogleSchemaNode(cloned);
   return sanitizeOpenAiSchemaNode(cloned);
 };
-const LOG_PREFIX$4 = "[TransientRetry]";
+const LOG_PREFIX$3 = "[TransientRetry]";
 const TRANSIENT_ERROR_PATTERNS = [
   "UNAVAILABLE",
   "503",
@@ -331,6 +373,17 @@ const isPermanentProviderError = (error) => {
   const lower = getErrorMessage$1(error).toLowerCase();
   return PERMANENT_ERROR_PATTERNS.some((p) => lower.includes(p.toLowerCase()));
 };
+const parseRetryAfterMs = (error) => {
+  var _a;
+  const resp = error == null ? void 0 : error.response;
+  const raw = (_a = resp == null ? void 0 : resp.headers) == null ? void 0 : _a["retry-after"];
+  if (typeof raw === "string") {
+    const seconds = parseInt(raw, 10);
+    if (!isNaN(seconds) && seconds > 0) return seconds * 1e3;
+  }
+  if (typeof raw === "number" && raw > 0) return raw * 1e3;
+  return -1;
+};
 const computeDelay = (attempt, baseMs, maxMs) => {
   const exponential = baseMs * Math.pow(2, attempt);
   const jittered = exponential * (1 + Math.random() * 0.2);
@@ -360,21 +413,30 @@ async function withTransientRetry(execute, options) {
     maxSameModelRetries = 1,
     baseDelayMs = 500,
     maxDelayMs = 8e3,
-    onRetry
+    onRetry,
+    shouldRetry,
+    maxFallbackRetries = 0
   } = options;
-  const tag = label ? `${LOG_PREFIX$4} ${label}` : LOG_PREFIX$4;
+  const tag = label ? `${LOG_PREFIX$3} ${label}` : LOG_PREFIX$3;
   let firstError = null;
+  const callStartMs = performance.now();
   for (let attempt = 0; attempt <= maxSameModelRetries; attempt++) {
     try {
-      return await execute(void 0);
+      const result = await execute(void 0);
+      const durationMs = Math.round(performance.now() - callStartMs);
+      console.log(`[Perf:AI] ${label ?? "unknown"} | model=${primaryModelId} | ${durationMs}ms | attempt=${attempt + 1}`);
+      return result;
     } catch (error) {
       if (isRuntimeAbortError(error, abortSignal)) throw error;
       if (isPermanentProviderError(error)) throw error;
       firstError ?? (firstError = error);
-      if (!isTransientProviderError(error)) throw error;
+      const customVerdict = shouldRetry == null ? void 0 : shouldRetry(error, attempt);
+      if (customVerdict === false) throw error;
+      if (customVerdict !== true && !isTransientProviderError(error)) throw error;
       if (attempt >= maxSameModelRetries) break;
-      const delayMs = computeDelay(attempt, baseDelayMs, maxDelayMs);
-      const totalMaxAttempts = maxSameModelRetries + 1 + 1;
+      const retryAfterMs = parseRetryAfterMs(error);
+      const delayMs = retryAfterMs > 0 ? Math.min(retryAfterMs, maxDelayMs) : computeDelay(attempt, baseDelayMs, maxDelayMs);
+      const totalMaxAttempts = maxSameModelRetries + 1 + maxFallbackRetries + 1;
       console.warn(
         `${tag}: retry ${attempt + 1}/${totalMaxAttempts} (same_model) after ${getErrorMessage$1(error).slice(0, 80)}, delay ${Math.round(delayMs)}ms`
       );
@@ -391,23 +453,31 @@ async function withTransientRetry(execute, options) {
   }
   const fallback = createFallbackProviderModel(settings, primaryModelId);
   if (fallback) {
-    const totalMaxAttempts = maxSameModelRetries + 1 + 1;
-    console.warn(
-      `${tag}: retry ${totalMaxAttempts}/${totalMaxAttempts} (fallback_model: ${fallback.modelId})`
-    );
-    onRetry == null ? void 0 : onRetry({
-      attempt: maxSameModelRetries + 1 + 1,
-      maxAttempts: totalMaxAttempts,
-      delayMs: 0,
-      error: firstError,
-      label,
-      strategy: "fallback_model"
-    });
-    try {
-      return await execute(fallback.model);
-    } catch (fallbackError) {
-      if (isRuntimeAbortError(fallbackError, abortSignal)) throw fallbackError;
-      console.error(`${tag}: fallback model "${fallback.modelId}" also failed:`, fallbackError);
+    const totalMaxAttempts = maxSameModelRetries + 1 + maxFallbackRetries + 1;
+    for (let fbAttempt = 0; fbAttempt <= maxFallbackRetries; fbAttempt++) {
+      const attemptNumber = maxSameModelRetries + 1 + fbAttempt + 1;
+      if (fbAttempt > 0) {
+        const fbDelayMs = computeDelay(fbAttempt - 1, baseDelayMs, maxDelayMs);
+        console.warn(`${tag}: fallback retry ${fbAttempt}/${maxFallbackRetries} after transient error, delay ${Math.round(fbDelayMs)}ms`);
+        await abortableSleep(fbDelayMs, abortSignal);
+      }
+      console.warn(`${tag}: retry ${attemptNumber}/${totalMaxAttempts} (fallback_model: ${fallback.modelId})`);
+      onRetry == null ? void 0 : onRetry({
+        attempt: attemptNumber,
+        maxAttempts: totalMaxAttempts,
+        delayMs: 0,
+        error: firstError,
+        label,
+        strategy: "fallback_model"
+      });
+      try {
+        return await execute(fallback.model);
+      } catch (fallbackError) {
+        if (isRuntimeAbortError(fallbackError, abortSignal)) throw fallbackError;
+        if (isPermanentProviderError(fallbackError)) break;
+        if (!isTransientProviderError(fallbackError)) break;
+        console.error(`${tag}: fallback model "${fallback.modelId}" attempt ${fbAttempt + 1} failed:`, fallbackError);
+      }
     }
   }
   throw firstError;
@@ -417,8 +487,565 @@ const transientRetry = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defi
   TRANSIENT_ERROR_PATTERNS,
   isPermanentProviderError,
   isTransientProviderError,
+  parseRetryAfterMs,
   withTransientRetry
 }, Symbol.toStringTag, { value: "Module" }));
+const PRE_FILTER_OPERATORS = [
+  "eq",
+  "neq",
+  "gt",
+  "gte",
+  "lt",
+  "lte",
+  "between",
+  "contains",
+  "starts_with",
+  "ends_with",
+  "in",
+  "not_in"
+];
+const AGGREGATION_ENUM = [
+  "sum",
+  "count",
+  "avg",
+  "count_distinct",
+  "min",
+  "max",
+  "median",
+  "percentile"
+];
+const createAnalysisTopicsSchema = (minTopics = 4, maxTopics = 8) => ({
+  type: "object",
+  properties: {
+    topics: {
+      type: "array",
+      description: `An array of ${minTopics} to ${maxTopics} distinct, high-level analysis topics or questions.`,
+      items: { type: "string" }
+    }
+  },
+  required: ["topics"]
+});
+const createPlanSchema = (columnNames) => ({
+  type: "object",
+  properties: {
+    chartType: { type: "string", enum: ["bar", "line", "multi_line", "pie", "doughnut", "scatter", "combo", "radar", "bubble"], description: "Type of chart to generate. Use multi_line when comparing multiple numeric columns (e.g., monthly values as separate series)." },
+    title: { type: "string", description: "A concise title for the analysis." },
+    description: { type: "string", description: "A brief explanation of what the analysis shows." },
+    aggregation: { type: "string", enum: [...AGGREGATION_ENUM], description: "The aggregation function to apply. Omit for scatter charts." },
+    groupByColumn: { type: "string", enum: columnNames, description: "The column to group data by (categorical). Omit for scatter charts." },
+    valueColumn: { type: "string", enum: columnNames, description: 'The column for aggregation (numerical). Not needed for "count" or multi_line.' },
+    valueColumns: { type: "array", items: { type: "string", enum: columnNames }, description: "Multiple value columns for multi-series charts. Use instead of valueColumn when comparing 3+ numeric columns (e.g., monthly period columns)." },
+    xValueColumn: { type: "string", enum: columnNames, description: "The column for the X-axis of a scatter plot (numerical). Required for scatter plots." },
+    yValueColumn: { type: "string", enum: columnNames, description: "The column for the Y-axis of a scatter plot (numerical). Required for scatter plots." },
+    secondaryValueColumn: { type: "string", enum: columnNames, description: "For combo charts, the secondary column for aggregation (numerical)." },
+    secondaryAggregation: { type: "string", enum: [...AGGREGATION_ENUM], description: "For combo charts, the aggregation for the secondary value column." },
+    defaultTopN: { type: "integer", description: "Optional. If the analysis has many categories, this suggests a default Top N view (e.g., 8)." },
+    defaultHideOthers: { type: "boolean", description: 'Optional. If using defaultTopN, suggests whether to hide the "Others" category by default.' },
+    preFilter: {
+      type: "array",
+      description: "Optional. An array of filters to apply to the data *before* aggregation. Use this to scope an analysis, e.g., to a specific Category or Region.",
+      items: {
+        type: "object",
+        properties: {
+          column: { type: "string", enum: columnNames, description: "The column to filter on." },
+          value: {
+            anyOf: [
+              { type: "string" },
+              { type: "number" },
+              { type: "array", items: { anyOf: [{ type: "string" }, { type: "number" }] } }
+            ],
+            description: "The value to filter for."
+          },
+          operator: {
+            type: "string",
+            enum: [...PRE_FILTER_OPERATORS],
+            description: "Optional filter operator. Defaults to exact match when omitted."
+          }
+        },
+        required: ["column", "value"]
+      }
+    }
+  },
+  required: ["chartType", "title", "description"],
+  additionalProperties: false
+});
+const analysisPlanObjectSchema = createPlanSchema([]);
+const createSqlAnalysisPlanSchema = (columnNames) => ({
+  type: "object",
+  properties: {
+    chartType: { type: "string", enum: ["bar", "line", "multi_line", "pie", "doughnut", "scatter", "combo", "radar", "bubble"] },
+    title: { type: "string" },
+    description: { type: "string" },
+    queryMode: { type: "string", enum: ["aggregate", "rowset"] },
+    aggregation: { type: "string", enum: [...AGGREGATION_ENUM] },
+    secondaryAggregation: { type: "string", enum: [...AGGREGATION_ENUM] },
+    defaultTopN: { type: "integer" },
+    defaultHideOthers: { type: "boolean" },
+    bindings: {
+      type: "object",
+      properties: {
+        groupByColumn: { type: "string", enum: columnNames },
+        valueColumn: { type: "string" },
+        valueColumns: { type: "array", items: { type: "string" }, description: "Multiple value columns for multi-series rendering." },
+        secondaryValueColumn: { type: "string" },
+        xValueColumn: { type: "string", enum: columnNames },
+        yValueColumn: { type: "string", enum: columnNames }
+      },
+      required: []
+    },
+    query: {
+      type: "object",
+      properties: {
+        select: { type: "array", items: { type: "string" } },
+        groupBy: { type: "array", items: { type: "string", enum: columnNames } },
+        aggregates: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              function: { type: "string", enum: ["sum", "count", "avg", "count_distinct", "min", "max", "median", "percentile"] },
+              column: { type: "string", enum: columnNames },
+              as: { type: "string" },
+              percentile: { type: "number", minimum: 0, maximum: 1 },
+              where: {
+                type: "object",
+                properties: {
+                  predicates: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        column: { type: "string", enum: columnNames },
+                        operator: { type: "string", enum: ["eq", "neq", "gt", "gte", "lt", "lte", "between", "contains", "starts_with", "ends_with", "in", "is_null", "not_null"] },
+                        value: {}
+                      },
+                      required: ["column", "operator"]
+                    }
+                  },
+                  groups: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        predicates: {
+                          type: "array",
+                          items: {
+                            type: "object",
+                            properties: {
+                              column: { type: "string", enum: columnNames },
+                              operator: { type: "string", enum: ["eq", "neq", "gt", "gte", "lt", "lte", "between", "contains", "starts_with", "ends_with", "in", "is_null", "not_null"] },
+                              value: {}
+                            },
+                            required: ["column", "operator"]
+                          }
+                        }
+                      },
+                      required: ["predicates"]
+                    }
+                  }
+                }
+              }
+            },
+            required: ["function", "as"]
+          }
+        },
+        where: {
+          type: "object",
+          properties: {
+            predicates: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  column: { type: "string", enum: columnNames },
+                  operator: { type: "string", enum: ["eq", "neq", "gt", "gte", "lt", "lte", "between", "contains", "starts_with", "ends_with", "in", "is_null", "not_null"] },
+                  value: {}
+                },
+                required: ["column", "operator"]
+              }
+            },
+            groups: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  predicates: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        column: { type: "string", enum: columnNames },
+                        operator: { type: "string", enum: ["eq", "neq", "gt", "gte", "lt", "lte", "between", "contains", "starts_with", "ends_with", "in", "is_null", "not_null"] },
+                        value: {}
+                      },
+                      required: ["column", "operator"]
+                    }
+                  }
+                },
+                required: ["predicates"]
+              }
+            }
+          }
+        },
+        orderBy: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              column: { type: "string" },
+              direction: { type: "string", enum: ["asc", "desc"] }
+            },
+            required: ["column", "direction"]
+          }
+        },
+        limit: { type: "integer" }
+      },
+      required: []
+    }
+  },
+  required: ["chartType", "title", "description", "queryMode", "query", "bindings"],
+  additionalProperties: false
+});
+const createSqlEvidenceQueryPlanSchema = (columnNames) => ({
+  type: "object",
+  properties: {
+    title: { type: "string" },
+    queryMode: { type: "string", enum: ["aggregate", "rowset"] },
+    intentSummary: { type: "string" },
+    preferredResultShape: {
+      type: "string",
+      enum: ["ranked_aggregate", "time_series", "rowset_scatter_candidate", "detail_table"]
+    },
+    preFilter: {
+      type: "array",
+      description: "Optional canonical pre-aggregation filter contract that must also be reflected in the final SQL WHERE clause.",
+      items: {
+        type: "object",
+        properties: {
+          column: { type: "string", enum: columnNames },
+          value: {},
+          operator: {
+            type: "string",
+            enum: [...PRE_FILTER_OPERATORS]
+          }
+        },
+        required: ["column", "value"],
+        additionalProperties: false
+      }
+    },
+    query: {
+      type: "object",
+      properties: {
+        select: { type: "array", items: { type: "string" } },
+        groupBy: { type: "array", items: { type: "string", enum: columnNames } },
+        aggregates: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              function: { type: "string", enum: ["sum", "count", "avg", "count_distinct", "min", "max", "median", "percentile"] },
+              column: { type: "string", enum: columnNames },
+              as: { type: "string" },
+              percentile: { type: "number", minimum: 0, maximum: 1 },
+              where: {
+                type: "object",
+                properties: {
+                  predicates: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        column: { type: "string", enum: columnNames },
+                        operator: { type: "string", enum: ["eq", "neq", "gt", "gte", "lt", "lte", "between", "contains", "starts_with", "ends_with", "in", "is_null", "not_null"] },
+                        value: {}
+                      },
+                      required: ["column", "operator"]
+                    }
+                  }
+                }
+              }
+            },
+            required: ["function", "as"]
+          }
+        },
+        where: {
+          type: "object",
+          properties: {
+            predicates: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  column: { type: "string", enum: columnNames },
+                  operator: { type: "string", enum: ["eq", "neq", "gt", "gte", "lt", "lte", "between", "contains", "starts_with", "ends_with", "in", "is_null", "not_null"] },
+                  value: {}
+                },
+                required: ["column", "operator"]
+              }
+            }
+          }
+        },
+        orderBy: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              column: { type: "string" },
+              direction: { type: "string", enum: ["asc", "desc"] }
+            },
+            required: ["column", "direction"]
+          }
+        },
+        limit: { type: "integer" }
+      },
+      required: ["select"],
+      additionalProperties: false
+    }
+  },
+  required: ["title", "queryMode", "query", "intentSummary"],
+  additionalProperties: false
+});
+const createToolCreatePlanSchema = (columnNames) => ({
+  oneOf: [
+    createSqlAnalysisPlanSchema(columnNames),
+    createPlanSchema(columnNames)
+  ],
+  description: "Return either a SQL-first plan with queryMode/query/bindings or a classic executable plan with groupByColumn/valueColumn bindings. Do not return visualization-only fields without executable bindings."
+});
+const proactiveInsightSchema = {
+  type: "object",
+  properties: {
+    insight: { type: "string", description: "A concise, user-facing message describing the single most important finding." },
+    cardId: { type: "string", description: "The ID of the card where this insight was observed." }
+  },
+  required: ["insight", "cardId"]
+};
+({
+  properties: {
+    nextAction: {
+      properties: {
+        plan: {
+          ...analysisPlanObjectSchema
+        }
+      }
+    }
+  }
+});
+const analysisGoalCandidateSchema = {
+  type: "object",
+  properties: {
+    goals: {
+      type: "array",
+      description: "An array of 2-3 distinct analysis goal candidates.",
+      items: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "A short, clear title for the goal (e.g., 'Analyze Regional Sales Performance')." },
+          description: { type: "string", description: "A one-sentence explanation of what this goal entails." },
+          confidence: { type: "number", description: "A score from 0.0 to 1.0 indicating your confidence that this is the user's primary goal." }
+        },
+        required: ["title", "description", "confidence"]
+      }
+    }
+  },
+  required: ["goals"]
+};
+const cardEnhancementSuggestionsSchema = {
+  type: "object",
+  properties: {
+    suggestions: {
+      type: "array",
+      description: "Up to three suggested improvements for the existing analysis cards.",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "Optional unique id for the suggestion." },
+          cardId: { type: "string", description: "The target card ID that should be enhanced." },
+          cardTitle: { type: "string", description: "Optional. Human-readable title of the card." },
+          rationale: { type: "string", description: "Why this enhancement matters." },
+          priority: { type: "string", enum: ["high", "medium", "low"], description: "How important this enhancement is." },
+          action: { type: "string", enum: ["add_calculated_column", "none"], description: 'Which tool to apply. Start with calculated columns; use "none" for informational suggestions.' },
+          proposedColumnName: { type: "string", description: "If action is add_calculated_column, name of the new column." },
+          formula: { type: "string", description: `Formula referencing existing columns with single quotes, e.g., "('Revenue' - 'Cost') / 'Revenue'".` },
+          updateChart: {
+            type: "object",
+            description: "Optional chart update instructions when adding a new column.",
+            properties: {
+              useAs: { type: "string", enum: ["primaryY", "secondaryY"] },
+              newChartType: { type: "string", enum: ["bar", "line", "pie", "doughnut", "scatter", "combo", "radar", "bubble"] }
+            },
+            required: ["useAs"]
+          }
+        },
+        required: ["cardId", "rationale", "priority", "action"]
+      }
+    }
+  },
+  required: ["suggestions"]
+};
+const analystMemoSchema = {
+  type: "object",
+  properties: {
+    role: {
+      type: "string",
+      enum: ["data_quality", "business", "risk"],
+      description: "The fixed analyst role that produced this memo."
+    },
+    headline: {
+      type: "string",
+      description: "A short headline that captures the role-specific conclusion."
+    },
+    summary: {
+      type: "string",
+      description: "A concise summary of the analyst view."
+    },
+    findings: {
+      type: "array",
+      description: "Role-specific findings grounded in the evidence bundle.",
+      items: {
+        type: "object",
+        properties: {
+          id: {
+            type: "string",
+            description: "A stable identifier for this finding."
+          },
+          claim: {
+            type: "string",
+            description: "The actual finding claim."
+          },
+          importance: {
+            type: "string",
+            enum: ["low", "medium", "high"],
+            description: "How important the finding is."
+          },
+          evidenceRefs: {
+            type: "array",
+            description: "Evidence ids from the provided evidence catalog.",
+            items: { type: "string" }
+          },
+          metricRefs: {
+            type: "array",
+            description: "Metric or column labels referenced by the finding.",
+            items: { type: "string" }
+          },
+          caveat: {
+            type: "string",
+            description: "Optional caveat that tempers the claim."
+          }
+        },
+        required: ["id", "claim", "importance", "evidenceRefs", "metricRefs"]
+      }
+    },
+    blockers: {
+      type: "array",
+      description: "Material blockers that prevent stronger conclusions.",
+      items: { type: "string" }
+    },
+    caveats: {
+      type: "array",
+      description: "Non-blocking caveats that limit confidence.",
+      items: { type: "string" }
+    },
+    confidence: {
+      type: "string",
+      enum: ["low", "medium", "high"],
+      description: "Overall confidence for this memo."
+    },
+    recommendedNextChecks: {
+      type: "array",
+      description: "Concrete next checks for the user or a later bounded report step.",
+      items: { type: "string" }
+    }
+  },
+  required: ["role", "headline", "summary", "findings", "blockers", "caveats", "confidence", "recommendedNextChecks"]
+};
+const forumSummarySchema = {
+  type: "object",
+  properties: {
+    consensusFindings: {
+      type: "array",
+      description: "Merged findings that can be carried into the report as consensus or near-consensus statements.",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "Stable identifier for the merged finding." },
+          claim: { type: "string", description: "Merged claim text suitable for the report." },
+          supportedByRoles: {
+            type: "array",
+            description: "The analyst roles that support this claim.",
+            items: {
+              type: "string",
+              enum: ["data_quality", "business", "risk"]
+            }
+          },
+          evidenceRefs: {
+            type: "array",
+            description: "Evidence ids from the evidence catalog.",
+            items: { type: "string" }
+          },
+          caveats: {
+            type: "array",
+            description: "Caveats that should stay attached to the finding.",
+            items: { type: "string" }
+          }
+        },
+        required: ["id", "claim", "supportedByRoles", "evidenceRefs", "caveats"]
+      }
+    },
+    disagreements: {
+      type: "array",
+      description: "Explicit unresolved or partially resolved disagreements across analysts.",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "Stable identifier for the disagreement." },
+          topic: { type: "string", description: "Short topic for the disagreement." },
+          positions: {
+            type: "array",
+            description: "Role-specific positions on the topic.",
+            items: {
+              type: "object",
+              properties: {
+                role: {
+                  type: "string",
+                  enum: ["data_quality", "business", "risk"]
+                },
+                stance: { type: "string", description: "How the role characterizes the issue." },
+                evidenceRefs: {
+                  type: "array",
+                  description: "Evidence ids backing that stance.",
+                  items: { type: "string" }
+                }
+              },
+              required: ["role", "stance", "evidenceRefs"]
+            }
+          },
+          resolution: {
+            type: "string",
+            enum: ["unresolved", "partially_resolved", "resolved"],
+            description: "Whether the disagreement is still open after aggregation."
+          }
+        },
+        required: ["id", "topic", "positions", "resolution"]
+      }
+    },
+    overallConfidence: {
+      type: "string",
+      enum: ["low", "medium", "high"],
+      description: "Overall confidence for the merged forum summary."
+    },
+    executiveSummary: {
+      type: "string",
+      description: "An executive summary that explains the final merged take."
+    },
+    recommendedActions: {
+      type: "array",
+      description: "Concrete actions to reduce risk or improve report readiness.",
+      items: { type: "string" }
+    }
+  },
+  required: ["consensusFindings", "disagreements", "overallConfidence", "executiveSummary", "recommendedActions"]
+};
 const buildPromptBundleView = (bundle) => ({
   dataset: bundle.dataset,
   workflow: {
@@ -517,6 +1144,823 @@ ${JSON.stringify(buildPromptMemoView(memos), null, 2)}
 EVIDENCE BUNDLE JSON:
 ${JSON.stringify(buildPromptBundleView(bundle), null, 2)}
 `;
+const filterPredicateSchema = {
+  type: "object",
+  properties: {
+    column: { type: "string", minLength: 1 },
+    operator: { type: "string", enum: ["eq", "neq", "gt", "gte", "lt", "lte", "between", "contains", "starts_with", "ends_with", "in", "is_null", "not_null"] },
+    value: {}
+  },
+  required: ["column", "operator"]
+};
+const filterPredicateGroupSchema = {
+  type: "object",
+  properties: {
+    predicates: {
+      type: "array",
+      items: filterPredicateSchema
+    }
+  },
+  required: ["predicates"]
+};
+const filterRowsOperationSchema = {
+  type: "object",
+  properties: {
+    id: { type: "string", description: "Unique operation identifier." },
+    type: { type: "string", enum: ["filter_rows"] },
+    reason: { type: "string", description: "Reason for applying this filter." },
+    predicates: {
+      type: "array",
+      items: filterPredicateSchema
+    },
+    groups: {
+      type: "array",
+      description: "Optional OR groups. Each group is AND-only internally; the overall result matches if any group matches.",
+      items: filterPredicateGroupSchema
+    }
+  },
+  required: ["id", "type", "reason"],
+  anyOf: [{ required: ["predicates"] }, { required: ["groups"] }]
+};
+const columnProfileSchema = {
+  type: "object",
+  properties: {
+    name: { type: "string", description: "The column name." },
+    type: { type: "string", enum: ["numerical", "categorical", "date", "time", "currency", "percentage"], description: "The data type of the column. Identify specific types like 'date', 'currency', etc., where possible." }
+  },
+  required: ["name", "type"]
+};
+const queryWhereSchema = {
+  type: "object",
+  properties: {
+    predicates: {
+      type: "array",
+      minItems: 1,
+      items: filterPredicateSchema
+    },
+    groups: {
+      type: "array",
+      minItems: 1,
+      items: {
+        type: "object",
+        properties: {
+          predicates: {
+            type: "array",
+            minItems: 1,
+            items: filterPredicateSchema
+          }
+        },
+        required: ["predicates"]
+      }
+    }
+  },
+  anyOf: [
+    { required: ["predicates"] },
+    { required: ["groups"] }
+  ]
+};
+const queryOrderBySchema = {
+  type: "object",
+  properties: {
+    column: { type: "string", minLength: 1 },
+    direction: { type: "string", enum: ["asc", "desc"] }
+  },
+  required: ["column", "direction"]
+};
+const postAggregatePredicateSchema = {
+  type: "object",
+  properties: {
+    column: { type: "string", minLength: 1 },
+    operator: { type: "string", enum: ["eq", "neq", "gt", "gte", "lt", "lte", "between", "is_null", "not_null"] },
+    value: {}
+  },
+  required: ["column", "operator"]
+};
+const queryAggregateSchema = {
+  anyOf: [
+    {
+      type: "object",
+      properties: {
+        function: { type: "string", enum: ["count"] },
+        column: { type: "string", minLength: 1, description: "Optional source column. Omit for row-count aggregation." },
+        as: { type: "string", minLength: 1, description: "Required output alias for this aggregate column." },
+        where: { ...queryWhereSchema, description: "Optional aggregate-scoped filter. Use this when each aggregate must summarize a different subset of source rows." }
+      },
+      required: ["function", "as"]
+    },
+    {
+      type: "object",
+      properties: {
+        function: { type: "string", enum: ["count_distinct", "sum", "avg", "min", "max", "median"] },
+        column: { type: "string", minLength: 1, description: "Required source column for numeric aggregates." },
+        as: { type: "string", minLength: 1, description: "Required output alias for this aggregate column." },
+        where: { ...queryWhereSchema, description: "Optional aggregate-scoped filter. Use this when each aggregate must summarize a different subset of source rows." }
+      },
+      required: ["function", "column", "as"]
+    },
+    {
+      type: "object",
+      properties: {
+        function: { type: "string", enum: ["percentile"] },
+        column: { type: "string", minLength: 1, description: "Required source column for percentile aggregation." },
+        as: { type: "string", minLength: 1, description: "Required output alias for this aggregate column." },
+        percentile: { type: "number", minimum: 0, maximum: 1 },
+        where: { ...queryWhereSchema, description: "Optional aggregate-scoped filter. Use this when each aggregate must summarize a different subset of source rows." }
+      },
+      required: ["function", "column", "as", "percentile"]
+    }
+  ]
+};
+const queryPlanSchema = {
+  type: "object",
+  properties: {
+    select: {
+      type: "array",
+      description: "Optional whitelist of columns to return.",
+      minItems: 1,
+      items: { type: "string", minLength: 1 }
+    },
+    where: queryWhereSchema,
+    groupBy: {
+      type: "array",
+      description: "Optional grouping columns for read-only summary queries. If present, pair them with aggregates.",
+      minItems: 1,
+      items: { type: "string", minLength: 1 }
+    },
+    aggregates: {
+      type: "array",
+      description: "Optional aggregate definitions for grouped or grand-total queries. Use bounded aggregate functions and give every aggregate a stable alias.",
+      minItems: 1,
+      items: queryAggregateSchema
+    },
+    postAggregateFilter: {
+      type: "object",
+      properties: {
+        predicates: {
+          type: "array",
+          minItems: 1,
+          items: postAggregatePredicateSchema
+        },
+        groups: {
+          type: "array",
+          minItems: 1,
+          items: {
+            type: "object",
+            properties: {
+              predicates: {
+                type: "array",
+                minItems: 1,
+                items: postAggregatePredicateSchema
+              }
+            },
+            required: ["predicates"]
+          }
+        }
+      },
+      anyOf: [
+        { required: ["predicates"] },
+        { required: ["groups"] }
+      ]
+    },
+    orderBy: {
+      type: "array",
+      description: "Optional list of bounded sort clauses. Every orderBy column must also appear in select.",
+      minItems: 1,
+      items: queryOrderBySchema
+    },
+    limit: {
+      type: "integer",
+      description: "Optional maximum rows to return. Runtime will clamp this to a safety limit.",
+      minimum: 0
+    }
+  },
+  anyOf: [
+    { required: ["select"] },
+    { required: ["where"] },
+    { required: ["groupBy"] },
+    { required: ["aggregates"] },
+    { required: ["postAggregateFilter"] },
+    { required: ["orderBy"] },
+    { required: ["limit"] }
+  ]
+};
+let _dataPreparationSchema = null;
+const getDataPreparationSchema = () => {
+  if (!_dataPreparationSchema) {
+    _dataPreparationSchema = {
+      type: "object",
+      properties: {
+        explanation: { type: "string", description: "A brief, user-facing explanation of the transformations that will be applied to the data." },
+        operations: {
+          type: "array",
+          description: "A short sequence of deterministic data operations. Keep the list empty if no permanent cleaning is needed.",
+          items: getDataOperationSchema(),
+          maxItems: 8
+        },
+        outputColumns: {
+          type: "array",
+          description: "A list of column profiles describing the structure of the data AFTER the transformation. If no transformation is performed, this should be the same as the input column profiles.",
+          items: columnProfileSchema
+        }
+      },
+      required: ["explanation", "operations", "outputColumns"]
+    };
+  }
+  return _dataPreparationSchema;
+};
+const dataPreparationSchema = new Proxy({}, {
+  get: (_target, prop) => getDataPreparationSchema()[prop],
+  ownKeys: () => Reflect.ownKeys(getDataPreparationSchema()),
+  getOwnPropertyDescriptor: (_target, prop) => Reflect.getOwnPropertyDescriptor(getDataPreparationSchema(), prop),
+  has: (_target, prop) => prop in getDataPreparationSchema()
+});
+const dataPreparationProviderOperationTypes = [
+  "drop_rows_by_index",
+  "drop_rows_by_condition",
+  "drop_blank_rows",
+  "promote_header_row",
+  "rename_columns",
+  "drop_columns",
+  "trim_whitespace",
+  "normalize_empty_values",
+  "replace_values",
+  "cast_column",
+  "fill_missing",
+  "dedupe_rows",
+  "filter_rows",
+  "split_column",
+  "unpivot_columns"
+];
+let _baseProviderSchema = null;
+const resolveBaseProviderSchema = () => {
+  if (!_baseProviderSchema) {
+    const base = getDataPreparationSchema();
+    _baseProviderSchema = {
+      ...base,
+      properties: {
+        ...base.properties,
+        operations: {
+          ...base.properties.operations,
+          items: getDataOperationSchemaForTypes(dataPreparationProviderOperationTypes)
+        }
+      }
+    };
+  }
+  return _baseProviderSchema;
+};
+const dataPreparationProviderSchema = new Proxy({}, {
+  get: (_target, prop) => resolveBaseProviderSchema()[prop],
+  ownKeys: () => Reflect.ownKeys(resolveBaseProviderSchema()),
+  getOwnPropertyDescriptor: (_target, prop) => Reflect.getOwnPropertyDescriptor(resolveBaseProviderSchema(), prop),
+  has: (_target, prop) => prop in resolveBaseProviderSchema()
+});
+const compactColumnProfileSchema = {
+  type: "object",
+  properties: {
+    name: { type: "string" },
+    type: { type: "string", enum: ["numerical", "categorical", "date", "time", "currency", "percentage"] }
+  },
+  required: ["name", "type"]
+};
+const compactFilterPredicateSchema = {
+  type: "object",
+  properties: {
+    column: { type: "string" },
+    operator: { type: "string", enum: ["eq", "neq", "gt", "gte", "lt", "lte", "between", "contains", "starts_with", "ends_with", "in", "is_null", "not_null"] },
+    value: { type: "string" }
+  },
+  required: ["column", "operator"]
+};
+const compactFilterPredicateGroupSchema = {
+  type: "object",
+  properties: {
+    predicates: {
+      type: "array",
+      items: compactFilterPredicateSchema
+    }
+  },
+  required: ["predicates"]
+};
+const compactRenameMappingSchema = {
+  type: "object",
+  properties: {
+    from: { type: "string" },
+    to: { type: "string" }
+  },
+  required: ["from", "to"]
+};
+const compactUnpivotLabelMappingSchema = {
+  type: "object",
+  properties: {
+    sourceColumn: { type: "string" },
+    label: { type: "string" }
+  },
+  required: ["sourceColumn", "label"]
+};
+const compactUnpivotLabelColumnSchema = {
+  type: "object",
+  properties: {
+    outputColumn: { type: "string" },
+    mappings: {
+      type: "array",
+      items: compactUnpivotLabelMappingSchema
+    }
+  },
+  required: ["outputColumn", "mappings"]
+};
+const compactUnpivotRowClassMappingSchema = {
+  type: "object",
+  properties: {
+    sourceRowIndex: { type: "integer" },
+    rowClass: { type: "string" }
+  },
+  required: ["sourceRowIndex", "rowClass"]
+};
+const compactUnpivotHierarchyDepthMappingSchema = {
+  type: "object",
+  properties: {
+    sourceRowIndex: { type: "integer" },
+    depth: { type: "integer" }
+  },
+  required: ["sourceRowIndex", "depth"]
+};
+const compactWideTableProviderOperationTypes = [
+  "drop_rows_by_index",
+  "drop_rows_by_condition",
+  "drop_blank_rows",
+  "promote_header_row",
+  "rename_columns",
+  "drop_columns",
+  "trim_whitespace",
+  "normalize_empty_values",
+  "cast_column",
+  "unpivot_columns"
+];
+const compactWideTableOperationSchema = {
+  type: "object",
+  properties: {
+    id: { type: "string" },
+    reason: { type: "string" },
+    type: { type: "string", enum: compactWideTableProviderOperationTypes },
+    indices: {
+      type: "array",
+      items: { type: "integer" }
+    },
+    predicates: {
+      type: "array",
+      items: compactFilterPredicateSchema
+    },
+    groups: {
+      type: "array",
+      items: compactFilterPredicateGroupSchema
+    },
+    rowIndex: { type: "integer" },
+    mappings: {
+      type: "array",
+      items: compactRenameMappingSchema
+    },
+    columns: {
+      type: "array",
+      items: { type: "string" }
+    },
+    emptyMarkers: {
+      type: "array",
+      items: { type: "string" }
+    },
+    column: { type: "string" },
+    targetType: { type: "string", enum: ["number", "currency", "percentage", "date", "boolean", "string"] },
+    sourceColumns: {
+      type: "array",
+      items: { type: "string" }
+    },
+    keyColumn: { type: "string" },
+    valueColumn: { type: "string" },
+    keepColumns: {
+      type: "array",
+      items: { type: "string" }
+    },
+    labelColumn: { type: "string" },
+    labelMappings: {
+      type: "array",
+      items: compactUnpivotLabelMappingSchema
+    },
+    labelColumns: {
+      type: "array",
+      items: compactUnpivotLabelColumnSchema
+    },
+    sourceColumnNameColumn: { type: "string" },
+    sourceRowIndexColumn: { type: "string" },
+    rowClassColumn: { type: "string" },
+    rowClassMappings: {
+      type: "array",
+      items: compactUnpivotRowClassMappingSchema
+    },
+    hierarchyDepthColumn: { type: "string" },
+    hierarchyDepthMappings: {
+      type: "array",
+      items: compactUnpivotHierarchyDepthMappingSchema
+    }
+  },
+  required: ["id", "type", "reason"]
+};
+const compactWideTableDataPreparationProviderSchema = {
+  type: "object",
+  properties: {
+    explanation: { type: "string" },
+    operations: {
+      type: "array",
+      items: compactWideTableOperationSchema,
+      maxItems: 8
+    },
+    outputColumns: {
+      type: "array",
+      items: compactColumnProfileSchema
+    }
+  },
+  required: ["explanation", "operations", "outputColumns"]
+};
+const getDataPreparationProviderSchema = (options) => (options == null ? void 0 : options.compactWideTable) ? compactWideTableDataPreparationProviderSchema : dataPreparationProviderSchema;
+const reportContextExtractionSchema = {
+  type: "object",
+  properties: {
+    reportTitle: {
+      type: "string",
+      description: "A concise human-readable report title. You may rephrase or clean up raw text for readability, but it must be grounded in visible CSV evidence."
+    },
+    reportDescription: {
+      type: "string",
+      description: "A 1-2 sentence description of what this CSV dataset contains (domain, time period, scope). Ground in visible evidence from metadata, headers, and body sample."
+    },
+    parameterLines: {
+      type: "array",
+      description: "Up to 5 report parameter or filter lines that were preserved outside the body table.",
+      items: { type: "string" },
+      maxItems: 5
+    },
+    footerLines: {
+      type: "array",
+      description: "Up to 5 footer, memo, or remark lines that belong below the body table.",
+      items: { type: "string" },
+      maxItems: 5
+    },
+    candidateHeaderLine: {
+      type: "array",
+      description: "A likely tabular header row or header-layer labels. Return an empty array if unknown.",
+      items: { type: "string" },
+      maxItems: 20
+    },
+    confidence: {
+      type: "string",
+      enum: ["high", "medium", "low"],
+      description: "How confident you are that the extracted report context is correct."
+    },
+    reasoning: {
+      type: "string",
+      description: "A short explanation of which report evidence supported the extraction."
+    }
+  },
+  required: ["reportTitle", "reportDescription", "parameterLines", "footerLines", "candidateHeaderLine", "confidence", "reasoning"]
+};
+const datasetSemanticAnnotationSchema = {
+  type: "object",
+  properties: {
+    datasetRole: {
+      type: "string",
+      enum: ["detail_table", "summary_report", "mixed_report", "unknown"],
+      description: "Overall semantic role of the prepared dataset."
+    },
+    rowAnnotations: {
+      type: "array",
+      description: "Semantic judgments for the provided candidate rows only. Do not invent row indices that were not provided.",
+      maxItems: 80,
+      items: {
+        type: "object",
+        properties: {
+          rowIndex: { type: "integer", minimum: 0 },
+          rowRole: {
+            type: "string",
+            enum: ["detail", "subtotal", "grand_total", "group_header", "footer", "note", "bucket", "noise", "unknown"]
+          },
+          confidence: { type: "number", minimum: 0, maximum: 1 },
+          reason: { type: "string" },
+          confidenceBand: {
+            type: "string",
+            enum: ["high", "medium", "low"]
+          },
+          evidenceSources: {
+            type: "array",
+            items: {
+              type: "string",
+              enum: ["ai_prompt_context", "sample_values", "type_profile", "report_context", "deterministic_pattern"]
+            }
+          },
+          excludeFromDefaultAnalysis: { type: "boolean" },
+          unsafeForNarrative: { type: "boolean" }
+        },
+        required: ["rowIndex", "rowRole", "confidence", "reason"]
+      }
+    },
+    columnAnnotations: {
+      type: "array",
+      description: "Semantic role guesses for columns in the prepared dataset.",
+      maxItems: 80,
+      items: {
+        type: "object",
+        properties: {
+          columnName: { type: "string" },
+          semanticRole: {
+            type: "string",
+            enum: ["business_entity", "business_dimension", "metric", "time_dimension", "descriptor", "code", "helper_dimension", "note", "unknown"]
+          },
+          confidence: { type: "number", minimum: 0, maximum: 1 },
+          reason: { type: "string" },
+          rawHeader: { type: "string" },
+          businessLabel: { type: "string" },
+          sampleValueHints: {
+            type: "array",
+            items: { type: "string" },
+            maxItems: 5
+          },
+          isPrimaryGrainCandidate: { type: "boolean" },
+          isMetricCandidate: { type: "boolean" },
+          isBusinessSafe: { type: "boolean" },
+          confidenceBand: {
+            type: "string",
+            enum: ["high", "medium", "low"]
+          },
+          evidenceSources: {
+            type: "array",
+            items: {
+              type: "string",
+              enum: ["ai_prompt_context", "sample_values", "type_profile", "report_context", "deterministic_pattern"]
+            }
+          }
+        },
+        required: ["columnName", "semanticRole", "confidence", "reason"]
+      }
+    },
+    headerSemantics: {
+      type: "object",
+      properties: {
+        reportTitle: { type: "string" },
+        reportType: {
+          type: "string",
+          enum: ["financial_statement", "project_report", "operational_report", "detail_listing", "unknown"]
+        },
+        headerRoleHints: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              headerValue: { type: "string" },
+              role: {
+                type: "string",
+                enum: ["grain", "metric", "helper", "filter_scope", "unknown"]
+              },
+              confidence: { type: "number", minimum: 0, maximum: 1 },
+              reason: { type: "string" }
+            },
+            required: ["headerValue", "role", "confidence", "reason"]
+          },
+          maxItems: 20
+        },
+        scopeHints: {
+          type: "object",
+          properties: {
+            period: { type: "string" },
+            businessUnit: { type: "string" },
+            region: { type: "string" },
+            scenario: { type: "string" }
+          }
+        },
+        businessTerminology: {
+          type: "array",
+          items: { type: "string" },
+          maxItems: 12
+        },
+        headerConfidence: { type: "number", minimum: 0, maximum: 1 },
+        confidenceBand: {
+          type: "string",
+          enum: ["high", "medium", "low"]
+        },
+        evidenceSources: {
+          type: "array",
+          items: {
+            type: "string",
+            enum: ["ai_prompt_context", "sample_values", "type_profile", "report_context", "deterministic_pattern"]
+          }
+        },
+        conflictDetected: { type: "boolean" },
+        reason: { type: "string" }
+      },
+      required: ["reportTitle", "reportType", "headerRoleHints", "scopeHints", "businessTerminology", "headerConfidence", "reason"]
+    },
+    summary: {
+      type: "string",
+      description: "Short explanation of the semantic structure and any likely non-detail rows."
+    }
+  },
+  required: ["datasetRole", "rowAnnotations", "columnAnnotations", "headerSemantics", "summary"]
+};
+const sqlPrecheckAssessmentSchema = {
+  type: "object",
+  properties: {
+    status: {
+      type: "string",
+      enum: ["passed", "blocked"],
+      description: "Whether the prepared dataset looks ready for grouped SQL analysis."
+    },
+    summary: {
+      type: "string",
+      description: "Short explanation of the precheck decision."
+    },
+    candidatePairs: {
+      type: "array",
+      description: "Up to 3 metric/dimension pairs that look suitable for grouped SQL cards.",
+      maxItems: 3,
+      items: {
+        type: "object",
+        properties: {
+          dimension: { type: "string" },
+          metric: { type: "string" },
+          confidence: {
+            type: "string",
+            enum: ["high", "medium", "low"]
+          },
+          reason: { type: "string" }
+        },
+        required: ["dimension", "metric", "confidence", "reason"]
+      }
+    },
+    findings: {
+      type: "array",
+      description: "Specific blockers or warnings that explain the decision.",
+      maxItems: 8,
+      items: {
+        type: "object",
+        properties: {
+          kind: {
+            type: "string",
+            enum: [
+              "null_heavy_metric",
+              "constant_metric",
+              "zero_total_metric",
+              "flat_grouped_metric",
+              "low_distinct_dimension",
+              "parse_failures_remaining",
+              "high_fragmentation",
+              "no_viable_candidates"
+            ]
+          },
+          severity: {
+            type: "string",
+            enum: ["warn", "block"]
+          },
+          message: { type: "string" },
+          column: { type: "string" },
+          metric: { type: "string" },
+          dimension: { type: "string" }
+        },
+        required: ["kind", "severity", "message"]
+      }
+    }
+  },
+  required: ["status", "summary", "candidatePairs", "findings"]
+};
+const filterFunctionSchema = {
+  type: "object",
+  properties: {
+    explanation: { type: "string", description: "A brief, user-facing explanation of the filter that was created from the natural language query." },
+    operation: {
+      type: "object",
+      description: "Exactly one deterministic filter_rows operation. At least one of predicates or groups must be present.",
+      properties: {
+        id: { type: "string", description: "Stable operation identifier." },
+        type: { type: "string", enum: ["filter_rows"] },
+        reason: { type: "string", description: "Short explanation for why this filter is needed." },
+        predicates: {
+          type: "array",
+          items: filterPredicateSchema
+        },
+        groups: {
+          type: "array",
+          items: filterPredicateGroupSchema
+        }
+      },
+      required: ["id", "type", "reason"]
+    }
+  },
+  required: ["explanation", "operation"]
+};
+const dataQuerySchema = {
+  type: "object",
+  properties: {
+    explanation: { type: "string", minLength: 1, description: "A brief, user-facing explanation of the read-only query." },
+    plan: queryPlanSchema,
+    fallbackFilterOperation: filterRowsOperationSchema
+  },
+  required: ["explanation", "plan"]
+};
+const dataDescribeSchema = {
+  type: "object",
+  properties: {
+    explanation: { type: "string", minLength: 1, description: "A brief explanation of what summary statistics to compute." },
+    columns: { type: "array", items: { type: "string" }, description: "Optional list of numeric columns to describe. Defaults to all numeric columns." }
+  },
+  required: ["explanation"]
+};
+const dataValueCountsSchema = {
+  type: "object",
+  properties: {
+    explanation: { type: "string", minLength: 1, description: "A brief explanation of what frequency distribution to compute." },
+    column: { type: "string", minLength: 1, description: "The categorical column to count values for." },
+    limit: { type: "number", minimum: 1, maximum: 100, description: "Maximum number of values to return. Defaults to 20." }
+  },
+  required: ["explanation", "column"]
+};
+const dataOutliersSchema = {
+  type: "object",
+  properties: {
+    explanation: { type: "string", minLength: 1, description: "A brief explanation of what outlier detection to perform." },
+    column: { type: "string", minLength: 1, description: "The numeric column to detect outliers in." }
+  },
+  required: ["explanation", "column"]
+};
+const dataMissingSchema = {
+  type: "object",
+  properties: {
+    explanation: { type: "string", minLength: 1, description: "A brief explanation of what missing data analysis to perform." },
+    columns: { type: "array", items: { type: "string" }, description: "Optional list of columns to analyze. Defaults to all columns." }
+  },
+  required: ["explanation"]
+};
+const reportStructureProposalSchema = {
+  type: "object",
+  properties: {
+    bodyRowRoles: {
+      type: "array",
+      maxItems: 48,
+      items: {
+        type: "object",
+        properties: {
+          rowIndex: {
+            type: "integer",
+            minimum: 0
+          },
+          role: {
+            type: "string",
+            enum: ["title", "parameter", "header", "detail", "group_header", "subtotal", "summary", "note", "footer", "blank", "unknown"]
+          },
+          confidence: {
+            type: "number",
+            minimum: 0,
+            maximum: 1
+          },
+          notes: {
+            type: "array",
+            maxItems: 3,
+            items: { type: "string" }
+          }
+        },
+        required: ["rowIndex", "role", "confidence"]
+      }
+    },
+    carryForwardColumns: {
+      type: "array",
+      maxItems: 8,
+      items: { type: "string" }
+    },
+    sectionLabelColumns: {
+      type: "array",
+      maxItems: 8,
+      items: { type: "string" }
+    },
+    detailInclusionRoles: {
+      type: "array",
+      maxItems: 4,
+      items: {
+        type: "string",
+        enum: ["detail", "group_header", "subtotal", "note", "unknown"]
+      }
+    },
+    confidence: {
+      type: "number",
+      minimum: 0,
+      maximum: 1
+    },
+    reasoning: {
+      type: "string"
+    }
+  },
+  required: [
+    "bodyRowRoles",
+    "carryForwardColumns",
+    "sectionLabelColumns",
+    "detailInclusionRoles",
+    "confidence",
+    "reasoning"
+  ]
+};
 const debugLog = (stage, details, error) => {
   const payload = { stage, ...details };
   {
@@ -1394,7 +2838,7 @@ ${previousSummary}` : "",
     }
   ];
   const result = await withTransientRetry(
-    (fb) => generateText({ model: fb ?? model, messages }),
+    (fb) => streamGenerateText({ model: fb ?? model, messages }),
     { settings, primaryModelId: modelId, label: "compactionChunk" }
   );
   return result.text.trim();
@@ -1560,13 +3004,13 @@ ${formatCollapsedChatHistory(chatHistory, settings)}`, "high", "prunable")
           { role: "user", content: managed.userText }
         ];
         try {
-          return await generateText({ model, messages: msgs });
+          return await streamGenerateText({ model, messages: msgs });
         } catch (primaryErr) {
           if (isTransientProviderError(primaryErr)) {
             const fb = createFallbackProviderModel(settings, modelId);
             if (fb) {
               console.warn(`[ContextSummary] Primary model "${modelId}" transient error, retrying with fallback "${fb.modelId}"`);
-              return generateText({ model: fb.model, messages: msgs });
+              return streamGenerateText({ model: fb.model, messages: msgs });
             }
           }
           throw primaryErr;
@@ -1841,7 +3285,7 @@ ${params.rowInspectionSummary}
 ## Sampled Raw Rows
 ${params.sampledRows.map(formatRow).join("\n")}
 `;
-const LOG_PREFIX$3 = "[ReportStructureProposal]";
+const LOG_PREFIX$2 = "[ReportStructureProposal]";
 const MAX_HEAD_BODY_ROWS = 18;
 const MAX_TAIL_ROWS = 6;
 const formatBoundarySummary = (boundary, runtimeTableAssessment) => [
@@ -1991,7 +3435,7 @@ const detectReportStructureProposalWithAi = async (params) => {
           reportContextDiagnostics(params.telemetryTarget, managed.diagnostics);
         }
         return withTransientRetry(
-          (fb) => generateText({
+          (fb) => streamGenerateText({
             model: fb ?? model,
             messages: [
               { role: "system", content: managed.systemText },
@@ -2015,14 +3459,74 @@ const detectReportStructureProposalWithAi = async (params) => {
     });
     const proposal = normalizeProposal(result.output);
     if (!proposal) {
-      console.warn(`${LOG_PREFIX$3} AI returned an invalid normalization proposal; ignoring it.`, result.output);
+      console.warn(`${LOG_PREFIX$2} AI returned an invalid normalization proposal; ignoring it.`, result.output);
       return null;
     }
     return proposal;
   } catch (error) {
-    console.warn(`${LOG_PREFIX$3} AI structure proposal failed; continuing with deterministic normalization.`, error);
+    console.warn(`${LOG_PREFIX$2} AI structure proposal failed; continuing with deterministic normalization.`, error);
     return null;
   }
+};
+const intakeStructureBoundarySchema = {
+  type: "object",
+  properties: {
+    headerRowIndex: {
+      type: "integer",
+      minimum: -1,
+      description: "Zero-based index of the primary header row. This row contains the column names that describe the body data. Set to -1 when NO header row exists in the file (headerless report). When -1, you MUST provide syntheticHeaders."
+    },
+    headerLayerIndexes: {
+      type: "array",
+      items: { type: "integer", minimum: 0 },
+      maxItems: 4,
+      description: "Indexes of additional header layers (e.g., multi-line headers with code series above label rows). Exclude the primary header index."
+    },
+    bodyStartIndex: {
+      type: "integer",
+      minimum: 0,
+      description: "Zero-based index of the first data/body row, immediately after the header (and any parameter rows between header and body)."
+    },
+    summaryStartIndex: {
+      type: "integer",
+      minimum: 0,
+      description: "Zero-based index where summary/total/footer rows begin. Set equal to total row count if there is no summary section."
+    },
+    parameterRowIndexes: {
+      type: "array",
+      items: { type: "integer", minimum: 0 },
+      maxItems: 10,
+      description: 'Indexes of parameter/filter label rows between the header area and body start (e.g., "Sales Person Name", "Print Date").'
+    },
+    repeatedHeaderRowIndexes: {
+      type: "array",
+      items: { type: "integer", minimum: 0 },
+      maxItems: 10,
+      description: "Indexes of rows that repeat the primary header (common in paginated report exports)."
+    },
+    confidence: {
+      type: "number",
+      minimum: 0,
+      maximum: 1,
+      description: "Your confidence in this boundary detection (0.0 to 1.0). Use lower values when the structure is ambiguous."
+    },
+    reasoning: {
+      type: "string",
+      description: "Brief explanation (1-3 sentences) of why these boundaries were chosen."
+    },
+    syntheticHeaders: {
+      type: "array",
+      items: { type: "string" },
+      description: 'AI-inferred column names when headerRowIndex is -1 (headerless file). Array length MUST equal the column count. Infer names from data patterns: e.g. sparse text columns → dimension names, columns with monthly quantities → "Jan", "Feb", etc., total columns → "Total Qty", "Total Amount".'
+    }
+  },
+  required: [
+    "headerRowIndex",
+    "bodyStartIndex",
+    "summaryStartIndex",
+    "confidence",
+    "reasoning"
+  ]
 };
 const intakeStructureSystemPrompt = "You locate CSV report boundaries. Return exactly one schema-valid JSON object. Use only visible row evidence and the pre-scan summary. Lower confidence when the structure is ambiguous.";
 const formatRowForDisplay = (row, index) => {
@@ -2032,14 +3536,33 @@ const formatRowForDisplay = (row, index) => {
   });
   return `Row ${index}: ${cells.join(" | ")}`;
 };
-const formatRowsForIntakePrompt = (normalizedRows, maxHeadRows = 26, maxTailRows = 6) => {
+const formatRowsForIntakePrompt = (normalizedRows, maxHeadRows = 26, maxTailRows = 6, boundaryRegion) => {
   const headEnd = Math.min(normalizedRows.length, maxHeadRows);
+  const tailStart = Math.max(headEnd, normalizedRows.length - maxTailRows);
+  const windowSize = (boundaryRegion == null ? void 0 : boundaryRegion.windowSize) ?? 2;
+  let brStart = -1;
+  let brEnd = -1;
+  if (boundaryRegion && boundaryRegion.summaryStartIndex > headEnd && boundaryRegion.summaryStartIndex < tailStart) {
+    brStart = Math.max(headEnd, boundaryRegion.summaryStartIndex - windowSize);
+    brEnd = Math.min(tailStart, boundaryRegion.summaryStartIndex + windowSize);
+  }
   const lines = [];
   for (let i = 0; i < headEnd; i += 1) {
     lines.push(formatRowForDisplay(normalizedRows[i], i));
   }
-  const tailStart = Math.max(headEnd, normalizedRows.length - maxTailRows);
-  if (tailStart > headEnd) {
+  if (brStart > 0) {
+    if (brStart > headEnd) {
+      lines.push(`... (${brStart - headEnd} rows omitted) ...`);
+    }
+    lines.push(`--- boundary region (deterministic summaryStartIndex = ${boundaryRegion.summaryStartIndex}) ---`);
+    for (let i = brStart; i < brEnd; i += 1) {
+      lines.push(formatRowForDisplay(normalizedRows[i], i));
+    }
+    lines.push("--- end boundary region ---");
+    if (tailStart > brEnd) {
+      lines.push(`... (${tailStart - brEnd} rows omitted) ...`);
+    }
+  } else if (tailStart > headEnd) {
     lines.push(`... (${tailStart - headEnd} rows omitted) ...`);
   }
   for (let i = tailStart; i < normalizedRows.length; i += 1) {
@@ -2084,6 +3607,15 @@ const formatPreScanSignalsForPrompt = (signals) => {
       "  No header could be identified by the deterministic pre-scan."
     );
   }
+  if (typeof signals.deterministicSummaryStartIndex === "number") {
+    lines.push(
+      "",
+      "## Deterministic Summary Boundary",
+      `  summaryStartIndex: ${signals.deterministicSummaryStartIndex} (full backward scan of all rows)`,
+      `  If this equals the total row count, no summary/footer was found.`,
+      `  Prefer this value unless boundary-region rows clearly contradict it.`
+    );
+  }
   return lines.join("\n");
 };
 const createIntakeStructurePrompt = (contextText) => `
@@ -2110,6 +3642,7 @@ Decision contract:
 - Repeated headers should only be returned when they match the main header.
 - summaryStartIndex must be the first non-body row after the final body row.
 - If no summary/footer exists, set summaryStartIndex to the total row count.
+- A deterministic summary boundary (full backward scan) is provided when available. Prefer it unless the boundary-region rows clearly show summary/footer data starts earlier or body data continues past it.
 - If you are unsure, keep auxiliary arrays minimal and lower confidence instead of guessing.
 
 Headerless file handling:
@@ -2148,7 +3681,7 @@ Decision contract:
 
 ${contextText}
 `;
-const LOG_PREFIX$2 = "[IntakeStructureDetector]";
+const LOG_PREFIX$1 = "[IntakeStructureDetector]";
 const normalizeRowKey = (row) => (row ?? []).map((cell) => String(cell ?? "").trim()).filter(Boolean).join(" | ").toLowerCase();
 const inferRepeatedHeaderRowIndexes = (rows, headerRowIndex, bodyStartIndex) => {
   const headerKey = normalizeRowKey(rows[headerRowIndex]);
@@ -2184,7 +3717,12 @@ const detectIntakeStructureWithAi = async (normalizedRows, preScanSignals, setti
               "raw_rows",
               `Total rows: ${normalizedRows.length}, columns: ${((_a2 = normalizedRows[0]) == null ? void 0 : _a2.length) ?? 0}
 
-${formatRowsForIntakePrompt(normalizedRows)}`,
+${formatRowsForIntakePrompt(
+                normalizedRows,
+                26,
+                6,
+                typeof preScanSignals.deterministicSummaryStartIndex === "number" ? { summaryStartIndex: preScanSignals.deterministicSummaryStartIndex } : void 0
+              )}`,
               "required",
               "sticky"
             ),
@@ -2203,7 +3741,7 @@ ${formatRowsForIntakePrompt(normalizedRows)}`,
           reportContextDiagnostics(telemetryTarget, managed.diagnostics);
         }
         return withTransientRetry(
-          (fb) => generateText({
+          (fb) => streamGenerateText({
             model: fb ?? model,
             messages: [
               { role: "system", content: managed.systemText },
@@ -2219,7 +3757,7 @@ ${formatRowsForIntakePrompt(normalizedRows)}`,
     });
     const raw = result.output;
     if (typeof (raw == null ? void 0 : raw.headerRowIndex) !== "number" || typeof (raw == null ? void 0 : raw.bodyStartIndex) !== "number" || typeof (raw == null ? void 0 : raw.summaryStartIndex) !== "number") {
-      console.warn(`${LOG_PREFIX$2} AI returned incomplete boundary, discarding.`, raw);
+      console.warn(`${LOG_PREFIX$1} AI returned incomplete boundary, discarding.`, raw);
       return null;
     }
     const repeatedHeaderRowIndexes = raw.headerRowIndex >= 0 ? Array.from(/* @__PURE__ */ new Set([
@@ -2243,7 +3781,7 @@ ${formatRowsForIntakePrompt(normalizedRows)}`,
       } : {}
     };
   } catch (error) {
-    console.warn(`${LOG_PREFIX$2} AI detection failed, falling back to deterministic.`, error);
+    console.warn(`${LOG_PREFIX$1} AI detection failed, falling back to deterministic.`, error);
     return null;
   }
 };
@@ -2289,7 +3827,7 @@ ${formatRows(trimRawDataSample(data.data, 5))}`, "high", "prunable")
           compactionMode
         });
         return withTransientRetry(
-          (fb) => generateText({
+          (fb) => streamGenerateText({
             model: fb ?? model,
             messages: [
               { role: "system", content: managed.systemText },
@@ -3710,7 +5248,7 @@ ${sampleContext.sampleSummary ?? "Using standard row preview without wide-table 
             }
           );
           return withTransientRetry(
-            (fb) => generateText({
+            (fb) => streamGenerateText({
               model: fb ?? model,
               messages: [
                 { role: "system", content: managed.systemText },
@@ -4626,7 +6164,7 @@ ${formatRows(trimRawDataSample(data.data, 12))}`, "required", "sticky")
           compactionMode
         });
         return withTransientRetry(
-          (fb) => generateText({
+          (fb) => streamGenerateText({
             model: fb ?? model,
             messages: [
               { role: "system", content: managed.systemText },
@@ -4670,6 +6208,54 @@ ${formatRows(trimRawDataSample(data.data, 12))}`, "required", "sticky")
     console.warn("[SqlPrecheckEvaluator] AI SQL precheck failed, falling back to deterministic guard.", error);
     return null;
   }
+};
+const assistantMessageSchema = {
+  type: "object",
+  properties: {
+    thought: { type: "string", description: "The reasoning for the assistant message." },
+    type: { type: "string", enum: ["assistant_message"] },
+    message: { type: "string", description: "Markdown response for the user." },
+    cardId: { type: "string", description: "Optional related card id." },
+    suggestedActions: {
+      type: "array",
+      description: "Optional 2-3 follow-up suggestions.",
+      maxItems: 3,
+      items: {
+        type: "object",
+        properties: {
+          label: { type: "string", description: "Short user-facing button text." },
+          action: { type: "string", description: "The exact user-facing follow-up prompt to send when clicked. Never use an internal tool name." }
+        },
+        required: ["label", "action"]
+      }
+    }
+  },
+  required: ["type", "thought", "message"]
+};
+const createToolCallSchema = (descriptor) => ({
+  type: "object",
+  properties: {
+    thought: { type: "string", description: "The reasoning for the tool call." },
+    type: { type: "string", enum: ["tool_call"] },
+    toolName: { type: "string", enum: [descriptor.name] },
+    args: descriptor.inputSchema
+  },
+  required: ["type", "thought", "toolName", "args"]
+});
+const createChatDecisionSchema = (descriptors) => {
+  const actionSchema = {
+    anyOf: [
+      assistantMessageSchema,
+      ...descriptors.map(createToolCallSchema)
+    ]
+  };
+  return {
+    type: "object",
+    properties: {
+      action: actionSchema
+    },
+    required: ["action"]
+  };
 };
 const createChatResponderSystemPrompt = (params) => {
   const { language, evidenceOrder, workflowStage, analystCapabilityText, appliedRuntimeStepContract } = params;
@@ -5187,7 +6773,7 @@ ${formatSanitizedTranscript(trimSanitizedTranscript(modelTranscript, resolveLong
   return {
     messages,
     tools: promptTools,
-    responseSchema: createChatDecisionSchema(allColumnNames, promptTools),
+    responseSchema: createChatDecisionSchema(promptTools),
     stream: true
   };
 };
@@ -5220,7 +6806,7 @@ ${formatRows(trimRawDataSample(sampleData, 8))}`, "high", "prunable")
           reportContextDiagnostics(telemetryTarget, managed.diagnostics);
           const promptContent = createFilterFunctionPrompt(query, managed.userText);
           return withTransientRetry(
-            (fb) => generateText({
+            (fb) => streamGenerateText({
               model: fb ?? model,
               messages: [
                 { role: "system", content: managed.systemText },
@@ -5367,11 +6953,6 @@ const createCoreAnalysisPrompt = (contextText, language) => `
     - Do not claim this is project data, budget data, maintenance data, a transaction ledger, or any other business domain unless the available information clearly says so.
     - Ground every high-level statement in the provided columns or generated cards. Do not wrap the response in code fences.
 `;
-const visualSummarySystemPrompt = `You are a business intelligence analyst reviewing a data visualization chart. Write a concise summary (2-3 sentences) describing what you see in the chart image. Focus on:
-- The main pattern or trend visible in the chart (peaks, valleys, distribution shape)
-- Notable outliers or dominant segments
-- How the data compares across categories or time periods
-Reference specific values or labels visible in the chart. Do not invent data not shown. Write in the language specified by the user. Do not wrap in code fences.`;
 const visualEvaluationSystemPrompt = `You are a data visualization quality evaluator. Analyze the rendered chart image for visual quality issues.
 
 Check for these problems:
@@ -5431,7 +7012,7 @@ ${formatColumnDisplayHints(allColumns)}`, "medium", "prunable")
         reportContextDiagnostics(telemetryTarget, managed.diagnostics);
         const promptContent = createSummaryPrompt(title, managed.userText, settings.language);
         return withTransientRetry(
-          (fb) => generateText({
+          (fb) => streamGenerateText({
             model: fb ?? model,
             messages: [
               { role: "system", content: managed.systemText },
@@ -5506,7 +7087,7 @@ ${formatCardContext(displayCardContext)}`, "required", "sticky")
         reportContextDiagnostics(telemetryTarget, managed.diagnostics);
         const promptContent = createCoreAnalysisPrompt(managed.userText, settings.language);
         return withTransientRetry(
-          (fb) => generateText({
+          (fb) => streamGenerateText({
             model: fb ?? model,
             messages: [
               { role: "system", content: managed.systemText },
@@ -5573,7 +7154,7 @@ ${narrativePayload || "[]"}`, "required", "sticky")
         reportContextDiagnostics(telemetryTarget, managed.diagnostics);
         const promptContent = createExecutiveBriefPrompt(managed.userText, settings.language);
         return withTransientRetry(
-          (fb) => generateText({
+          (fb) => streamGenerateText({
             model: fb ?? model,
             messages: [
               { role: "system", content: managed.systemText },
@@ -5696,7 +7277,7 @@ ${formatRows(trimRawDataSample(sampleData, 8))}`, "high", "prunable")
         reportContextDiagnostics(telemetryTarget, managed.diagnostics);
         const promptContent = createGoalCandidatesPrompt(managed.userText);
         return withTransientRetry(
-          (fb) => generateText({
+          (fb) => streamGenerateText({
             model: fb ?? model,
             messages: [
               { role: "system", content: managed.systemText },
@@ -5860,7 +7441,7 @@ ${formatNarrativeAnalysisInputs(safeNarrativeInputs)}`,
         reportContextDiagnostics(telemetryTarget, managed.diagnostics);
         const promptContent = createProactiveInsightPrompt(managed.userText, settings.language);
         return withTransientRetry(
-          (fb) => generateText({
+          (fb) => streamGenerateText({
             model: fb ?? model,
             messages: [
               { role: "system", content: managed.systemText },
@@ -6049,69 +7630,6 @@ The user's primary analysis goal is: "${goal}". Your topics should be highly rel
 ${existingCardTitles.map((t) => `    - ${t}`).join("\n")}` : ""}
 `;
 };
-const createSqlPresentationPlanPrompt = (topic, contextText, evidenceSummary, reviewContext) => `
-    Decide how to present already-executed SQL evidence for this topic.
-
-    Analysis Topic: "${topic}"
-
-    ${contextText}
-
-    Evidence summary:
-    ${evidenceSummary}
-    ${reviewContext ? `
-    Review context:
-    ${reviewContext}` : ""}
-
-    Return one JSON object with:
-    - title
-    - description
-    - presentationMode
-    - optional chartType (only bar, line, scatter, or combo)
-    - optional bindings (must reference executed output columns only)
-    - optional defaultTopN
-    - optional defaultHideOthers
-
-    Presentation rules:
-    - The binding domain is the executed output columns listed above — do NOT reference dataset columns that are not in the evidence output.
-    - Prefer presentationMode "table" when the result is informative but not clearly chart-friendly.
-    - Use "table_then_chart" when the grouped result is stable and a chart would help interpretation.
-    - Use "chart" only when the chart is clearly the primary value.
-    - Only choose "combo" when the executed query already exposes two stable metric aliases in its output.
-    - Only choose "line" when the groupBy column is a time or ordinal dimension with monotonic ordering in the evidence.
-    - Only choose "scatter" when the evidence is a rowset query with two numeric columns suitable for x/y axes.
-    - If the review context indicates contamination, unsafe narrative, or blocked dimensions, prefer "table".
-    - If the review context indicates a "table_only" value gate decision, do NOT choose "chart" — "table_then_chart" is the maximum.
-    - If category fragmentation is high, prefer "table" over forcing a chart.
-    - Do not choose pie, doughnut, radar, bubble, stacked_bar, or stacked_column — these are not supported for SQL evidence presentation.
-`;
-const buildEvidenceEvaluationPrompt = (topic, evidenceSummaryText, semanticContext) => `
-    Evaluate the quality and relevance of SQL evidence produced for this analysis topic.
-
-    Analysis Topic: "${topic}"
-
-    ${semanticContext}
-
-    Evidence summary:
-    ${evidenceSummaryText}
-
-    Return one JSON object with:
-    - decision: "pass" | "table_only" | "reject"
-    - reasoning: one sentence explaining why
-    - chartWorthy: boolean — whether a chart would add value beyond a table
-
-    Evaluation guidelines:
-    - "pass" when the evidence clearly answers the topic with meaningful grouped or trend data.
-    - "table_only" when the evidence is informative but too weak, fragmented, or ambiguous for a chart. A data table is still useful.
-    - "reject" when the evidence is empty, trivially uniform, or does not answer the topic at all.
-    - A result with 2 rows can still be "pass" if the topic asks for a comparison between exactly 2 items.
-    - A result with 50+ distinct groups is usually "table_only" because a chart would be unreadable.
-    - A result with only 1 group or 0 metric variance should be "reject".
-    - If the groupBy column is a blocked or helper dimension (listed in the semantic context), prefer "table_only" rather than "reject" — the data may still be useful as a table even if it's not chart-worthy.
-    - If the semantic context lists parent/subtotal labels or hierarchy information, check whether the preview rows contain those labels. If they do, the aggregation may be contaminated (double-counting parent totals) — prefer "table_only" and set chartWorthy to false.
-    - If the semantic context lists duplicate/alias labels, check whether the preview rows contain those labels. If they do, the grouping may produce misleading totals — prefer "table_only" and set chartWorthy to false.
-    - If the groupBy column is listed as a blocked grain column by the harness, the evidence is not chart-worthy.
-    - chartWorthy should be true when the evidence has a clear visual story (trend, ranking, comparison), false when the table alone is sufficient or the evidence has contamination signals.
-`;
 const getResolvedToolRegistry = (context) => {
   const normalizedContext = normalizeToolAvailabilityContext(context);
   return resolveAllowedTools(buildBuiltinToolRegistry(normalizedContext.columnNames), normalizedContext);
@@ -6350,7 +7868,7 @@ ${formatRows(trimRawDataSample((data.summaryRows ?? []).map((row, index) => ({ r
           compactionMode
         });
         return withTransientRetry(
-          (fb) => generateText({
+          (fb) => streamGenerateText({
             model: fb ?? model,
             messages: [
               { role: "system", content: managed.systemText },
@@ -6384,6 +7902,85 @@ const datasetSemanticAnnotator = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ O
   __proto__: null,
   annotateDatasetSemantics
 }, Symbol.toStringTag, { value: "Module" }));
+const runtimeEvaluationSchema = {
+  type: "object",
+  properties: {
+    decision: {
+      type: "string",
+      enum: ["accept", "retry", "clarify"],
+      description: "Whether the last completed runtime step should be accepted, retried, or redirected to clarification."
+    },
+    reason: {
+      type: "string",
+      description: "A concise explanation grounded in the last action and observation."
+    },
+    retryHint: {
+      type: "string",
+      description: "Optional guidance for the next runtime step when decision is retry or clarify."
+    },
+    isFinalEnough: {
+      type: "boolean",
+      description: "Whether the current request could reasonably end after this accepted step."
+    },
+    needsExplanation: {
+      type: "boolean",
+      description: "Whether the accepted step still needs a grounded assistant_message to explain it to the user."
+    },
+    scorecard: {
+      type: "object",
+      description: "Qualitative self-evaluation scorecard for the step. Optional — omit when confidence is low.",
+      properties: {
+        goalMatch: {
+          type: "string",
+          enum: ["low", "medium", "high"],
+          description: "How well the step output matches the user goal."
+        },
+        evidenceQuality: {
+          type: "string",
+          enum: ["low", "medium", "high"],
+          description: "Quality of the evidence produced by this step."
+        },
+        toolFit: {
+          type: "string",
+          enum: ["poor", "adequate", "strong"],
+          description: "How well the chosen tool matched the task."
+        },
+        repeatRisk: {
+          type: "string",
+          enum: ["low", "medium", "high"],
+          description: "Risk that retrying would produce the same outcome."
+        },
+        completionReadiness: {
+          type: "string",
+          enum: ["low", "medium", "high"],
+          description: "How close the task is to being fully complete."
+        },
+        failurePattern: {
+          type: "string",
+          enum: ["none", "semantic_miss", "tool_mismatch", "tool_contract", "tool_policy", "weak_evidence", "premature_answer", "parse_failure", "unknown"],
+          description: "Identified failure pattern if the step did not fully succeed."
+        },
+        insightValue: {
+          type: "string",
+          enum: ["low", "medium", "high"],
+          description: "Business insight value of the result. low = all values nearly identical (flat metric), medium = some variation exists, high = clear pattern or outlier visible."
+        }
+      },
+      required: ["goalMatch", "evidenceQuality", "toolFit", "repeatRisk", "completionReadiness", "failurePattern"]
+    },
+    finalReadiness: {
+      type: "string",
+      enum: ["ready", "needs_response", "partial_only", "not_ready"],
+      description: "Overall readiness to finalize the task after this step."
+    },
+    recommendedNextMode: {
+      type: "string",
+      enum: ["accept", "retry", "clarify", "fallback_answer", "repair", "replan", "stop"],
+      description: "Recommended next action mode. May differ from decision when richer recovery is available."
+    }
+  },
+  required: ["decision", "reason"]
+};
 const runtimeEvaluationSystemPrompt = `
 You are a runtime evaluator inside a browser-only AI agent loop.
 Judge whether the last completed step satisfied the user's committed objective and advance toward the done criteria.
@@ -6570,7 +8167,7 @@ const generateCardEnhancementSuggestions = async (cardContext, settings) => {
       { role: "user", content: promptContent }
     ];
     const result = await withTransientRetry(
-      (fb) => generateText({
+      (fb) => streamGenerateText({
         model: fb ?? model,
         messages,
         output: output_exports.object({ schema: jsonSchema(prepareSchemaForProvider(cardEnhancementSuggestionsSchema, settings.provider)) })
@@ -6588,60 +8185,6 @@ const enhancementGenerator = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Objec
   __proto__: null,
   generateCardEnhancementSuggestions
 }, Symbol.toStringTag, { value: "Module" }));
-const LOG_PREFIX$1 = "[VisualSummary]";
-const VISUAL_SUMMARY_TIMEOUT_MS = 15e3;
-const generateVisualGroundedSummary = async (title, chartImageBase64, dataSample, settings, language) => {
-  var _a;
-  if (!isProviderConfigured(settings)) {
-    return null;
-  }
-  try {
-    const { model } = createProviderModel(settings, settings.simpleModel);
-    const rawBase64 = chartImageBase64.replace(/^data:image\/\w+;base64,/, "");
-    const dataContext = dataSample.length > 0 ? `
-Data sample (first ${Math.min(dataSample.length, 5)} rows):
-${JSON.stringify(dataSample.slice(0, 5), null, 0)}` : "";
-    const abortController = new AbortController();
-    const timer = setTimeout(() => abortController.abort(), VISUAL_SUMMARY_TIMEOUT_MS);
-    const messages = [
-      { role: "system", content: visualSummarySystemPrompt },
-      {
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text: `Chart title: "${title}". Language: ${language}.${dataContext}
-
-Describe what you see in this chart.`
-          },
-          {
-            type: "image",
-            image: rawBase64
-          }
-        ]
-      }
-    ];
-    const result = await withTransientRetry(
-      (fb) => generateText({
-        model: fb ?? model,
-        messages,
-        abortSignal: abortController.signal
-      }),
-      { settings, primaryModelId: settings.simpleModel, label: "visualSummary", abortSignal: abortController.signal }
-    );
-    clearTimeout(timer);
-    const text = (_a = result.text) == null ? void 0 : _a.trim();
-    if (!text) {
-      console.warn(`${LOG_PREFIX$1} Empty response for "${title}".`);
-      return null;
-    }
-    console.log(`${LOG_PREFIX$1} Generated visual summary for "${title}" (${text.length} chars).`);
-    return { language, text };
-  } catch (err) {
-    console.warn(`${LOG_PREFIX$1} Failed for "${title}" (non-blocking):`, err instanceof Error ? err.message : err);
-    return null;
-  }
-};
 const LOG_PREFIX = "[VisualEvaluation]";
 const VISUAL_EVALUATION_TIMEOUT_MS = 12e3;
 const VALID_QUALITIES = /* @__PURE__ */ new Set(["good", "acceptable", "poor"]);
@@ -6669,10 +8212,8 @@ const evaluateChartPresentation = async (chartImageBase64, plan, displayChartTyp
     const { model, modelId } = createProviderModel(settings, settings.simpleModel);
     const rawBase64 = chartImageBase64.replace(/^data:image\/\w+;base64,/, "");
     const context = `Chart type: ${displayChartType}. Title: "${plan.title ?? ""}". Categories: ${categoryCount}. Group by: ${plan.groupByColumn ?? "N/A"}. Value: ${plan.valueColumn ?? plan.yValueColumn ?? "N/A"}.`;
-    const abortController = new AbortController();
-    const timer = setTimeout(() => abortController.abort(), VISUAL_EVALUATION_TIMEOUT_MS);
     const result = await withTransientRetry(
-      (fb) => generateText({
+      (fb) => streamGenerateText({
         model: fb ?? model,
         messages: [
           { role: "system", content: visualEvaluationSystemPrompt },
@@ -6684,11 +8225,10 @@ const evaluateChartPresentation = async (chartImageBase64, plan, displayChartTyp
             ]
           }
         ],
-        abortSignal: abortController.signal
+        activityTimeoutMs: VISUAL_EVALUATION_TIMEOUT_MS
       }),
-      { settings, primaryModelId: modelId, label: "visualPresentationEvaluator", abortSignal: abortController.signal }
+      { settings, primaryModelId: modelId, label: "visualPresentationEvaluator" }
     );
-    clearTimeout(timer);
     const text = (_a = result.text) == null ? void 0 : _a.trim();
     if (!text) {
       console.warn(`${LOG_PREFIX} Empty response.`);
@@ -6707,59 +8247,69 @@ const evaluateChartPresentation = async (chartImageBase64, plan, displayChartTyp
   }
 };
 export {
-  datasetSemanticAnnotator as $,
-  createRuntimeEvaluationPrompt as A,
-  runtimeEvaluationSystemPrompt as B,
-  reportContextDiagnostics as C,
-  createFallbackProviderModel as D,
-  sanitizeChatHistoryForModel as E,
-  buildChatRequest as F,
-  validateProviderHealth as G,
-  buildQueryUnderstandingPrompt as H,
-  buildAnalysisPlannerSystemPrompt as I,
-  createAnalysisTopicsPrompt as J,
-  formatColumnNames as K,
-  formatRows as L,
-  trimRawDataSample as M,
-  buildTopicPlanningUserPrompt as N,
-  buildPlanRetryFeedback as O,
-  createSqlPresentationPlanPrompt as P,
-  generateAnalysisGoalCandidates as Q,
-  createAnalystMemoPrompt as R,
-  createForumSummaryPrompt as S,
-  generateVisualGroundedSummary as T,
-  evaluateChartPresentation as U,
-  GOOGLE_MODELS as V,
-  OPENAI_MODELS as W,
-  DEFAULT_FALLBACK_MODEL as X,
-  providerConfig as Y,
-  transientRetry as Z,
-  contextManager as _,
-  detectIntakeStructureWithAi as a,
-  enhancementGenerator as a0,
-  evaluateAiSqlPrecheck as b,
-  buildDeterministicNormalizationPlan as c,
-  detectReportStructureProposalWithAi as d,
-  extractAiReportContext as e,
-  generateFinalSummary as f,
-  generateAiCleaningProgram as g,
-  hasExecutableHierarchyShape as h,
+  analystMemoSchema as $,
+  validateAction as A,
+  isTransientProviderError as B,
+  prepareSchemaForProvider as C,
+  runWithOverflowCompaction as D,
+  prepareManagedContext as E,
+  createContextSection as F,
+  formatCompactVisibleEvidenceSummary as G,
+  createRuntimeEvaluationPrompt as H,
+  runtimeEvaluationSystemPrompt as I,
+  reportContextDiagnostics as J,
+  createFallbackProviderModel as K,
+  runtimeEvaluationSchema as L,
+  sanitizeChatHistoryForModel as M,
+  buildChatRequest as N,
+  validateProviderHealth as O,
+  buildQueryUnderstandingPrompt as P,
+  formatColumnNames as Q,
+  formatRows as R,
+  trimRawDataSample as S,
+  buildAnalysisPlannerSystemPrompt as T,
+  createAnalysisTopicsSchema as U,
+  createAnalysisTopicsPrompt as V,
+  createSqlEvidenceQueryPlanSchema as W,
+  buildTopicPlanningUserPrompt as X,
+  buildPlanRetryFeedback as Y,
+  generateAnalysisGoalCandidates as Z,
+  createAnalystMemoPrompt as _,
+  dataQuerySchema as a,
+  createForumSummaryPrompt as a0,
+  forumSummarySchema as a1,
+  evaluateChartPresentation as a2,
+  GOOGLE_MODELS as a3,
+  OPENAI_MODELS as a4,
+  DEFAULT_FALLBACK_MODEL as a5,
+  providerConfig as a6,
+  transientRetry as a7,
+  contextManager as a8,
+  datasetSemanticAnnotator as a9,
+  enhancementGenerator as aa,
+  dataDescribeSchema as b,
+  createToolCreatePlanSchema as c,
+  dataPreparationSchema as d,
+  dataValueCountsSchema as e,
+  dataOutliersSchema as f,
+  dataMissingSchema as g,
+  detectReportStructureProposalWithAi as h,
   isProviderConfigured as i,
-  generateCoreAnalysisSummary as j,
-  generateProactiveInsights as k,
-  generateSummary as l,
-  createProviderModel as m,
-  buildEvidenceEvaluationPrompt as n,
-  generateFilterFunction as o,
-  prepareSchemaForProvider as p,
-  buildClarificationAssessmentPrompt as q,
-  getResolvedToolRegistry as r,
+  detectIntakeStructureWithAi as j,
+  extractAiReportContext as k,
+  evaluateAiSqlPrecheck as l,
+  buildDeterministicNormalizationPlan as m,
+  hasExecutableHierarchyShape as n,
+  generateAiCleaningProgram as o,
+  generateSummary as p,
+  generateFinalSummary as q,
+  generateCoreAnalysisSummary as r,
   shouldRequestReportStructureProposal as s,
-  isTransientProviderError as t,
-  runWithOverflowCompaction as u,
-  validateAction as v,
-  withTransientRetry as w,
-  prepareManagedContext as x,
-  createContextSection as y,
-  formatCompactVisibleEvidenceSummary as z
+  generateProactiveInsights as t,
+  generateFilterFunction as u,
+  createProviderModel as v,
+  buildClarificationAssessmentPrompt as w,
+  withTransientRetry as x,
+  streamGenerateText as y,
+  getResolvedToolRegistry as z
 };

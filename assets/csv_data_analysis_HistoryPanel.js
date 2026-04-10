@@ -1,7 +1,7 @@
 import { j as jsxRuntimeExports, r as reactExports } from "./csv_data_analysis_vendor-react-core.js";
 import { s as shallow$1 } from "./csv_data_analysis_vendor-state.js";
 import { u as useAppStore } from "./csv_data_analysis_index.js";
-import { O as getTranslation, cy as getStorageEstimate, bm as CURRENT_SESSION_KEY } from "./csv_data_analysis_app-agent.js";
+import { I as getTranslation, cp as getStorageBreakdown, cq as clearAllCacheStorage, ba as CURRENT_SESSION_KEY, cr as clearStore } from "./csv_data_analysis_app-agent.js";
 import { I as IconClose } from "./csv_data_analysis_IconClose.js";
 import "./csv_data_analysis_vendor-data.js";
 import "./csv_data_analysis_vendor-monaco.js";
@@ -201,6 +201,188 @@ const HistoryReportRow = ({
     ] }, entry.id)) })
   ] });
 };
+const formatBytes$1 = (bytes) => {
+  if (bytes === 0) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+};
+const STORE_COLORS = {
+  reports: "bg-blue-400",
+  report_artifacts: "bg-indigo-400",
+  original_data: "bg-amber-400",
+  agent_memory_runs: "bg-emerald-400",
+  vector_memory: "bg-purple-400",
+  settings: "bg-slate-300",
+  cache: "bg-orange-400"
+};
+const STORE_DOT_COLORS = {
+  reports: "bg-blue-400",
+  report_artifacts: "bg-indigo-400",
+  original_data: "bg-amber-400",
+  agent_memory_runs: "bg-emerald-400",
+  vector_memory: "bg-purple-400",
+  settings: "bg-slate-300",
+  cache: "bg-orange-400"
+};
+const TrashIcon = ({ className = "h-3.5 w-3.5" }) => /* @__PURE__ */ jsxRuntimeExports.jsx("svg", { xmlns: "http://www.w3.org/2000/svg", fill: "none", viewBox: "0 0 24 24", strokeWidth: 1.5, stroke: "currentColor", className, children: /* @__PURE__ */ jsxRuntimeExports.jsx("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" }) });
+const RefreshIcon = ({ className = "h-3.5 w-3.5" }) => /* @__PURE__ */ jsxRuntimeExports.jsx("svg", { xmlns: "http://www.w3.org/2000/svg", fill: "none", viewBox: "0 0 24 24", strokeWidth: 1.5, stroke: "currentColor", className, children: /* @__PURE__ */ jsxRuntimeExports.jsx("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182" }) });
+const UNCLEARABLE_STORES = /* @__PURE__ */ new Set(["settings"]);
+const StorageBreakdown = ({ activeSessionId, onStorageChanged }) => {
+  const [data, setData] = reactExports.useState(null);
+  const [loading, setLoading] = reactExports.useState(true);
+  const [clearing, setClearing] = reactExports.useState(null);
+  const refresh = reactExports.useCallback(async () => {
+    setLoading(true);
+    try {
+      const result = await getStorageBreakdown();
+      setData(result);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+  reactExports.useEffect(() => {
+    void refresh();
+  }, [refresh]);
+  const handleClearStore = async (storeName) => {
+    if (UNCLEARABLE_STORES.has(storeName)) return;
+    const protectKeys = /* @__PURE__ */ new Set();
+    if (storeName === "reports") {
+      protectKeys.add(CURRENT_SESSION_KEY);
+      if (activeSessionId) protectKeys.add(activeSessionId);
+    }
+    if (storeName === "original_data") {
+      if (activeSessionId) protectKeys.add(activeSessionId);
+      try {
+        const tabId = sessionStorage.getItem("csv_agent_tab_session_id");
+        if (tabId) protectKeys.add(tabId);
+      } catch {
+      }
+    }
+    setClearing(storeName);
+    try {
+      await clearStore(storeName, protectKeys.size > 0 ? protectKeys : void 0);
+      await refresh();
+      onStorageChanged == null ? void 0 : onStorageChanged();
+    } finally {
+      setClearing(null);
+    }
+  };
+  const handleClearCache = async () => {
+    setClearing("cache");
+    try {
+      await clearAllCacheStorage();
+      await refresh();
+      onStorageChanged == null ? void 0 : onStorageChanged();
+    } finally {
+      setClearing(null);
+    }
+  };
+  if (loading && !data) {
+    return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "px-4 py-3 text-xs text-slate-400 text-center", children: "Scanning storage..." });
+  }
+  if (!data) return null;
+  const allSegments = [
+    ...data.stores.map((s) => ({
+      key: s.storeName,
+      label: s.label,
+      bytes: s.estimatedBytes,
+      count: s.recordCount,
+      color: STORE_COLORS[s.storeName] ?? "bg-slate-300",
+      dotColor: STORE_DOT_COLORS[s.storeName] ?? "bg-slate-300",
+      clearable: !UNCLEARABLE_STORES.has(s.storeName) && s.recordCount > 0,
+      isCache: false
+    })),
+    {
+      key: "cache",
+      label: "Cache Storage (ONNX models)",
+      bytes: data.cacheStorage.estimatedBytes,
+      count: data.cacheStorage.cacheCount,
+      color: STORE_COLORS.cache,
+      dotColor: STORE_DOT_COLORS.cache,
+      clearable: data.cacheStorage.cacheCount > 0,
+      isCache: true
+    }
+  ];
+  const maxBytes = Math.max(...allSegments.map((s) => s.bytes), 1);
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-2", children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[11px] font-semibold text-slate-600 uppercase tracking-wider", children: "Storage Inspector" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs(
+        "button",
+        {
+          onClick: () => void refresh(),
+          disabled: loading,
+          className: "flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-slate-400 hover:bg-slate-100 hover:text-slate-600 disabled:opacity-50",
+          title: "Refresh",
+          children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx(RefreshIcon, { className: `h-3 w-3 ${loading ? "animate-spin" : ""}` }),
+            "Refresh"
+          ]
+        }
+      )
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "h-3 w-full rounded-full bg-slate-100 overflow-hidden flex", children: allSegments.filter((s) => s.bytes > 0).map((seg) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+      "div",
+      {
+        className: `${seg.color} transition-all`,
+        style: { width: `${Math.max(1, seg.bytes / data.rawOriginBytes * 100)}%` },
+        title: `${seg.label}: ${formatBytes$1(seg.bytes)}`
+      },
+      seg.key
+    )) }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between text-[10px] text-slate-400", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
+        "IndexedDB: ",
+        formatBytes$1(data.totalIdbBytes)
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
+        "Total (with cache): ",
+        formatBytes$1(data.rawOriginBytes)
+      ] })
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "space-y-0.5", children: allSegments.map((seg) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
+      "div",
+      {
+        className: "flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-slate-50 group/row",
+        children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: `h-2.5 w-2.5 rounded-full flex-shrink-0 ${seg.dotColor}` }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex-1 min-w-0", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-xs text-slate-700 truncate", children: seg.label }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-[10px] text-slate-400", children: seg.isCache ? `${seg.count} cache${seg.count !== 1 ? "s" : ""}` : `${seg.count} record${seg.count !== 1 ? "s" : ""}` })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-2 flex-shrink-0", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "w-20 h-1.5 rounded-full bg-slate-100 overflow-hidden", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "div",
+              {
+                className: `h-full rounded-full ${seg.color}`,
+                style: { width: `${Math.max(1, seg.bytes / maxBytes * 100)}%` }
+              }
+            ) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[10px] font-mono text-slate-500 w-16 text-right", children: formatBytes$1(seg.bytes) }),
+            seg.clearable ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                onClick: () => void (seg.isCache ? handleClearCache() : handleClearStore(seg.key)),
+                disabled: clearing !== null,
+                className: "flex items-center justify-center h-5 w-5 rounded text-slate-300 opacity-0 group-hover/row:opacity-100 transition-opacity hover:bg-red-50 hover:text-red-500 disabled:opacity-50 disabled:cursor-wait",
+                title: `Clear ${seg.label}`,
+                children: clearing === seg.key ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "h-3 w-3 border-2 border-slate-300 border-t-transparent rounded-full animate-spin" }) : /* @__PURE__ */ jsxRuntimeExports.jsx(TrashIcon, { className: "h-3 w-3" })
+              }
+            ) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "w-5" })
+          ] })
+        ]
+      },
+      seg.key
+    )) })
+  ] });
+};
+const formatBytes = (bytes) => {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+};
+const HARD_CAP_DISPLAY = 50 * 1024 * 1024;
 function groupReportsByFilename(reports, currentSessionId, sortField, sortDirection) {
   const groups = /* @__PURE__ */ new Map();
   for (const report of reports) {
@@ -239,6 +421,7 @@ const HistoryPanel = () => {
     reports,
     onLoadReport,
     onDeleteReport,
+    onPurgeStorage,
     onOpenReport,
     onExportPdf,
     currentSessionId,
@@ -250,6 +433,7 @@ const HistoryPanel = () => {
     reports: state.reportsList,
     onLoadReport: state.handleLoadReport,
     onDeleteReport: state.handleDeleteReport,
+    onPurgeStorage: state.handlePurgeStorage,
     onOpenReport: state.openPersistedReportArtifact,
     onExportPdf: state.exportPersistedReportPdf,
     currentSessionId: state.sessionId,
@@ -264,19 +448,35 @@ const HistoryPanel = () => {
   const [sortField, setSortField] = reactExports.useState("updatedAt");
   const [sortDirection, setSortDirection] = reactExports.useState("desc");
   const [storageInfo, setStorageInfo] = reactExports.useState(null);
+  const [isPurging, setIsPurging] = reactExports.useState(false);
+  const [showStorageInspector, setShowStorageInspector] = reactExports.useState(false);
   const overflowRef = reactExports.useRef(null);
+  const refreshStorageInfo = async () => {
+    try {
+      const breakdown = await getStorageBreakdown();
+      setStorageInfo({
+        idbLabel: formatBytes(breakdown.totalIdbBytes),
+        idbBytes: breakdown.totalIdbBytes
+      });
+    } catch {
+    }
+  };
   reactExports.useEffect(() => {
     if (!isOpen) return;
-    void getStorageEstimate().then((est) => {
-      if (est) {
-        setStorageInfo({
-          usageMB: (est.usageBytes / 1024 / 1024).toFixed(1),
-          quotaMB: (est.quotaBytes / 1024 / 1024).toFixed(0),
-          percent: est.usagePercent.toFixed(1)
-        });
-      }
-    });
+    void refreshStorageInfo();
   }, [isOpen]);
+  const handlePurge = async () => {
+    const nonCurrentReports = reports.filter((r) => r.id !== currentSessionId && r.id !== CURRENT_SESSION_KEY);
+    const msg = nonCurrentReports.length > 0 ? `Delete all ${nonCurrentReports.length} history records and free up storage? This cannot be undone.` : "Clear all cached data (original CSV backups, memory runs, artifacts) to free up storage?";
+    if (!window.confirm(msg)) return;
+    setIsPurging(true);
+    try {
+      await onPurgeStorage();
+      await refreshStorageInfo();
+    } finally {
+      setIsPurging(false);
+    }
+  };
   const toggleSort = (field) => {
     if (sortField === field) {
       setSortDirection((prev) => prev === "desc" ? "asc" : "desc");
@@ -373,8 +573,8 @@ const HistoryPanel = () => {
             className: "w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 placeholder-slate-400 focus:border-blue-300 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-300"
           }
         ) }),
-        reports.length > 2 && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between border-b border-slate-100 px-5 py-2", children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-1 text-[11px]", children: [
+        (reports.length > 2 || true) && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between border-b border-slate-100 px-5 py-2", children: [
+          reports.length > 2 ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-1 text-[11px]", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-slate-400 mr-1", children: "Sort:" }),
             [
               ["updatedAt", "Last Modified"],
@@ -392,21 +592,48 @@ const HistoryPanel = () => {
               },
               field
             ))
-          ] }),
-          storageInfo && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-1.5 text-[10px] text-slate-400", title: `${storageInfo.usageMB} MB / ${storageInfo.quotaMB} MB (${storageInfo.percent}%)`, children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "h-1.5 w-16 rounded-full bg-slate-100 overflow-hidden", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
-              "div",
+          ] }) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", {}),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-2", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs(
+              "button",
               {
-                className: `h-full rounded-full transition-all ${Number(storageInfo.percent) > 75 ? "bg-amber-400" : "bg-blue-400"}`,
-                style: { width: `${Math.min(100, Number(storageInfo.percent))}%` }
+                onClick: () => setShowStorageInspector((prev) => !prev),
+                className: "flex items-center gap-1.5 text-[10px] text-slate-400 hover:text-slate-600 transition-colors cursor-pointer",
+                title: storageInfo ? `IndexedDB: ${storageInfo.idbLabel} — click to inspect` : "Click to inspect storage",
+                children: [
+                  storageInfo && /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "h-1.5 w-16 rounded-full bg-slate-100 overflow-hidden", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "div",
+                      {
+                        className: `h-full rounded-full transition-all ${storageInfo.idbBytes > HARD_CAP_DISPLAY ? "bg-amber-400" : "bg-blue-400"}`,
+                        style: { width: `${Math.min(100, Math.max(2, storageInfo.idbBytes / HARD_CAP_DISPLAY * 100))}%` }
+                      }
+                    ) }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: storageInfo.idbLabel })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("svg", { xmlns: "http://www.w3.org/2000/svg", viewBox: "0 0 20 20", fill: "none", stroke: "currentColor", strokeWidth: "1.75", className: `h-3 w-3 transition-transform ${showStorageInspector ? "" : "-rotate-90"}`, children: /* @__PURE__ */ jsxRuntimeExports.jsx("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M6 8l4 4 4-4" }) })
+                ]
               }
-            ) }),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
-              storageInfo.usageMB,
-              " MB"
-            ] })
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                onClick: () => void handlePurge(),
+                disabled: isPurging,
+                className: "rounded px-1.5 py-0.5 text-[10px] font-medium text-red-500 transition-colors hover:bg-red-50 hover:text-red-700 disabled:opacity-50 disabled:cursor-wait",
+                title: "Clear all history and free up storage",
+                children: isPurging ? "Clearing..." : "Clear All"
+              }
+            )
           ] })
         ] }),
+        showStorageInspector && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "border-b border-slate-100 px-5 py-3 bg-slate-50/50", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+          StorageBreakdown,
+          {
+            activeSessionId: currentSessionId,
+            onStorageChanged: () => void refreshStorageInfo()
+          }
+        ) }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex-grow overflow-y-auto", children: filteredGroups.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center justify-center h-full px-5", children: /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm text-slate-500", children: search ? getTranslation("history_no_results", language) : getTranslation("history_empty", language) }) }) : /* @__PURE__ */ jsxRuntimeExports.jsx("ul", { className: "divide-y divide-slate-100", children: filteredGroups.map((group) => /* @__PURE__ */ jsxRuntimeExports.jsx(
           HistoryReportRow,
           {
@@ -429,15 +656,15 @@ const HistoryPanel = () => {
           group.latest.id
         )) }) }),
         confirmLoadId && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "absolute inset-0 z-30 flex items-center justify-center rounded-2xl bg-slate-900/40 backdrop-blur-[2px]", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mx-6 w-full max-w-sm rounded-xl border border-slate-200 bg-white p-5 shadow-2xl", children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { className: "text-sm font-semibold text-slate-800", children: language === "Mandarin" ? "切换会话" : "Switch Session" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-2 text-xs leading-relaxed text-slate-500", children: language === "Mandarin" ? "加载此会话将替换当前工作区。您的当前数据已自动保存，不会丢失。" : "Loading this session will replace your current workspace. Your current data has been auto-saved and will not be lost." }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { className: "text-sm font-semibold text-slate-800", children: getTranslation("history_switch_session", language) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-2 text-xs leading-relaxed text-slate-500", children: getTranslation("history_switch_session_desc", language) }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-4 flex justify-end gap-2", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx(
               "button",
               {
                 onClick: () => setConfirmLoadId(null),
                 className: "rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-50",
-                children: language === "Mandarin" ? "取消" : "Cancel"
+                children: getTranslation("history_switch_cancel", language)
               }
             ),
             /* @__PURE__ */ jsxRuntimeExports.jsx(
@@ -445,7 +672,7 @@ const HistoryPanel = () => {
               {
                 onClick: () => void doLoad(confirmLoadId),
                 className: "rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-700",
-                children: language === "Mandarin" ? "确认加载" : "Load Session"
+                children: getTranslation("history_switch_confirm", language)
               }
             )
           ] })

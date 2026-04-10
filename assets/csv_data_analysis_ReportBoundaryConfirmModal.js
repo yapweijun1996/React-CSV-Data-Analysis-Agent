@@ -1,6 +1,6 @@
 import { r as reactExports, j as jsxRuntimeExports } from "./csv_data_analysis_vendor-react-core.js";
 import { u as useAppStore } from "./csv_data_analysis_index.js";
-import { O as getTranslation } from "./csv_data_analysis_app-agent.js";
+import { I as getTranslation } from "./csv_data_analysis_app-agent.js";
 import "./csv_data_analysis_vendor-data.js";
 import "./csv_data_analysis_vendor-monaco.js";
 import "./csv_data_analysis_vendor-misc.js";

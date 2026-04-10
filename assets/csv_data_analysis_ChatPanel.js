@@ -1,16 +1,16 @@
 import { r as reactExports, j as jsxRuntimeExports, W as We } from "./csv_data_analysis_vendor-react-core.js";
 import { s as shallow$1 } from "./csv_data_analysis_vendor-state.js";
 import { u as useAppStore } from "./csv_data_analysis_index.js";
-import { O as getTranslation, bY as isEndUserMode, bZ as normalizeClarificationRequest, b_ as resolveEffectivePendingClarification, b$ as resolveSuggestedActionPrompt, c0 as MAX_TIMELINE_CHAT_MESSAGES, c1 as TERMINAL_CHAT_LIFECYCLE_STATES, c2 as shouldShowSettingsButton, bV as shouldShowAgentThinkingModal, bW as shouldShowLongTermMemory, bf as shouldAllowSettingsSurface } from "./csv_data_analysis_app-agent.js";
+import { I as getTranslation, bP as isEndUserMode, bQ as normalizeClarificationRequest, bR as resolveEffectivePendingClarification, bS as resolveSuggestedActionPrompt, bT as MAX_TIMELINE_CHAT_MESSAGES, bU as TERMINAL_CHAT_LIFECYCLE_STATES, bV as shouldShowSettingsButton, bM as shouldShowAgentThinkingModal, bN as shouldShowLongTermMemory, b3 as shouldAllowSettingsSurface } from "./csv_data_analysis_app-agent.js";
 import { M as MarkdownRenderer } from "./csv_data_analysis_MarkdownRenderer.js";
 import { I as IconThinking } from "./csv_data_analysis_IconThinking.js";
 import { I as IconAi } from "./csv_data_analysis_IconAi.js";
+import { w as resolveDisplayPlanTitle } from "./csv_data_analysis_app-reporting.js";
 import "./csv_data_analysis_vendor-data.js";
 import "./csv_data_analysis_vendor-monaco.js";
 import "./csv_data_analysis_vendor-misc.js";
-import "./csv_data_analysis_app-reporting.js";
-import "./csv_data_analysis_vendor-ai-sdk.js";
 import "./csv_data_analysis_app-ai.js";
+import "./csv_data_analysis_vendor-ai-sdk.js";
 import "./csv_data_analysis_app-agent-planning.js";
 import "./csv_data_analysis_vendor-storage.js";
 import "./csv_data_analysis_vendor-ui.js";
@@ -135,6 +135,40 @@ const GoalConfirmationCard = ({ msg }) => {
     ] })
   ] });
 };
+const CopyButton = ({ text, className = "" }) => {
+  const [copied, setCopied] = reactExports.useState(false);
+  const handleCopy = reactExports.useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }
+  }, [text]);
+  return /* @__PURE__ */ jsxRuntimeExports.jsx(
+    "button",
+    {
+      type: "button",
+      onClick: handleCopy,
+      title: copied ? "Copied!" : "Copy",
+      className: `opacity-0 group-hover/bubble:opacity-100 transition-opacity rounded p-1 ${className}`,
+      children: copied ? /* @__PURE__ */ jsxRuntimeExports.jsx("svg", { className: "h-3.5 w-3.5", viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", children: /* @__PURE__ */ jsxRuntimeExports.jsx("path", { d: "M3.5 8.5l3 3 6-7" }) }) : /* @__PURE__ */ jsxRuntimeExports.jsxs("svg", { className: "h-3.5 w-3.5", viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", strokeWidth: "1.5", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("rect", { x: "5", y: "5", width: "8", height: "8", rx: "1.5" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("path", { d: "M3 11V3.5A1.5 1.5 0 014.5 2H11" })
+      ] })
+    }
+  );
+};
 function translateCleaningKind(kind, language) {
   const key = `cleaning_step_kind_${kind}`;
   const result = getTranslation(key, language);
@@ -155,10 +189,13 @@ const AiMessage = ({
   const isActiveError = Boolean(msg.isError && !msg.resolved);
   const borderAccent = isActiveError ? "border-l-4 border-l-red-400" : msg.type === "ai_cleaning_step" ? "border-l-4 border-l-amber-300" : msg.type === "ai_query_trace" ? "border-l-4 border-l-indigo-300" : msg.type === "ai_mutation_confirmation" ? "border-l-4 border-l-rose-300" : msg.type === "ai_cleaning_failure" ? "border-l-4 border-l-red-300" : "";
   const timestamp = msg.timestamp instanceof Date ? msg.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : null;
-  return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex min-w-0 w-full", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: `animate-fade-in min-w-0 w-full max-w-full rounded-card p-4 text-sm xl:max-w-3xl ${borderAccent} ${isActiveError ? "bg-red-50 border border-red-200 text-red-800" : msg.resolved ? "bg-slate-50 border border-slate-200 text-slate-600" : "bg-white border border-slate-200 text-slate-800 shadow-sm"}`, children: [
+  return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex min-w-0 w-full", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: `group/bubble animate-fade-in min-w-0 w-full max-w-full rounded-card p-4 text-sm xl:max-w-3xl ${borderAccent} ${isActiveError ? "bg-red-50 border border-red-200 text-red-800" : msg.resolved ? "bg-slate-50 border border-slate-200 text-slate-600" : "bg-white border border-slate-200 text-slate-800 shadow-sm"}`, children: [
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mb-2 flex items-center justify-between", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx("h4", { className: `font-semibold ${isActiveError ? "text-red-800" : "text-slate-900"}`, children: isActiveError ? "Error" : msg.resolved ? "Resolved" : "Assistant" }),
-      timestamp && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[11px] text-slate-400", children: timestamp })
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-1", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx(CopyButton, { text: msg.text, className: "text-slate-300 hover:text-slate-500" }),
+        timestamp && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[11px] text-slate-400", children: timestamp })
+      ] })
     ] }),
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "min-w-0", children: [
       msg.cleaningStep && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mb-3 flex flex-wrap gap-2 text-[11px] font-medium", children: [
@@ -314,11 +351,46 @@ const ThinkingCard = ({ msg }) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", 
   ] }),
   /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "text-sm mb-3", children: /* @__PURE__ */ jsxRuntimeExports.jsx(MarkdownRenderer, { content: msg.text, compact: true }) })
 ] });
+const renderWithMentionChips = (text, cardTitles) => {
+  if (cardTitles.length === 0) return null;
+  const sorted = [...cardTitles].sort((a, b) => b.length - a.length);
+  const escaped = sorted.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const pattern = new RegExp(`@(${escaped.join("|")})`, "g");
+  const parts = [];
+  let lastIndex = 0;
+  for (const match of text.matchAll(pattern)) {
+    const before = text.slice(lastIndex, match.index);
+    if (before) parts.push(before);
+    parts.push(
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "inline-flex items-center rounded bg-white/20 px-1 py-0.5 text-[13px] font-medium text-blue-100", children: [
+        "@",
+        match[1]
+      ] }, match.index)
+    );
+    lastIndex = (match.index ?? 0) + match[0].length;
+  }
+  const remaining = text.slice(lastIndex);
+  if (remaining) parts.push(remaining);
+  return parts.some((p) => typeof p !== "string") ? /* @__PURE__ */ jsxRuntimeExports.jsx(jsxRuntimeExports.Fragment, { children: parts }) : null;
+};
 const UserMessage = ({ msg }) => {
   const timestamp = msg.timestamp instanceof Date ? msg.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : null;
-  return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex min-w-0 w-full justify-end", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "min-w-0 max-w-[85%] xl:max-w-2xl", children: [
-    timestamp && /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mb-1 text-right text-[11px] text-slate-400", children: timestamp }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "rounded-card bg-blue-600 px-3 py-1.5", children: /* @__PURE__ */ jsxRuntimeExports.jsx(MarkdownRenderer, { content: msg.text, compact: true, tone: "inverse" }) })
+  const cardIds = msg.referencedCardIds;
+  const cardTitles = reactExports.useMemo(() => {
+    if (!cardIds || cardIds.length === 0) return [];
+    const cards = useAppStore.getState().analysisCards ?? [];
+    return cardIds.map((id) => {
+      var _a, _b;
+      return (_b = (_a = cards.find((c) => c.id === id)) == null ? void 0 : _a.plan) == null ? void 0 : _b.title;
+    }).filter(Boolean);
+  }, [cardIds]);
+  const chipContent = cardTitles.length > 0 ? renderWithMentionChips(msg.text, cardTitles) : null;
+  return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex min-w-0 w-full justify-end", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "group/bubble min-w-0 max-w-[85%] xl:max-w-2xl", children: [
+    timestamp && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mb-1 flex items-center justify-end gap-1", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx(CopyButton, { text: msg.text, className: "text-slate-300 hover:text-slate-500" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-[11px] text-slate-400", children: timestamp })
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "rounded-card bg-blue-600 px-3 py-1.5", children: chipContent ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm text-white whitespace-pre-wrap leading-relaxed", children: chipContent }) : /* @__PURE__ */ jsxRuntimeExports.jsx(MarkdownRenderer, { content: msg.text, compact: true, tone: "inverse" }) })
   ] }) });
 };
 const EnhancementSuggestionCard = ({ msg }) => {
@@ -519,6 +591,105 @@ const ChatPanelHeader = ({
 ] });
 const IconSend = (props) => /* @__PURE__ */ jsxRuntimeExports.jsx("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-5 w-5", viewBox: "0 0 20 20", fill: "currentColor", ...props, children: /* @__PURE__ */ jsxRuntimeExports.jsx("path", { fillRule: "evenodd", d: "M10 17a1 1 0 01-1-1V5.414L5.707 8.707a1 1 0 01-1.414-1.414l5-5a1 1 0 011.414 0l5 5a1 1 0 01-1.414 1.414L11 5.414V16a1 1 0 01-1 1z", clipRule: "evenodd" }) });
 const IconStop = (props) => /* @__PURE__ */ jsxRuntimeExports.jsx("svg", { xmlns: "http://www.w3.org/2000/svg", className: "h-5 w-5", viewBox: "0 0 20 20", fill: "currentColor", ...props, children: /* @__PURE__ */ jsxRuntimeExports.jsx("rect", { x: "5", y: "5", width: "10", height: "10", rx: "2" }) });
+const chartTypeLabel = (t) => {
+  const map = {
+    bar: "Bar",
+    column: "Bar",
+    line: "Line",
+    pie: "Pie",
+    doughnut: "Pie",
+    scatter: "Dot",
+    radar: "Radar",
+    area: "Area",
+    stacked_bar: "Stack",
+    stacked_column: "Stack",
+    combo: "Combo",
+    bubble: "Dot",
+    polar_area: "Polar",
+    pivot_matrix: "Pivot"
+  };
+  return map[t] ?? "";
+};
+const CardMentionPopup = ({
+  cards,
+  query,
+  onSelect,
+  onClose
+}) => {
+  const [activeIndex, setActiveIndex] = reactExports.useState(0);
+  const listRef = reactExports.useRef(null);
+  const filtered = cards.filter(
+    (c) => c.title.toLowerCase().includes(query.toLowerCase())
+  );
+  reactExports.useEffect(() => {
+    setActiveIndex(0);
+  }, [query]);
+  reactExports.useEffect(() => {
+    var _a;
+    const item = (_a = listRef.current) == null ? void 0 : _a.children[activeIndex];
+    item == null ? void 0 : item.scrollIntoView({ block: "nearest" });
+  }, [activeIndex]);
+  const handleKeyDown = reactExports.useCallback((e) => {
+    if (filtered.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveIndex((i) => (i + 1) % filtered.length);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIndex((i) => (i - 1 + filtered.length) % filtered.length);
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      e.stopPropagation();
+      onSelect(filtered[activeIndex]);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      onClose();
+    }
+  }, [filtered, activeIndex, onSelect, onClose]);
+  reactExports.useEffect(() => {
+    document.addEventListener("keydown", handleKeyDown, true);
+    return () => document.removeEventListener("keydown", handleKeyDown, true);
+  }, [handleKeyDown]);
+  if (filtered.length === 0) {
+    return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "absolute bottom-full left-0 right-0 z-50 mb-1 rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-400 shadow-lg", children: "No matching cards" });
+  }
+  return /* @__PURE__ */ jsxRuntimeExports.jsx(
+    "ul",
+    {
+      ref: listRef,
+      role: "listbox",
+      className: "absolute bottom-full left-0 right-0 z-50 mb-1 max-h-80 overflow-y-auto rounded-lg border border-slate-200 bg-white py-1 shadow-lg",
+      children: filtered.map((card, i) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
+        "li",
+        {
+          role: "option",
+          "aria-selected": i === activeIndex,
+          onMouseEnter: () => setActiveIndex(i),
+          onMouseDown: (e) => {
+            e.preventDefault();
+            onSelect(card);
+          },
+          className: `flex cursor-pointer items-center gap-2 px-3 py-2 text-sm transition-colors ${i === activeIndex ? "bg-blue-50 text-blue-700" : "text-slate-700 hover:bg-slate-50"}`,
+          children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "flex-shrink-0 rounded bg-slate-100 px-1 py-0.5 text-[10px] font-medium text-slate-500", children: chartTypeLabel(card.chartType) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "truncate", children: card.title })
+          ]
+        },
+        card.id
+      ))
+    }
+  );
+};
+const renderHighlightedInput = (text, mentionMap) => {
+  if (mentionMap.size === 0) return text;
+  const titles = [...mentionMap.keys()].sort((a, b) => b.length - a.length);
+  const escaped = titles.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const pattern = new RegExp(`(@(?:${escaped.join("|")}))`, "g");
+  const parts = text.split(pattern);
+  return /* @__PURE__ */ jsxRuntimeExports.jsx(jsxRuntimeExports.Fragment, { children: parts.map(
+    (part, i) => pattern.test(part) ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "rounded bg-blue-100 text-blue-700 font-medium", children: part }, i) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-slate-900", children: part }, i)
+  ) });
+};
 const BusyButtonSpinner = () => /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "relative flex h-4 w-4 items-center justify-center", "aria-hidden": "true", children: [
   /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "absolute inset-0 rounded-full border-2 border-white/35 border-t-white animate-spin" }),
   /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "h-1.5 w-1.5 rounded-full bg-white/90 animate-pulse" })
@@ -568,7 +739,7 @@ const getComposerBusyState = ({
       shortLabel: getTranslation("chat_processing_short", language),
       title: getTranslation("chat_processing_title", language),
       detail: latestProgressText ?? getTranslation("chat_processing_detail", language),
-      accentClassName: "bg-slate-100 text-slate-700 ring-1 ring-slate-200",
+      accentClassName: "bg-white text-slate-700 ring-1 ring-slate-200 shadow-sm",
       indicatorClassName: "bg-slate-500",
       buttonClassName: "bg-slate-700 hover:bg-slate-700 focus:ring-slate-300 disabled:cursor-wait disabled:bg-slate-700 disabled:text-white disabled:opacity-100"
     };
@@ -602,6 +773,37 @@ const ChatComposer = ({
   const onScrollNeededRef = reactExports.useRef(onScrollNeeded);
   onScrollNeededRef.current = onScrollNeeded;
   const disclaimerTextId = "chat-composer-disclaimer";
+  const [mentionState, setMentionState] = reactExports.useState(null);
+  const mentionMapRef = reactExports.useRef(/* @__PURE__ */ new Map());
+  const [mentionCount, setMentionCount] = reactExports.useState(0);
+  const mentionCards = reactExports.useMemo(() => {
+    if (!(mentionState == null ? void 0 : mentionState.isOpen)) return [];
+    return (useAppStore.getState().analysisCards ?? []).map((c) => ({
+      id: c.id,
+      title: resolveDisplayPlanTitle(c.plan),
+      chartType: c.displayChartType ?? "bar"
+    }));
+  }, [mentionState == null ? void 0 : mentionState.isOpen]);
+  const handleMentionSelect = reactExports.useCallback((card) => {
+    var _a;
+    if (!mentionState) return;
+    const before = input.slice(0, mentionState.startIndex);
+    const cursorPos = ((_a = textareaRef.current) == null ? void 0 : _a.selectionStart) ?? input.length;
+    const after = input.slice(cursorPos);
+    const displayMention = `@${card.title} `;
+    mentionMapRef.current.set(card.title, card.id);
+    setMentionCount((c) => c + 1);
+    const newInput = before + displayMention + after;
+    setInput(newInput);
+    setMentionState(null);
+    requestAnimationFrame(() => {
+      var _a2, _b;
+      const pos = before.length + displayMention.length;
+      (_a2 = textareaRef.current) == null ? void 0 : _a2.setSelectionRange(pos, pos);
+      (_b = textareaRef.current) == null ? void 0 : _b.focus();
+    });
+  }, [input, mentionState]);
+  const handleMentionClose = reactExports.useCallback(() => setMentionState(null), []);
   const hasComposerInput = Boolean(input.trim());
   const canQueueComposerMessage = hasRunningTurn && !isComposerDisabled && hasComposerInput;
   const showQueueSendButton = hasRunningTurn && hasComposerInput;
@@ -634,10 +836,58 @@ const ChatComposer = ({
   const handleSend = (e) => {
     e.preventDefault();
     if (!canSubmitComposerMessage) return;
-    onSend(input.trim());
+    let messageToSend = input.trim();
+    for (const [title, cardId] of mentionMapRef.current) {
+      messageToSend = messageToSend.replace(`@${title}`, `@[${title}](${cardId})`);
+    }
+    const remainingMentionPattern = /@([A-Z][^\n@]*?)(?=\s|$)/g;
+    if (remainingMentionPattern.test(messageToSend) && !messageToSend.includes("](")) {
+      const cards = useAppStore.getState().analysisCards ?? [];
+      const titleToId = new Map(cards.map((c) => [resolveDisplayPlanTitle(c.plan), c.id]));
+      const sortedTitles = [...titleToId.keys()].sort((a, b) => b.length - a.length);
+      for (const title of sortedTitles) {
+        const cardId = titleToId.get(title);
+        if (messageToSend.includes(`@${title}`)) {
+          messageToSend = messageToSend.replace(`@${title}`, `@[${title}](${cardId})`);
+        }
+      }
+    }
+    onSend(messageToSend);
     setInput("");
+    setMentionState(null);
+    mentionMapRef.current.clear();
+    setMentionCount(0);
+  };
+  const handleInputChange = (e) => {
+    const newValue = e.target.value;
+    setInput(newValue);
+    const cursorPos = e.target.selectionStart ?? newValue.length;
+    const textBeforeCursor = newValue.slice(0, cursorPos);
+    const lastAtIndex = textBeforeCursor.lastIndexOf("@");
+    if (lastAtIndex >= 0) {
+      const afterAt = textBeforeCursor.slice(lastAtIndex + 1);
+      if (/\[[^\]]*\]\([^)]*\)/.test(textBeforeCursor.slice(lastAtIndex))) {
+        setMentionState(null);
+        return;
+      }
+      const isCompletedMention = [...mentionMapRef.current.keys()].some(
+        (title) => afterAt.startsWith(title)
+      );
+      if (isCompletedMention) {
+        setMentionState(null);
+        return;
+      }
+      if (!/\n/.test(afterAt)) {
+        setMentionState({ isOpen: true, query: afterAt, startIndex: lastAtIndex });
+        return;
+      }
+    }
+    setMentionState(null);
   };
   const handleKeyDown = (e) => {
+    if ((mentionState == null ? void 0 : mentionState.isOpen) && ["ArrowUp", "ArrowDown", "Enter", "Escape"].includes(e.key)) {
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend(e);
@@ -683,67 +933,89 @@ const ChatComposer = ({
       ] }),
       reportProgressLabel && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "rounded-full bg-black/5 px-2 py-0.5 text-[11px] font-semibold", children: reportProgressLabel })
     ] }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(
-      "div",
-      {
-        className: "w-full overflow-hidden rounded-2xl bg-white px-4 pb-2 pt-3 shadow-[0_0_0_1px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.04)] transition-all duration-200 focus-within:shadow-[0_0_0_2px_rgba(0,0,0,0.14),0_2px_8px_rgba(0,0,0,0.08)]",
-        children: /* @__PURE__ */ jsxRuntimeExports.jsxs(
-          "form",
-          {
-            onSubmit: handleSend,
-            className: "flex flex-col gap-1.5",
-            children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx(
-                "textarea",
-                {
-                  ref: textareaRef,
-                  rows: 1,
-                  value: input,
-                  onChange: (e) => setInput(e.target.value),
-                  onKeyDown: handleKeyDown,
-                  placeholder,
-                  disabled: isComposerDisabled,
-                  "aria-describedby": disclaimerTextId,
-                  className: "composer-textarea min-h-[24px] max-h-[200px] w-full resize-none bg-transparent px-1 py-2 text-base leading-6 text-slate-900 placeholder-slate-400/60 outline-none disabled:cursor-not-allowed disabled:text-slate-400"
-                }
-              ),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-shrink-0 items-center justify-end gap-2", children: [
-                showSecondaryCancelButton && /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "button",
-                  {
-                    type: "button",
-                    onClick: onCancelActiveTurn,
-                    disabled: isCancellationPending,
-                    title: getTranslation("cancel_run", language),
-                    "aria-label": isCancellationPending ? getTranslation("cancelling_run", language) : getTranslation("cancel_run", language),
-                    className: "flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-slate-200 text-slate-600 transition hover:bg-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-300",
-                    children: /* @__PURE__ */ jsxRuntimeExports.jsx(IconStop, { className: "h-3.5 w-3.5" })
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "button",
-                  {
-                    type: showQueueSendButton ? "submit" : primaryActsAsCancel ? "button" : "submit",
-                    onClick: !showQueueSendButton && primaryActsAsCancel ? onCancelActiveTurn : void 0,
-                    disabled: sendButtonDisabled,
-                    title: sendButtonTitle,
-                    className: `flex flex-shrink-0 items-center justify-center rounded-full text-white transition ${showQueueSendButton ? "h-8 min-w-[100px] gap-1.5 px-3 bg-black hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-[#d9d9d9] disabled:text-[#f4f4f4]" : primaryActsAsCancel ? "h-8 w-8 bg-black hover:bg-gray-800" : composerBusyState ? `h-8 min-w-[88px] gap-1.5 px-3 ${composerBusyState.buttonClassName}` : "h-8 w-8 bg-black hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-[#d9d9d9] disabled:text-[#f4f4f4]"}`,
-                    "aria-label": sendButtonLabel,
-                    children: showQueueSendButton ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsx(IconSend, { className: "h-4 w-4" }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[11px] font-semibold leading-none", children: getTranslation("chat_send_next", language) })
-                    ] }) : primaryActsAsCancel ? /* @__PURE__ */ jsxRuntimeExports.jsx(IconStop, { className: "h-3.5 w-3.5" }) : composerBusyState ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsx(BusyButtonSpinner, {}),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[11px] font-semibold leading-none", children: composerBusyState.shortLabel })
-                    ] }) : isAssistantBusy ? /* @__PURE__ */ jsxRuntimeExports.jsx(BusyButtonSpinner, {}) : /* @__PURE__ */ jsxRuntimeExports.jsx(IconSend, { className: "h-4 w-4" })
-                  }
-                )
-              ] })
-            ]
-          }
-        )
-      }
-    ),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "relative", children: [
+      (mentionState == null ? void 0 : mentionState.isOpen) && mentionCards.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsx(
+        CardMentionPopup,
+        {
+          cards: mentionCards,
+          query: mentionState.query,
+          onSelect: handleMentionSelect,
+          onClose: handleMentionClose
+        }
+      ),
+      /* @__PURE__ */ jsxRuntimeExports.jsx(
+        "div",
+        {
+          className: "w-full overflow-hidden rounded-2xl bg-white px-4 pb-2 pt-3 shadow-[0_0_0_1px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.04)] transition-all duration-200 focus-within:shadow-[0_0_0_2px_rgba(0,0,0,0.14),0_2px_8px_rgba(0,0,0,0.08)]",
+          children: /* @__PURE__ */ jsxRuntimeExports.jsxs(
+            "form",
+            {
+              onSubmit: handleSend,
+              className: "flex flex-col gap-1.5",
+              children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "relative", children: [
+                  mentionCount > 0 && /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "div",
+                    {
+                      "aria-hidden": "true",
+                      className: "pointer-events-none absolute inset-0 whitespace-pre-wrap break-words px-1 py-2 text-base leading-6",
+                      style: { color: "transparent" },
+                      children: renderHighlightedInput(input, mentionMapRef.current)
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "textarea",
+                    {
+                      ref: textareaRef,
+                      rows: 1,
+                      value: input,
+                      onChange: handleInputChange,
+                      onKeyDown: handleKeyDown,
+                      placeholder,
+                      disabled: isComposerDisabled,
+                      "aria-describedby": disclaimerTextId,
+                      className: `composer-textarea min-h-[24px] max-h-[200px] w-full resize-none bg-transparent px-1 py-2 text-base leading-6 placeholder-slate-400/60 outline-none disabled:cursor-not-allowed disabled:text-slate-400 ${mentionCount > 0 ? "text-transparent caret-slate-900" : "text-slate-900"}`
+                    }
+                  )
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-shrink-0 items-center justify-end gap-2", children: [
+                  showSecondaryCancelButton && /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      type: "button",
+                      onClick: onCancelActiveTurn,
+                      disabled: isCancellationPending,
+                      title: getTranslation("cancel_run", language),
+                      "aria-label": isCancellationPending ? getTranslation("cancelling_run", language) : getTranslation("cancel_run", language),
+                      className: "flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-slate-200 text-slate-600 transition hover:bg-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-300",
+                      children: /* @__PURE__ */ jsxRuntimeExports.jsx(IconStop, { className: "h-3.5 w-3.5" })
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      type: showQueueSendButton ? "submit" : primaryActsAsCancel ? "button" : "submit",
+                      onClick: !showQueueSendButton && primaryActsAsCancel ? onCancelActiveTurn : void 0,
+                      disabled: sendButtonDisabled,
+                      title: sendButtonTitle,
+                      className: `flex flex-shrink-0 items-center justify-center rounded-full text-white transition ${showQueueSendButton ? "h-8 min-w-[100px] gap-1.5 px-3 bg-black hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-[#d9d9d9] disabled:text-[#f4f4f4]" : primaryActsAsCancel ? "h-8 w-8 bg-black hover:bg-gray-800" : composerBusyState ? `h-8 min-w-[88px] gap-1.5 px-3 ${composerBusyState.buttonClassName}` : "h-8 w-8 bg-black hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-[#d9d9d9] disabled:text-[#f4f4f4]"}`,
+                      "aria-label": sendButtonLabel,
+                      children: showQueueSendButton ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(IconSend, { className: "h-4 w-4" }),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[11px] font-semibold leading-none", children: getTranslation("chat_send_next", language) })
+                      ] }) : primaryActsAsCancel ? /* @__PURE__ */ jsxRuntimeExports.jsx(IconStop, { className: "h-3.5 w-3.5" }) : composerBusyState ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(BusyButtonSpinner, {}),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[11px] font-semibold leading-none", children: composerBusyState.shortLabel })
+                      ] }) : isAssistantBusy ? /* @__PURE__ */ jsxRuntimeExports.jsx(BusyButtonSpinner, {}) : /* @__PURE__ */ jsxRuntimeExports.jsx(IconSend, { className: "h-4 w-4" })
+                    }
+                  )
+                ] })
+              ]
+            }
+          )
+        }
+      )
+    ] }),
     /* @__PURE__ */ jsxRuntimeExports.jsx("p", { id: disclaimerTextId, className: "mt-1.5 text-center text-xs text-slate-400", children: getTranslation("chat_disclaimer_verify", language) })
   ] }) });
 };
@@ -760,13 +1032,17 @@ const getLatestComposerSuggestedActions = (chatHistory) => {
 const StreamingBubble = We.memo(() => {
   const streamingMessage = useAppStore((state) => state.streamingMessage, shallow$1);
   if (!streamingMessage || !streamingMessage.isStreaming || !streamingMessage.text) return null;
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex text-sm animate-fade-in", children: [
-    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "mr-2 text-slate-400 text-xs", children: streamingMessage.startedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }),
-    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex-1 text-slate-700 whitespace-pre-wrap", children: [
-      streamingMessage.text,
-      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "inline-block w-1.5 h-3.5 bg-blue-400 animate-pulse ml-0.5 align-text-bottom rounded-sm" })
+  return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex min-w-0 w-full animate-fade-in", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "min-w-0 w-full max-w-full rounded-card p-4 text-sm xl:max-w-3xl bg-white border border-blue-200 text-slate-800 shadow-sm", children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-2 mb-2 text-xs text-slate-400", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "font-medium text-blue-500", children: "Assistant" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: streamingMessage.startedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "ml-auto text-blue-400 text-[10px] uppercase tracking-wider font-medium", children: "Streaming" })
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "text-slate-700 leading-relaxed", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx(MarkdownRenderer, { content: streamingMessage.text }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "inline-block w-1.5 h-4 bg-blue-400 animate-pulse ml-0.5 align-text-bottom rounded-sm" })
     ] })
-  ] });
+  ] }) });
 });
 const ThinkingIndicator = We.memo(({ isVisible }) => {
   const [isExpanded, setIsExpanded] = reactExports.useState(false);
@@ -829,6 +1105,7 @@ const ChatPanel = We.memo(() => {
     pendingMutationConfirmation,
     goalState,
     isGeneratingReport,
+    isSummaryGenerating,
     reportGenerationProgress,
     aiTaskStatus,
     cleaningRunStatus,
@@ -856,6 +1133,7 @@ const ChatPanel = We.memo(() => {
       pendingMutationConfirmation: state.pendingMutationConfirmation,
       goalState: state.goalState,
       isGeneratingReport: state.isGeneratingReport,
+      isSummaryGenerating: state.isSummaryGenerating,
       reportGenerationProgress: state.reportGenerationProgress,
       aiTaskStatus: state.aiTaskStatus,
       cleaningRunStatus: ((_a = state.cleaningRun) == null ? void 0 : _a.status) ?? null,
@@ -882,9 +1160,6 @@ const ChatPanel = We.memo(() => {
     () => chatHistory.filter((message) => message.type !== "ai_thought").slice(-MAX_TIMELINE_CHAT_MESSAGES),
     [chatHistory]
   );
-  const latestProgressMessage = useAppStore(
-    (state) => state.progressMessages[state.progressMessages.length - 1] ?? null
-  );
   const composerSuggestedActions = reactExports.useMemo(
     () => getLatestComposerSuggestedActions(chatHistory),
     [chatHistory]
@@ -894,25 +1169,28 @@ const ChatPanel = We.memo(() => {
   const isCleaningActive = cleaningRunStatus === "running";
   const isTaskStatusActive = !!aiTaskStatus && aiTaskStatus.status !== "done" && aiTaskStatus.status !== "error";
   const chatLifecycleState = useAppStore((state) => state.chatLifecycleState);
-  const isAssistantBusy = !TERMINAL_CHAT_LIFECYCLE_STATES.has(chatLifecycleState) || isGeneratingReport || goalState === "pending_ai" || isCleaningActive || isTaskStatusActive;
+  const isAssistantBusy = !TERMINAL_CHAT_LIFECYCLE_STATES.has(chatLifecycleState) || isGeneratingReport || isSummaryGenerating || goalState === "pending_ai" || isCleaningActive || isTaskStatusActive;
   const isComposerDisabled = !isApiKeySet || currentView === "file_upload";
-  const composerBusyState = reactExports.useMemo(() => getComposerBusyState({
+  const composerBusyState = reactExports.useMemo(() => {
+    var _a;
+    const latestText = ((_a = useAppStore.getState().progressMessages.slice(-1)[0]) == null ? void 0 : _a.text) ?? null;
+    return getComposerBusyState({
+      currentView,
+      isBusy,
+      isGeneratingReport,
+      goalState,
+      isTaskStatusActive,
+      cleaningRunStatus,
+      latestProgressText: latestText,
+      language
+    });
+  }, [
     currentView,
     isBusy,
     isGeneratingReport,
     goalState,
     isTaskStatusActive,
     cleaningRunStatus,
-    latestProgressText: (latestProgressMessage == null ? void 0 : latestProgressMessage.text) ?? null,
-    language
-  }), [
-    currentView,
-    isBusy,
-    isGeneratingReport,
-    goalState,
-    isTaskStatusActive,
-    cleaningRunStatus,
-    latestProgressMessage,
     language
   ]);
   const handleSuggestedAction = reactExports.useCallback((prompt, label) => {

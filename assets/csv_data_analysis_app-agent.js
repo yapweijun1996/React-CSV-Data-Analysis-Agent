@@ -1,11 +1,11 @@
 const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["./csv_data_analysis_vendor-ai-sdk.js","./csv_data_analysis_vendor-misc.js","./csv_data_analysis_vendor-data.js","./csv_data_analysis_app-reporting.js"])))=>i.map(i=>d[i]);
 import { p as papaparse_minExports } from "./csv_data_analysis_vendor-data.js";
-import { i as isProviderConfigured, s as shouldRequestReportStructureProposal, d as detectReportStructureProposalWithAi, a as detectIntakeStructureWithAi, e as extractAiReportContext, b as evaluateAiSqlPrecheck, c as buildDeterministicNormalizationPlan$1, h as hasExecutableHierarchyShape, g as generateAiCleaningProgram, f as generateFinalSummary, j as generateCoreAnalysisSummary, k as generateProactiveInsights, l as generateSummary, m as createProviderModel, n as buildEvidenceEvaluationPrompt, w as withTransientRetry, p as prepareSchemaForProvider, o as generateFilterFunction, q as buildClarificationAssessmentPrompt, r as getResolvedToolRegistry, v as validateAction, t as isTransientProviderError, u as runWithOverflowCompaction, x as prepareManagedContext, y as createContextSection, z as formatCompactVisibleEvidenceSummary, A as createRuntimeEvaluationPrompt, B as runtimeEvaluationSystemPrompt, C as reportContextDiagnostics, D as createFallbackProviderModel, E as sanitizeChatHistoryForModel, F as buildChatRequest, G as validateProviderHealth, H as buildQueryUnderstandingPrompt } from "./csv_data_analysis_app-ai.js";
+import { i as isProviderConfigured, c as createToolCreatePlanSchema, d as dataPreparationSchema, a as dataQuerySchema, b as dataDescribeSchema, e as dataValueCountsSchema, f as dataOutliersSchema, g as dataMissingSchema, s as shouldRequestReportStructureProposal, h as detectReportStructureProposalWithAi, j as detectIntakeStructureWithAi, k as extractAiReportContext, l as evaluateAiSqlPrecheck, m as buildDeterministicNormalizationPlan$1, n as hasExecutableHierarchyShape, o as generateAiCleaningProgram, p as generateSummary, q as generateFinalSummary, r as generateCoreAnalysisSummary, t as generateProactiveInsights, u as generateFilterFunction, v as createProviderModel, w as buildClarificationAssessmentPrompt, x as withTransientRetry, y as streamGenerateText, z as getResolvedToolRegistry, A as validateAction, B as isTransientProviderError, C as prepareSchemaForProvider, D as runWithOverflowCompaction, E as prepareManagedContext, F as createContextSection, G as formatCompactVisibleEvidenceSummary, H as createRuntimeEvaluationPrompt, I as runtimeEvaluationSystemPrompt, J as reportContextDiagnostics, K as createFallbackProviderModel, L as runtimeEvaluationSchema, M as sanitizeChatHistoryForModel, N as buildChatRequest, O as validateProviderHealth, P as buildQueryUnderstandingPrompt } from "./csv_data_analysis_app-ai.js";
 import { r as resolveColumnDisplayLabel, b as buildDisplayAnalysisIr, a as buildDisplayAnalysisIrList, c as buildNarrativeAnalysisIrInputList, d as buildColumnDisplayLabels, e as resolvePlanGroupLabel, f as resolvePlanMetricLabel, g as resolveDisplayPlanLabels } from "./csv_data_analysis_app-reporting.js";
-import { r as resolveStructuredComboDecision, S as SqlAutoAnalysisError, m as mergeEvidencePreFilterIntoQuery, b as buildAnalysisPlanFromPresentation, p as preparePlan, i as isSqlAutoAnalysisError, c as callSmallAiStep, g as generateAnalysisTopics, a as processSingleTopic, d as proposeAnalysisGoals, e as isPlannerStabilityReasonCode } from "./csv_data_analysis_app-agent-planning.js";
+import { r as resolveStructuredComboDecision, S as SqlAutoAnalysisError, m as mergeEvidencePreFilterIntoQuery, b as buildAnalysisPlanFromPresentation, p as preparePlan, i as isSqlAutoAnalysisError, c as callSmallAiStep, g as generateAnalysisTopics, a as generateEvidenceQueryPlanStepped, d as processSingleTopic, e as proposeAnalysisGoals, f as isPlannerStabilityReasonCode } from "./csv_data_analysis_app-agent-planning.js";
 import { f as from, d as desc } from "./csv_data_analysis_vendor-misc.js";
+import { s as streamText, g as generateText, o as output_exports, j as jsonSchema } from "./csv_data_analysis_vendor-ai-sdk.js";
 import { o as openDB } from "./csv_data_analysis_vendor-storage.js";
-import { g as generateText, o as output_exports, j as jsonSchema, s as streamText } from "./csv_data_analysis_vendor-ai-sdk.js";
 const scriptRel = "modulepreload";
 const assetsURL = function(dep, importerUrl) {
   return new URL(dep, importerUrl).href;
@@ -210,7 +210,12 @@ const CONTEXT_SUMMARY_REFRESH_DELTA = 6;
 const CONTEXT_MAX_SQL_PREVIEW_CHARS = 320;
 const CONTEXT_MAX_WORKSPACE_ACTION_CHARS = 220;
 const CONTEXT_MAX_OBSERVATION_CHARS = 240;
+const CONTEXT_ARTIFACT_PREVIEW_ROWS = 5;
+const CONTEXT_ARTIFACT_SUMMARY_MAX_CHARS = 1200;
+const OBSERVATION_DETAIL_MAX_CHARS = 4e3;
+const STEP_ARTIFACT_RETAINED_ROWS = 5;
 const PROVIDER_GEMINI_CONTEXT_WINDOW = 25e4;
+const PROVIDER_GEMMA_CONTEXT_WINDOW = 128e3;
 const PROVIDER_GPT_CONTEXT_WINDOW = 128e3;
 const PROVIDER_RESERVE_RATIO = 0.08;
 const PROVIDER_KEEP_RECENT_RATIO = 0.02;
@@ -784,15 +789,166 @@ const getDb = () => {
   }
   return dbPromise;
 };
+const estimateRecordBytes = (value) => {
+  try {
+    return new Blob([JSON.stringify(value)]).size;
+  } catch {
+    return 0;
+  }
+};
+const getStorageBreakdown = async () => {
+  var _a;
+  const db = await getDb();
+  const storeConfigs = [
+    { name: REPORTS_STORE_NAME, label: "Reports (sessions)" },
+    { name: REPORT_ARTIFACTS_STORE_NAME, label: "Report Artifacts (HTML)" },
+    { name: ORIGINAL_DATA_STORE_NAME, label: "Original CSV Data" },
+    { name: MEMORY_STORE_NAME, label: "Agent Memory Runs" },
+    { name: VECTOR_MEMORY_STORE_NAME, label: "Vector Memory" },
+    { name: SETTINGS_STORE_NAME, label: "Settings" }
+  ];
+  const stores = [];
+  let totalIdbBytes = 0;
+  for (const { name, label } of storeConfigs) {
+    try {
+      const tx = db.transaction(name, "readonly");
+      const store = tx.objectStore(name);
+      let cursor = await store.openCursor();
+      let recordCount = 0;
+      let estimatedBytes = 0;
+      while (cursor) {
+        recordCount += 1;
+        estimatedBytes += estimateRecordBytes(cursor.value);
+        cursor = await cursor.continue();
+      }
+      stores.push({ storeName: name, label, recordCount, estimatedBytes });
+      totalIdbBytes += estimatedBytes;
+    } catch {
+      stores.push({ storeName: name, label, recordCount: 0, estimatedBytes: 0 });
+    }
+  }
+  let cacheCount = 0;
+  let cacheBytes = 0;
+  try {
+    if (typeof caches !== "undefined") {
+      const keys = await caches.keys();
+      cacheCount = keys.length;
+      for (const key of keys) {
+        const cache = await caches.open(key);
+        const requests = await cache.keys();
+        for (const req of requests) {
+          try {
+            const resp = await cache.match(req);
+            if (resp) {
+              const cl = resp.headers.get("content-length");
+              cacheBytes += cl ? parseInt(cl, 10) || 0 : (await resp.clone().arrayBuffer()).byteLength;
+            }
+          } catch {
+          }
+        }
+      }
+    }
+  } catch {
+  }
+  let rawOriginBytes = 0;
+  try {
+    if ((_a = navigator == null ? void 0 : navigator.storage) == null ? void 0 : _a.estimate) {
+      const est = await navigator.storage.estimate();
+      rawOriginBytes = est.usage ?? 0;
+    }
+  } catch {
+  }
+  return {
+    stores,
+    cacheStorage: { cacheCount, estimatedBytes: cacheBytes },
+    totalIdbBytes,
+    totalWithCacheBytes: totalIdbBytes + cacheBytes,
+    rawOriginBytes
+  };
+};
+const clearStore = async (storeName, protectKeys) => {
+  const db = await getDb();
+  const allKeys = await db.getAllKeys(storeName);
+  let deleted = 0;
+  for (const key of allKeys) {
+    if (protectKeys == null ? void 0 : protectKeys.has(key)) continue;
+    await db.delete(storeName, key);
+    deleted += 1;
+  }
+  if (storeName === REPORTS_STORE_NAME) {
+    try {
+      localStorage.removeItem(REPORTS_INDEX_CACHE_KEY);
+    } catch {
+    }
+  }
+  return deleted;
+};
+const clearAllCacheStorage = async () => {
+  let cleared = 0;
+  try {
+    if (typeof caches !== "undefined") {
+      const keys = await caches.keys();
+      for (const key of keys) {
+        await caches.delete(key);
+        cleared += 1;
+      }
+    }
+  } catch {
+  }
+  _cacheStorageBytesEstimate = null;
+  return cleared;
+};
+let _cacheStorageBytesEstimate = null;
+const estimateCacheStorageBytes = async () => {
+  if (_cacheStorageBytesEstimate !== null) return _cacheStorageBytesEstimate;
+  try {
+    if (typeof caches === "undefined") {
+      _cacheStorageBytesEstimate = 0;
+      return 0;
+    }
+    const keys = await caches.keys();
+    if (keys.length === 0) {
+      _cacheStorageBytesEstimate = 0;
+      return 0;
+    }
+    let total = 0;
+    for (const key of keys) {
+      const cache = await caches.open(key);
+      const requests = await cache.keys();
+      for (const req of requests) {
+        try {
+          const resp = await cache.match(req);
+          if (resp) {
+            const cl = resp.headers.get("content-length");
+            if (cl) {
+              total += parseInt(cl, 10) || 0;
+            } else {
+              const body = await resp.clone().arrayBuffer();
+              total += body.byteLength;
+            }
+          }
+        } catch {
+        }
+      }
+    }
+    _cacheStorageBytesEstimate = total;
+    return total;
+  } catch {
+    _cacheStorageBytesEstimate = 0;
+    return 0;
+  }
+};
 const getStorageEstimate = async () => {
   var _a;
   try {
     if (!((_a = navigator == null ? void 0 : navigator.storage) == null ? void 0 : _a.estimate)) return null;
     const { usage = 0, quota = 0 } = await navigator.storage.estimate();
+    const cacheBytes = await estimateCacheStorageBytes();
+    const idbUsage = Math.max(0, usage - cacheBytes);
     return {
-      usageBytes: usage,
+      usageBytes: idbUsage,
       quotaBytes: quota,
-      usagePercent: quota > 0 ? usage / quota * 100 : 0
+      usagePercent: quota > 0 ? idbUsage / quota * 100 : 0
     };
   } catch {
     return null;
@@ -807,8 +963,6 @@ const isQuotaExceededError = (error) => {
 const MAX_REPORTS_KEPT = 20;
 const MAX_MEMORY_RUNS_PER_DATASET = 5;
 const MAX_ORIGINAL_DATA_KEPT = 10;
-const CLEANUP_THRESHOLD_PERCENT = 75;
-const HARD_STORAGE_CAP_BYTES = 50 * 1024 * 1024;
 const evictOldReports = async (keepIds) => {
   try {
     const db = await getDb();
@@ -880,27 +1034,162 @@ const evictOldOriginalData = async (keepSessionIds) => {
     return 0;
   }
 };
+const evictOrphanedArtifacts = async () => {
+  var _a;
+  let orphanedArtifacts = 0;
+  let orphanedVectorMemory = 0;
+  let orphanedOriginalData = 0;
+  try {
+    const db = await getDb();
+    const reportKeys = new Set(await db.getAllKeys(REPORTS_STORE_NAME));
+    const allArtifactKeys = await db.getAllKeys(REPORT_ARTIFACTS_STORE_NAME);
+    for (const key of allArtifactKeys) {
+      if (!reportKeys.has(key)) {
+        await db.delete(REPORT_ARTIFACTS_STORE_NAME, key);
+        orphanedArtifacts += 1;
+      }
+    }
+    const allVectorKeys = await db.getAllKeys(VECTOR_MEMORY_STORE_NAME);
+    for (const key of allVectorKeys) {
+      if (key !== "current") {
+        await db.delete(VECTOR_MEMORY_STORE_NAME, key);
+        orphanedVectorMemory += 1;
+      }
+    }
+    const liveSessionIds = /* @__PURE__ */ new Set();
+    for (const reportKey of reportKeys) {
+      liveSessionIds.add(reportKey);
+      try {
+        const report = await db.get(REPORTS_STORE_NAME, reportKey);
+        if ((_a = report == null ? void 0 : report.appState) == null ? void 0 : _a.sessionId) {
+          liveSessionIds.add(report.appState.sessionId);
+        }
+      } catch {
+      }
+    }
+    try {
+      const tabSessionId = sessionStorage.getItem("csv_agent_tab_session_id");
+      if (tabSessionId) liveSessionIds.add(tabSessionId);
+    } catch {
+    }
+    const allOriginalDataKeys = await db.getAllKeys(ORIGINAL_DATA_STORE_NAME);
+    for (const key of allOriginalDataKeys) {
+      if (!liveSessionIds.has(key)) {
+        await db.delete(ORIGINAL_DATA_STORE_NAME, key);
+        orphanedOriginalData += 1;
+      }
+    }
+    if (orphanedArtifacts > 0 || orphanedVectorMemory > 0 || orphanedOriginalData > 0) {
+      console.log(`[StorageCleanup] Evicted ${orphanedArtifacts} orphaned artifacts, ${orphanedVectorMemory} orphaned vector memory, ${orphanedOriginalData} orphaned original_data entries`);
+    }
+  } catch (error) {
+    console.error("[StorageCleanup] Failed to evict orphaned records:", error);
+  }
+  return { orphanedArtifacts, orphanedVectorMemory, orphanedOriginalData };
+};
 const runStorageCleanup = async (activeSessionId) => {
   const keepIds = activeSessionId ? /* @__PURE__ */ new Set([activeSessionId]) : void 0;
-  const [evictedReports, evictedMemoryRuns, evictedOriginalData] = await Promise.all([
+  const [evictedReports, evictedMemoryRuns, evictedOriginalData, orphanResult] = await Promise.all([
     evictOldReports(keepIds),
     evictOldMemoryRuns(),
-    evictOldOriginalData(keepIds)
+    evictOldOriginalData(keepIds),
+    evictOrphanedArtifacts()
   ]);
-  return { evictedReports, evictedMemoryRuns, evictedOriginalData };
+  return {
+    evictedReports,
+    evictedMemoryRuns,
+    evictedOriginalData,
+    orphanedArtifacts: orphanResult.orphanedArtifacts,
+    orphanedVectorMemory: orphanResult.orphanedVectorMemory,
+    orphanedOriginalData: orphanResult.orphanedOriginalData
+  };
+};
+const shouldRunIdbCleanup = async () => {
+  try {
+    const db = await getDb();
+    const reportCount = await db.count(REPORTS_STORE_NAME);
+    const originalDataCount = await db.count(ORIGINAL_DATA_STORE_NAME);
+    const needed = reportCount > MAX_REPORTS_KEPT + 1 || originalDataCount > MAX_ORIGINAL_DATA_KEPT;
+    return { needed, reportCount, originalDataCount };
+  } catch {
+    return { needed: false, reportCount: 0, originalDataCount: 0 };
+  }
 };
 const checkStorageHealth = async (activeSessionId) => {
-  const estimate = await getStorageEstimate();
-  const exceedsQuotaPercent = estimate && estimate.usagePercent >= CLEANUP_THRESHOLD_PERCENT;
-  const exceedsHardCap = estimate && estimate.usageBytes >= HARD_STORAGE_CAP_BYTES;
-  if (exceedsQuotaPercent || exceedsHardCap) {
-    console.warn(
-      `[StorageHealth] Usage at ${estimate.usagePercent.toFixed(1)}% (${(estimate.usageBytes / 1024 / 1024).toFixed(1)} MB / ${(estimate.quotaBytes / 1024 / 1024).toFixed(0)} MB)${exceedsHardCap ? ` — exceeds ${HARD_STORAGE_CAP_BYTES / 1024 / 1024} MB hard cap` : ""}. Running auto-cleanup...`
-    );
-    const result = await runStorageCleanup(activeSessionId);
-    return { estimate, evictedReports: result.evictedReports };
+  const { needed, reportCount, originalDataCount } = await shouldRunIdbCleanup();
+  if (!needed) {
+    return { estimate: null, evictedReports: 0 };
   }
-  return { estimate, evictedReports: 0 };
+  console.warn(
+    `[StorageHealth] IDB cleanup needed: reports=${reportCount} (max ${MAX_REPORTS_KEPT}), originalData=${originalDataCount} (max ${MAX_ORIGINAL_DATA_KEPT}). Running auto-cleanup...`
+  );
+  const result = await runStorageCleanup(activeSessionId);
+  console.log(
+    `[StorageHealth] Cleanup complete: reports=${result.evictedReports}, memoryRuns=${result.evictedMemoryRuns}, originalData=${result.evictedOriginalData}, orphanedArtifacts=${result.orphanedArtifacts}, orphanedVectorMemory=${result.orphanedVectorMemory}, orphanedOriginalData=${result.orphanedOriginalData}.`
+  );
+  return { estimate: null, evictedReports: result.evictedReports };
+};
+const purgeAllStorage = async (activeSessionId) => {
+  const beforeEstimate = await getStorageEstimate();
+  const db = await getDb();
+  const protectedReportIds = /* @__PURE__ */ new Set([CURRENT_SESSION_KEY]);
+  const protectedSessionIds = /* @__PURE__ */ new Set();
+  if (activeSessionId) protectedSessionIds.add(activeSessionId);
+  try {
+    const tabSessionId = sessionStorage.getItem("csv_agent_tab_session_id");
+    if (tabSessionId) protectedSessionIds.add(tabSessionId);
+  } catch {
+  }
+  let deletedReports = 0;
+  const allReportKeys = await db.getAllKeys(REPORTS_STORE_NAME);
+  for (const key of allReportKeys) {
+    if (!protectedReportIds.has(key)) {
+      await db.delete(REPORTS_STORE_NAME, key);
+      deletedReports += 1;
+    }
+  }
+  const allArtifactKeys = await db.getAllKeys(REPORT_ARTIFACTS_STORE_NAME);
+  for (const key of allArtifactKeys) {
+    await db.delete(REPORT_ARTIFACTS_STORE_NAME, key);
+  }
+  const allOriginalKeys = await db.getAllKeys(ORIGINAL_DATA_STORE_NAME);
+  for (const key of allOriginalKeys) {
+    if (!protectedSessionIds.has(key)) {
+      await db.delete(ORIGINAL_DATA_STORE_NAME, key);
+    }
+  }
+  const allMemoryKeys = await db.getAllKeys(MEMORY_STORE_NAME);
+  for (const key of allMemoryKeys) {
+    await db.delete(MEMORY_STORE_NAME, key);
+  }
+  const allVectorKeys = await db.getAllKeys(VECTOR_MEMORY_STORE_NAME);
+  for (const key of allVectorKeys) {
+    if (key !== "current") {
+      await db.delete(VECTOR_MEMORY_STORE_NAME, key);
+    }
+  }
+  let cacheCleared = 0;
+  try {
+    if (typeof caches !== "undefined") {
+      const cacheKeys = await caches.keys();
+      for (const key of cacheKeys) {
+        await caches.delete(key);
+        cacheCleared += 1;
+      }
+    }
+  } catch {
+  }
+  _cacheStorageBytesEstimate = null;
+  try {
+    localStorage.removeItem(REPORTS_INDEX_CACHE_KEY);
+  } catch {
+  }
+  const afterEstimate = await getStorageEstimate();
+  const freedMB = beforeEstimate && afterEstimate ? (beforeEstimate.usageBytes - afterEstimate.usageBytes) / 1024 / 1024 : 0;
+  console.log(
+    `[StoragePurge] Deleted ${deletedReports} reports, ${cacheCleared} cache stores. Storage: ${beforeEstimate ? (beforeEstimate.usageBytes / 1024 / 1024).toFixed(1) : "?"} MB → ${afterEstimate ? (afterEstimate.usageBytes / 1024 / 1024).toFixed(1) : "?"} MB (freed ${freedMB.toFixed(1)} MB)`
+  );
+  return { deletedReports, freedMB };
 };
 const saveReport = async (report) => {
   if (!report.id) {
@@ -1054,9 +1343,26 @@ const _scanReportsFromIdb = async () => {
   }
 };
 const deleteReport = async (id) => {
+  var _a;
   try {
     const db = await getDb();
+    let sessionId;
+    try {
+      const report = await db.get(REPORTS_STORE_NAME, id);
+      sessionId = (_a = report == null ? void 0 : report.appState) == null ? void 0 : _a.sessionId;
+    } catch {
+    }
     await db.delete(REPORTS_STORE_NAME, id);
+    try {
+      await db.delete(REPORT_ARTIFACTS_STORE_NAME, id);
+    } catch {
+    }
+    if (sessionId) {
+      try {
+        await db.delete(ORIGINAL_DATA_STORE_NAME, sessionId);
+      } catch {
+      }
+    }
     const cached = readCachedReportsIndex();
     if (cached) {
       persistReportsIndex(cached.filter((r) => r.id !== id));
@@ -1266,12 +1572,15 @@ const storageService = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defi
   CURRENT_SESSION_KEY,
   StorageOperationError,
   checkStorageHealth,
+  clearAllCacheStorage,
+  clearStore,
   clearVectorMemory,
   deleteOriginalData,
   deleteReport,
   evictOldMemoryRuns,
   evictOldOriginalData,
   evictOldReports,
+  evictOrphanedArtifacts,
   getAgentMemoryRuns,
   getDefaultSettings,
   getLatestAgentMemoryRun,
@@ -1280,8 +1589,10 @@ const storageService = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defi
   getReportArtifactRecord,
   getReportsList,
   getSettings,
+  getStorageBreakdown,
   getStorageEstimate,
   loadVectorMemory,
+  purgeAllStorage,
   runStorageCleanup,
   saveAgentMemoryRun,
   saveOriginalData,
@@ -1298,7 +1609,7 @@ const createVectorWorker = () => new Worker(new URL(
 const HEALTH_PING_INTERVAL_MS = 15e3;
 const HEALTH_PING_TIMEOUT_MS = 5e3;
 const HEALTH_FAILURE_THRESHOLD = 3;
-const LOG_PREFIX$w = "[WorkerHealthMonitor]";
+const LOG_PREFIX$v = "[WorkerHealthMonitor]";
 class WorkerHealthMonitor {
   constructor(config) {
     this.config = config;
@@ -1343,7 +1654,7 @@ class WorkerHealthMonitor {
       this.consecutiveFailures = 0;
       this.lastError = null;
       if (wasFailing) {
-        console.log(`${LOG_PREFIX$w} ${this.config.workerFamily} worker recovered after prior failures.`);
+        console.log(`${LOG_PREFIX$v} ${this.config.workerFamily} worker recovered after prior failures.`);
         (_b = (_a = this.config).onRecovered) == null ? void 0 : _b.call(_a);
       }
     } catch (err) {
@@ -1352,7 +1663,7 @@ class WorkerHealthMonitor {
       const threshold = this.config.failureThreshold ?? HEALTH_FAILURE_THRESHOLD;
       if (this.consecutiveFailures >= threshold) {
         console.error(
-          `${LOG_PREFIX$w} ${this.config.workerFamily} worker unresponsive (${this.consecutiveFailures} consecutive ping failures). Triggering reset.`
+          `${LOG_PREFIX$v} ${this.config.workerFamily} worker unresponsive (${this.consecutiveFailures} consecutive ping failures). Triggering reset.`
         );
         const failures = this.consecutiveFailures;
         const error = this.lastError;
@@ -1364,7 +1675,7 @@ class WorkerHealthMonitor {
     }
   }
 }
-const LOG_PREFIX$v = "[VectorWorkerClient]";
+const LOG_PREFIX$u = "[VectorWorkerClient]";
 const VECTOR_INIT_TIMEOUT_MS = 6e4;
 const VECTOR_ADD_TIMEOUT_MS = 15e3;
 const VECTOR_BATCH_TIMEOUT_MS = 6e4;
@@ -1484,9 +1795,9 @@ class VectorWorkerClient {
         if (staleCallback) {
           this.callbacks.delete(maybeId);
           if (staleCallback.timeoutId) clearTimeout(staleCallback.timeoutId);
-          staleCallback.reject(new Error(`${LOG_PREFIX$v} Malformed response for task "${staleCallback.task}": ${shapeError}`));
+          staleCallback.reject(new Error(`${LOG_PREFIX$u} Malformed response for task "${staleCallback.task}": ${shapeError}`));
         } else {
-          console.error(`${LOG_PREFIX$v} Malformed response with no callback:`, shapeError, data);
+          console.error(`${LOG_PREFIX$u} Malformed response with no callback:`, shapeError, data);
         }
         return;
       }
@@ -1529,9 +1840,9 @@ class VectorWorkerClient {
         callback.timeoutId = setTimeout(() => {
           if (!this.callbacks.has(id)) return;
           this.callbacks.delete(id);
-          const timeoutError = new Error(`${LOG_PREFIX$v} Task "${task}" timed out after ${timeoutMs}ms.`);
+          const timeoutError = new Error(`${LOG_PREFIX$u} Task "${task}" timed out after ${timeoutMs}ms.`);
           if (WRITE_TASKS.has(task)) {
-            console.warn(`${LOG_PREFIX$v} Non-critical task "${task}" timed out — skipping without worker reset.`);
+            console.warn(`${LOG_PREFIX$u} Non-critical task "${task}" timed out — skipping without worker reset.`);
             reject(timeoutError);
           } else {
             this.resetWorker(timeoutError);
@@ -1618,7 +1929,7 @@ class VectorWorkerClient {
   }
 }
 const vectorWorkerClient = new VectorWorkerClient();
-const LOG_PREFIX$u = "[VectorStore]";
+const LOG_PREFIX$t = "[VectorStore]";
 let persistDebounceTimer = null;
 const PERSIST_DEBOUNCE_MS = 5e3;
 const _VectorStore = class _VectorStore {
@@ -1671,7 +1982,7 @@ const _VectorStore = class _VectorStore {
       return;
     }
     this.initPromise = vectorWorkerClient.init(progressCallback).catch((error) => {
-      console.error(`${LOG_PREFIX$u} Failed to initialize vector store:`, error);
+      console.error(`${LOG_PREFIX$t} Failed to initialize vector store:`, error);
       const message = error instanceof Error ? error.message : String(error);
       progressCallback == null ? void 0 : progressCallback(`Error loading AI memory model: ${message}`);
       this._isInitialized = false;
@@ -1707,7 +2018,7 @@ const _VectorStore = class _VectorStore {
       if (this._permanentlyFailed && Date.now() - this._failedAt < _VectorStore.RETRY_COOLDOWN_MS) return;
       store.setState({ vectorMemoryState: "idle" });
     }
-    console.log(`${LOG_PREFIX$u} On-demand activation triggered by: ${trigger}`);
+    console.log(`${LOG_PREFIX$t} On-demand activation triggered by: ${trigger}`);
     store.setState({ vectorMemoryState: "initializing" });
     try {
       const { addProgress } = store.getState();
@@ -1715,7 +2026,7 @@ const _VectorStore = class _VectorStore {
       await this.init(addProgress);
       if (!this._isInitialized || this._permanentlyFailed) {
         const reason = this._lastError ?? "Unknown initialization failure";
-        console.error(`${LOG_PREFIX$u} Init completed but store is not ready: ${reason}`);
+        console.error(`${LOG_PREFIX$t} Init completed but store is not ready: ${reason}`);
         store.setState({ vectorMemoryState: "error" });
         (_b = (_a = store.getState()).addProgress) == null ? void 0 : _b.call(_a, `AI memory failed to load: ${reason}`, "error");
         return;
@@ -1728,12 +2039,12 @@ const _VectorStore = class _VectorStore {
       addProgress == null ? void 0 : addProgress("AI memory is ready.");
       if (flushCallback) {
         flushCallback(store).catch((error) => {
-          console.warn(`${LOG_PREFIX$u} Background flush failed (non-blocking):`, error);
+          console.warn(`${LOG_PREFIX$t} Background flush failed (non-blocking):`, error);
         });
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      console.error(`${LOG_PREFIX$u} On-demand activation failed:`, error);
+      console.error(`${LOG_PREFIX$t} On-demand activation failed:`, error);
       store.setState({ vectorMemoryState: "error" });
       (_d = (_c = store.getState()).addProgress) == null ? void 0 : _d.call(_c, `AI memory failed to load: ${msg}`, "error");
     }
@@ -1742,21 +2053,21 @@ const _VectorStore = class _VectorStore {
     try {
       await vectorWorkerClient.rehydrate(documents);
     } catch (error) {
-      console.warn(`${LOG_PREFIX$u} Rehydrate failed (non-blocking):`, error);
+      console.warn(`${LOG_PREFIX$t} Rehydrate failed (non-blocking):`, error);
     }
   }
   async addDocument(doc, _options) {
     try {
       await vectorWorkerClient.addDocument(doc);
     } catch (error) {
-      console.error(`${LOG_PREFIX$u} Failed to add document ${doc.id}:`, error);
+      console.error(`${LOG_PREFIX$t} Failed to add document ${doc.id}:`, error);
     }
   }
   async addDocumentBatch(docs) {
     try {
       return await vectorWorkerClient.addDocumentBatch(docs);
     } catch (error) {
-      console.warn(`${LOG_PREFIX$u} addDocumentBatch failed (non-blocking):`, error);
+      console.warn(`${LOG_PREFIX$t} addDocumentBatch failed (non-blocking):`, error);
       return { count: 0 };
     }
   }
@@ -1781,7 +2092,7 @@ const _VectorStore = class _VectorStore {
       const docs = await vectorWorkerClient.getDocuments();
       await saveVectorMemory(docs);
     } catch (error) {
-      console.warn(`${LOG_PREFIX$u} persistToStorage failed (non-blocking):`, error);
+      console.warn(`${LOG_PREFIX$t} persistToStorage failed (non-blocking):`, error);
     }
   }
   /**
@@ -1796,7 +2107,7 @@ const _VectorStore = class _VectorStore {
         return true;
       }
     } catch (error) {
-      console.warn(`${LOG_PREFIX$u} loadFromStorage failed (non-blocking):`, error);
+      console.warn(`${LOG_PREFIX$t} loadFromStorage failed (non-blocking):`, error);
     }
     return false;
   }
@@ -1813,7 +2124,7 @@ const _VectorStore = class _VectorStore {
     try {
       return await vectorWorkerClient.search(queryText, k);
     } catch (error) {
-      console.error(`${LOG_PREFIX$u} Search failed:`, error);
+      console.error(`${LOG_PREFIX$t} Search failed:`, error);
       return [];
     }
   }
@@ -2286,13 +2597,33 @@ const resolveAnalysisRole = (physicalName, profile, semanticSnapshot, steering) 
   }
   return "unknown";
 };
-const buildAllowedUsages = (physicalName, analysisRole) => {
+const NON_ADDITIVE_NAME_PATTERN = /(^|[\s_\-.])(avg|average|mean|rate|ratio|margin|yield|pct|percent|index|score)([\s_\-.]|$)/i;
+const resolveAggregationHint = (analysisRole, profile, physicalName) => {
+  if (analysisRole === "business_dimension" || analysisRole === "helper_dimension") {
+    return "dimension_only";
+  }
+  if (analysisRole === "structural_metadata" || analysisRole === "blocked_dimension") {
+    return "unrestricted";
+  }
+  if ((profile == null ? void 0 : profile.type) === "percentage") {
+    return "non_additive";
+  }
+  if (physicalName && NON_ADDITIVE_NAME_PATTERN.test(physicalName)) {
+    return "non_additive";
+  }
+  if (analysisRole === "business_metric") {
+    return "additive";
+  }
+  return "unrestricted";
+};
+const buildAllowedUsages = (physicalName, analysisRole, profile) => {
   const isSynthetic = isStructuralMetadataColumn(physicalName);
   return {
     groupBy: !isSynthetic && analysisRole !== "business_metric" && analysisRole !== "blocked_dimension",
     filter: true,
     select: true,
-    orderBy: true
+    orderBy: true,
+    aggregationHint: resolveAggregationHint(analysisRole, profile, physicalName)
   };
 };
 const buildColumnRegistry = ({
@@ -2339,7 +2670,7 @@ const buildColumnRegistry = ({
       ]),
       source: (existingEntry == null ? void 0 : existingEntry.source) === "renamed" && normalizeColumnName$2(existingEntry.physicalName) === normalizeColumnName$2(physicalName) ? existingEntry.source : source,
       analysisRole,
-      allowedUsages: buildAllowedUsages(physicalName, analysisRole),
+      allowedUsages: buildAllowedUsages(physicalName, analysisRole, profile),
       isSynthetic: isStructuralMetadataColumn(physicalName),
       isExposedToAi: true,
       ...profile ? { profile } : {}
@@ -3559,7 +3890,7 @@ const deriveMetricByLabelFormulaSchema = {
     }
   ]
 };
-const filterPredicateSchema$1 = {
+const filterPredicateSchema = {
   type: "object",
   properties: {
     column: { type: "string", minLength: 1 },
@@ -3568,29 +3899,29 @@ const filterPredicateSchema$1 = {
   },
   required: ["column", "operator"]
 };
-const filterPredicateGroupSchema$1 = {
+const filterPredicateGroupSchema = {
   type: "object",
   properties: {
     predicates: {
       type: "array",
-      items: filterPredicateSchema$1
+      items: filterPredicateSchema
     }
   },
   required: ["predicates"]
 };
-const filterRowsOperationSchema$1 = {
+const filterRowsOperationSchema = {
   type: "object",
   properties: {
     ...dataOperationBaseSchema,
     type: { type: "string", enum: ["filter_rows"] },
     predicates: {
       type: "array",
-      items: filterPredicateSchema$1
+      items: filterPredicateSchema
     },
     groups: {
       type: "array",
       description: "Optional OR groups. Each group is AND-only internally; the overall result matches if any group matches.",
-      items: filterPredicateGroupSchema$1
+      items: filterPredicateGroupSchema
     }
   },
   required: ["id", "type", "reason"],
@@ -3603,12 +3934,12 @@ const dropRowsByConditionOperationSchema = {
     type: { type: "string", enum: ["drop_rows_by_condition"] },
     predicates: {
       type: "array",
-      items: filterPredicateSchema$1
+      items: filterPredicateSchema
     },
     groups: {
       type: "array",
       description: "Optional OR groups. Each group is AND-only internally; matching rows will be removed.",
-      items: filterPredicateGroupSchema$1
+      items: filterPredicateGroupSchema
     }
   },
   required: ["id", "type", "reason"],
@@ -4076,7 +4407,7 @@ const operationManifests = [
   {
     type: "filter_rows",
     stages: ["cleaning", "analysis"],
-    schema: filterRowsOperationSchema$1,
+    schema: filterRowsOperationSchema,
     requiredFields: ["id", "type", "reason", "predicates/groups"],
     summarize: () => "filter_rows requires predicates[] or groups[]",
     normalize: (value) => {
@@ -7083,7 +7414,7 @@ const DATA_QUERY_REPAIR_RULES = [
   {
     category: "duckdb_missing_column",
     match: (errorText) => /Binder Error:.*not found in FROM clause/i.test(errorText),
-    instruction: "DuckDB could not find a referenced column in the current dataset binding. Remove missing structural columns or lower period expressions into real source columns before retrying."
+    instruction: "CRITICAL: DuckDB could not find a referenced column. The column name you used does NOT exist in the dataset. Check the available source columns list below and rewrite the query using ONLY exact column names from that list. Do not guess or combine column names — use them exactly as listed."
   },
   {
     category: "or_groups_required",
@@ -7094,6 +7425,11 @@ const DATA_QUERY_REPAIR_RULES = [
     category: "conditional_aggregate_required",
     match: (errorText) => isConditionalAggregateRepairIssue(errorText),
     instruction: "Repair the grouped query by moving label filters into the matching plan.aggregates[].where clauses so each aggregate computes its own subset. Keep plan.where only for shared row filters. If the user needs a persistent derived metric such as Profit or Margin, validate the metric mapping first and then use data.mutate derive_metric_by_label."
+  },
+  {
+    category: "aggregation_governance_violation",
+    match: (errorText) => /aggregation_governance_violation:/i.test(errorText),
+    instruction: "Your aggregate function does not match the column semantics. The error message specifies which columns are non_additive (percentages, ratios, averages) or dimension_only. For non_additive columns use AVG instead of SUM. For dimension columns use COUNT or COUNT_DISTINCT instead of SUM/AVG. Rewrite the plan.aggregates with the correct function for each column."
   }
 ];
 const getDataQueryRepairHintCategoryFromText = (errorText) => {
@@ -7114,7 +7450,7 @@ const getDataQueryRepairGuidance = (errors, options) => {
   const repairHintCategories = matchedRules.map((rule) => rule.category);
   const repairInstructions = matchedRules.map((rule) => rule.instruction);
   const hasMissingColumnError = repairHintCategories.some(
-    (c) => c === "aggregate_missing_column" || c === "missing_filter_column" || c === "bridge_missing_column"
+    (c) => c === "aggregate_missing_column" || c === "missing_filter_column" || c === "bridge_missing_column" || c === "duckdb_missing_column" || c === "structural_metadata_leak"
   );
   const columnHint = hasMissingColumnError && ((_a = options == null ? void 0 : options.availableColumns) == null ? void 0 : _a.length) ? ` Available source columns: [${options.availableColumns.slice(0, 20).map((c) => `"${c}"`).join(", ")}].` : "";
   return {
@@ -9655,9 +9991,43 @@ const getFallbackResult = (rows, plan, allowedColumns, fallback) => {
 let cachedDuckDbBinding = null;
 let cachedDuckDbPrime = null;
 let cachedSerializedPayload = null;
+const QUERY_CACHE_MAX_SIZE = 50;
+let queryResultCache = /* @__PURE__ */ new Map();
+const hashSql = (sql) => {
+  let hash = 0;
+  for (let i = 0; i < sql.length; i++) {
+    hash = hash * 31 + sql.charCodeAt(i) >>> 0;
+  }
+  return hash.toString(16);
+};
+const tryQueryCache = (loadVersion, sql) => {
+  const cacheKey = `${loadVersion}::${hashSql(sql)}`;
+  const cached = queryResultCache.get(cacheKey);
+  if (!cached) return null;
+  console.log(`[Perf:DuckDB] Query cache: HIT (key: ${cacheKey.slice(0, 30)}…)`);
+  return {
+    result: cached.result,
+    engine: "duckdb",
+    sqlPreview: sql,
+    tableName: DUCKDB_TABLE_NAME,
+    loadVersion,
+    fallbackReason: null,
+    fallbackStage: null
+  };
+};
+const storeQueryCache = (loadVersion, sql, result) => {
+  const cacheKey = `${loadVersion}::${hashSql(sql)}`;
+  if (queryResultCache.size >= QUERY_CACHE_MAX_SIZE) {
+    const oldestKey = queryResultCache.keys().next().value;
+    if (oldestKey) queryResultCache.delete(oldestKey);
+  }
+  queryResultCache.set(cacheKey, { result, timestamp: Date.now() });
+  console.log(`[Perf:DuckDB] Query cache: MISS → stored (size: ${queryResultCache.size})`);
+};
 const clearCachedDuckDbBinding = () => {
   cachedDuckDbBinding = null;
   cachedDuckDbPrime = null;
+  queryResultCache.clear();
 };
 const primeDuckDbDataset = async (data, abortSignal, reportDiagnostics, onSlowLoad, columnRegistry) => {
   throwIfAborted(abortSignal);
@@ -9790,6 +10160,8 @@ const executeManagedDataQuery = async (data, plan, allowedColumns, options) => {
     ...(options == null ? void 0 : options.dimensionNormalization) ? { dimensionNormalization: options.dimensionNormalization } : {}
   });
   throwIfAborted(abortSignal);
+  const hit = tryQueryCache(loadVersion, compiled.sql);
+  if (hit) return hit;
   const prime = await primeDuckDbDataset(data, abortSignal, reportDiagnostics, onSlowLoad, columnRegistry);
   if (prime.engine !== "duckdb") {
     if (!allowNativeFallback) {
@@ -9818,6 +10190,7 @@ const executeManagedDataQuery = async (data, plan, allowedColumns, options) => {
       appliedLimit: compiled.appliedLimit
     }, DUCKDB_QUERY_TIMEOUT_MS, abortSignal, reportDiagnostics);
     throwIfAborted(abortSignal);
+    storeQueryCache(loadVersion, compiled.sql, result);
     return {
       result,
       engine: "duckdb",
@@ -9859,6 +10232,8 @@ const executeRawSqlQuery = async (data, rawSql, selectedColumns, options) => {
     throw new Error("Raw SQL queries require DuckDB to be enabled.");
   }
   const loadVersion = buildDatasetId(data.fileName, data.data);
+  const hit = tryQueryCache(loadVersion, rawSql);
+  if (hit) return hit;
   const prime = await primeDuckDbDataset(data, abortSignal, reportDiagnostics, options == null ? void 0 : options.onSlowLoad, columnRegistry);
   if (prime.engine !== "duckdb") {
     throw new Error(prime.fallbackReason ?? "DuckDB unavailable for raw SQL query.");
@@ -9871,6 +10246,7 @@ const executeRawSqlQuery = async (data, rawSql, selectedColumns, options) => {
     reportDiagnostics
   );
   throwIfAborted(abortSignal);
+  storeQueryCache(loadVersion, rawSql, result);
   return {
     result,
     engine: "duckdb",
@@ -9943,6 +10319,33 @@ const navigateToCard = (cardId, {
   if (highlight) {
     highlightCardElement(element);
   }
+  return true;
+};
+const NARRATIVE_HIGHLIGHT_CLASSES = ["ring-2", "ring-blue-400", "rounded-lg", "bg-blue-50/50", "transition-all", "duration-500"];
+const navigateToCardNarrative = (cardId) => {
+  window.dispatchEvent(new CustomEvent("card:expand-narrative", { detail: { cardId } }));
+  window.setTimeout(() => {
+    var _a;
+    const narrativeEl = document.getElementById(`narrative-${cardId}`);
+    if (narrativeEl) {
+      const scrollContainer = getMainScrollContainer();
+      if (scrollContainer) {
+        const containerRect = scrollContainer.getBoundingClientRect();
+        const elementRect = narrativeEl.getBoundingClientRect();
+        const headerHeight = ((_a = getAppHeaderElement()) == null ? void 0 : _a.getBoundingClientRect().height) ?? 0;
+        const targetTop = scrollContainer.scrollTop + (elementRect.top - containerRect.top) - headerHeight - CARD_NAVIGATION_HEADER_GAP_PX;
+        scrollContainer.scrollTo({ top: Math.max(0, targetTop), behavior: "smooth" });
+      } else {
+        narrativeEl.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+      narrativeEl.classList.add(...NARRATIVE_HIGHLIGHT_CLASSES);
+      window.setTimeout(() => {
+        narrativeEl.classList.remove(...NARRATIVE_HIGHLIGHT_CLASSES);
+      }, CARD_HIGHLIGHT_DURATION_MS);
+      return;
+    }
+    navigateToCard(cardId);
+  }, 300);
   return true;
 };
 const translations = {
@@ -10429,12 +10832,30 @@ const translations = {
     "Japanese": "レンダリング中",
     "French": "Rendu en cours"
   },
+  "report_blocked_what_to_do_label": {
+    "English": "What to do next",
+    "Mandarin": "下一步建议",
+    "Spanish": "Qué hacer a continuación",
+    "Japanese": "次のステップ",
+    "French": "Prochaines étapes"
+  },
+  "report_cancel": {
+    "English": "Cancel",
+    "Mandarin": "取消",
+    "Spanish": "Cancelar",
+    "Japanese": "キャンセル",
+    "French": "Annuler"
+  },
   "report_blocked_what_to_do": {
     "English": "Review your analysis cards and run additional AI queries to improve evidence quality before generating again.",
     "Mandarin": "请检查您的分析卡片并运行更多 AI 查询，以提升证据质量后再重新生成。",
     "Spanish": "Revise sus tarjetas de análisis y ejecute más consultas de IA para mejorar la calidad de la evidencia antes de generar de nuevo.",
     "Japanese": "分析カードを確認し、追加のAIクエリを実行して証拠の質を向上させてから再生成してください。",
     "French": "Vérifiez vos cartes d'analyse et lancez des requêtes IA supplémentaires pour améliorer la qualité des preuves avant de régénérer."
+  },
+  "loading_table": {
+    "English": "Loading table…",
+    "Mandarin": "加载表格中…"
   },
   "raw_data_explorer": {
     "English": "Raw Data Explorer",
@@ -10695,6 +11116,13 @@ const translations = {
     "Spanish": "Su solicitud se está procesando ahora.",
     "Japanese": "リクエストを現在処理しています。",
     "French": "Votre demande est en cours de traitement."
+  },
+  "chat_classifying_intent": {
+    "English": "Classifying your query…",
+    "Mandarin": "��在分类您的查询…",
+    "Spanish": "Clasificando su consulta…",
+    "Japanese": "クエリを分類中…",
+    "French": "Classification de votre requête…"
   },
   "chat_processing_short": {
     "English": "Working",
@@ -11073,6 +11501,11 @@ const translations = {
     "Spanish": "Filas de Resumen Eliminadas:",
     "Japanese": "削除された要約行:",
     "French": "Lignes de Résumé Supprimées:"
+  },
+  "canonicalization_row_exclusion": {
+    "English": "Report structure normalized: {totalRows} imported rows → {retainedRows} data rows. {excludedRows} non-data rows excluded (group headers, notes, subtotals). Original data is preserved and can be restored.",
+    "Mandarin": "报表结构规范化：{totalRows} 行导入 → {retainedRows} 行数据。{excludedRows} 行非数据行已排除（分组标题、备注、小计等）。原始数据已保留，可随时恢复。",
+    "Japanese": "レポート構造の正規化：{totalRows}行インポート → {retainedRows}行データ。{excludedRows}行の非データ行を除外（グループヘッダー、メモ、小計）。元データは保持され、復元可能です。"
   },
   "hide_report_metadata": {
     "English": "Hide report metadata",
@@ -12101,6 +12534,7 @@ const translations = {
   "ai_task_session_building_semantic": { "English": "Dataset loaded into analysis engine, building semantic understanding", "Mandarin": "数据集已加载至分析引擎，正在构建语义理解", "Japanese": "データセットを分析エンジンに読み込み、セマンティック解析を構築中" },
   "ai_task_session_exploring_data": { "English": "Exploring data distributions with SQL", "Mandarin": "正在使用 SQL 探索数据分布", "Japanese": "SQLでデータ分布を調査中" },
   "ai_task_session_investigation": { "English": "Running data investigation diagnostics", "Mandarin": "正在运行数据调查诊断", "Japanese": "データ調査診断を実行中" },
+  "ai_task_session_exploring_and_investigating": { "English": "Exploring data & running investigation diagnostics", "Mandarin": "正在探索数据并运行调查诊断", "Japanese": "データ探索と調査診断を同時実行中" },
   "ai_task_session_generating_topics": { "English": "Generating analysis topics from data patterns", "Mandarin": "正在从数据模式生成分析主题", "Japanese": "データパターンから分析トピックを生成中" },
   // --- Global credibility tier labels ---
   "credibility_ready": { "English": "Results ready to use", "Mandarin": "结果可直接使用", "Japanese": "結果はそのままご利用いただけます" },
@@ -13069,7 +13503,50 @@ const translations = {
     "English": "Based on historical preferences",
     "Mandarin": "📊 基于历史偏好",
     "Japanese": "📊 履歴の好みに基づく"
-  }
+  },
+  // ── History panel: session switch confirmation ──
+  "history_switch_session": { "English": "Switch Session", "Mandarin": "切换会话", "Malay": "Tukar Sesi", "Japanese": "セッション切替" },
+  "history_switch_session_desc": {
+    "English": "Loading this session will replace your current workspace. Your current data has been auto-saved and will not be lost.",
+    "Mandarin": "加载此会话将替换当前工作区。您的当前数据已自动保存，不会丢失。",
+    "Malay": "Memuatkan sesi ini akan menggantikan ruang kerja semasa anda. Data anda telah disimpan secara automatik.",
+    "Japanese": "このセッションを読み込むと現在のワークスペースが置き換わります。データは自動保存済みです。"
+  },
+  "history_switch_cancel": { "English": "Cancel", "Mandarin": "取消", "Malay": "Batal", "Japanese": "キャンセル" },
+  "history_switch_confirm": { "English": "Load Session", "Mandarin": "确认加载", "Malay": "Muatkan Sesi", "Japanese": "読み込む" },
+  // ── Tabulator pagination labels ──
+  "tabulator_page_size": { "English": "Rows", "Mandarin": "每页", "Malay": "Baris", "Japanese": "行数" },
+  "tabulator_page_title": { "English": "Show Page", "Mandarin": "跳转页码", "Malay": "Pergi ke halaman", "Japanese": "ページを表示" },
+  "tabulator_first": { "English": "First", "Mandarin": "首页", "Malay": "Pertama", "Japanese": "最初" },
+  "tabulator_first_title": { "English": "First Page", "Mandarin": "第一页", "Malay": "Halaman pertama", "Japanese": "最初のページ" },
+  "tabulator_last": { "English": "Last", "Mandarin": "末页", "Malay": "Akhir", "Japanese": "最後" },
+  "tabulator_last_title": { "English": "Last Page", "Mandarin": "最后一页", "Malay": "Halaman terakhir", "Japanese": "最後のページ" },
+  "tabulator_prev": { "English": "Prev", "Mandarin": "上一页", "Malay": "Sebelumnya", "Japanese": "前へ" },
+  "tabulator_prev_title": { "English": "Previous Page", "Mandarin": "上一页", "Malay": "Halaman sebelumnya", "Japanese": "前のページ" },
+  "tabulator_next": { "English": "Next", "Mandarin": "下一页", "Malay": "Seterusnya", "Japanese": "次へ" },
+  "tabulator_next_title": { "English": "Next Page", "Mandarin": "下一页", "Malay": "Halaman seterusnya", "Japanese": "次のページ" },
+  "tabulator_all": { "English": "All", "Mandarin": "全部", "Malay": "Semua", "Japanese": "全て" },
+  "tabulator_showing": { "English": "Showing", "Mandarin": "显示", "Malay": "Memaparkan", "Japanese": "表示" },
+  "tabulator_of": { "English": "of", "Mandarin": "/", "Malay": "daripada", "Japanese": "/" },
+  "tabulator_rows": { "English": "rows", "Mandarin": "行", "Malay": "baris", "Japanese": "行" },
+  "tabulator_pages": { "English": "pages", "Mandarin": "页", "Malay": "halaman", "Japanese": "ページ" },
+  // ── Spreadsheet filter operator labels ──
+  "filter_op_eq": { "English": "equals", "Mandarin": "等于", "Malay": "bersamaan dengan", "Japanese": "と等しい" },
+  "filter_op_neq": { "English": "does not equal", "Mandarin": "不等于", "Malay": "tidak bersamaan dengan", "Japanese": "と等しくない" },
+  "filter_op_gt": { "English": "is greater than", "Mandarin": "大于", "Malay": "lebih besar daripada", "Japanese": "より大きい" },
+  "filter_op_gte": { "English": "is greater than or equal to", "Mandarin": "大于等于", "Malay": "lebih besar atau sama dengan", "Japanese": "以上" },
+  "filter_op_lt": { "English": "is less than", "Mandarin": "小于", "Malay": "lebih kecil daripada", "Japanese": "より小さい" },
+  "filter_op_lte": { "English": "is less than or equal to", "Mandarin": "小于等于", "Malay": "lebih kecil atau sama dengan", "Japanese": "以下" },
+  "filter_op_between": { "English": "is between", "Mandarin": "介于", "Malay": "di antara", "Japanese": "の間にある" },
+  "filter_op_contains": { "English": "contains", "Mandarin": "包含", "Malay": "mengandungi", "Japanese": "を含む" },
+  "filter_op_starts_with": { "English": "starts with", "Mandarin": "以", "Malay": "bermula dengan", "Japanese": "で始まる" },
+  "filter_op_ends_with": { "English": "ends with", "Mandarin": "以", "Malay": "berakhir dengan", "Japanese": "で終わる" },
+  "filter_op_in": { "English": "is in", "Mandarin": "属于", "Malay": "terdapat dalam", "Japanese": "に含まれる" },
+  "filter_op_not_in": { "English": "is not in", "Mandarin": "不属于", "Malay": "tidak terdapat dalam", "Japanese": "に含まれない" },
+  "filter_op_is_null": { "English": "is null", "Mandarin": "为空", "Malay": "kosong", "Japanese": "が空である" },
+  "filter_op_not_null": { "English": "is not null", "Mandarin": "不为空", "Malay": "tidak kosong", "Japanese": "が空でない" },
+  // ── AI prompt language instruction ──
+  "ai_prompt_reply_language": { "English": "Reply in English.", "Mandarin": "请用简体中文回答。", "Malay": "Sila jawab dalam Bahasa Melayu.", "Japanese": "日本語で回答してください。" }
 };
 const getTranslation = (key, language = "English", params) => {
   var _a, _b;
@@ -13325,12 +13802,27 @@ const calculateAggregation = (values, aggregation) => {
       return values.reduce((acc, val) => acc + val, 0);
     case "count":
       return values.length;
-    case "avg":
+    case "avg": {
       const sum = values.reduce((acc, val) => acc + val, 0);
       return sum / values.length;
+    }
+    case "min":
+      return Math.min(...values);
+    case "max":
+      return Math.max(...values);
+    case "median":
+    case "percentile": {
+      const sorted = [...values].sort((a, b) => a - b);
+      const mid = Math.floor(sorted.length / 2);
+      return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+    }
+    case "count_distinct":
+      return new Set(values).size;
   }
 };
-const PRE_FILTER_OPERATORS$1 = [
+const AGGREGATION_TYPES = ["sum", "count", "avg", "count_distinct", "min", "max", "median", "percentile"];
+const isAggregationType = (v) => typeof v === "string" && AGGREGATION_TYPES.includes(v);
+const PRE_FILTER_OPERATORS = [
   "eq",
   "neq",
   "gt",
@@ -13350,7 +13842,7 @@ const TERMINAL_CHAT_LIFECYCLE_STATES = /* @__PURE__ */ new Set([
   "failed",
   "cancelled"
 ]);
-const PRE_FILTER_OPERATOR_SET = new Set(PRE_FILTER_OPERATORS$1);
+const PRE_FILTER_OPERATOR_SET = new Set(PRE_FILTER_OPERATORS);
 const PRE_FILTER_OPERATOR_ALIASES = {
   "=": "eq",
   "==": "eq",
@@ -13848,7 +14340,7 @@ const executeAiCleaningProgram = (inputRows, program, profiles) => {
     schemaDiff: diffSchemas(beforeProfiles, afterProfiles)
   };
 };
-const jsContent = 'const STRUCTURAL_METADATA_COLUMNS = [\n  "RowClass",\n  "RowRole",\n  "ResolvedRowRole",\n  "HierarchyDepth",\n  "SourceRowIndex"\n];\nconst STRUCTURAL_METADATA_LOOKUP = new Set(\n  STRUCTURAL_METADATA_COLUMNS.map((column) => column.toLowerCase())\n);\nconst normalizeColumnName$2 = (value) => value.trim().replace(/\\s+/g, " ").toLowerCase();\nconst isStructuralMetadataColumn = (name) => STRUCTURAL_METADATA_LOOKUP.has(normalizeColumnName$2(name));\nconst normalizeColumnName$1 = (value) => value.trim().replace(/\\s+/g, " ").toLowerCase();\nconst collectOrderedColumnNames = (rows, preferredOrder) => {\n  const ordered = [];\n  const seen = /* @__PURE__ */ new Set();\n  const push = (column) => {\n    if (typeof column !== "string" || column.trim().length === 0) {\n      return;\n    }\n    const normalized = normalizeColumnName$1(column);\n    if (seen.has(normalized)) {\n      return;\n    }\n    seen.add(normalized);\n    ordered.push(column);\n  };\n  [].forEach(push);\n  (rows ?? []).forEach((row) => {\n    Object.keys(row ?? {}).forEach(push);\n  });\n  return ordered;\n};\nconst robustParseFloat = (value) => {\n  if (value === null || value === void 0) return null;\n  let s = String(value).trim();\n  if (s === "") return null;\n  if (s.startsWith("\'") || s.startsWith("‘") || s.startsWith("’")) {\n    s = s.substring(1);\n    if (s === "") return null;\n  }\n  let isNegative = false;\n  if (s.startsWith("(") && s.endsWith(")")) {\n    s = s.substring(1, s.length - 1);\n    isNegative = true;\n  }\n  s = s.replace(/[$\\s€£¥%]/g, "");\n  const lastComma = s.lastIndexOf(",");\n  const lastDot = s.lastIndexOf(".");\n  if (lastComma > lastDot) {\n    s = s.replace(/\\./g, "").replace(",", ".");\n  } else {\n    s = s.replace(/,/g, "");\n  }\n  const num = parseFloat(s);\n  if (isNaN(num)) {\n    return null;\n  }\n  if (!Number.isFinite(Number(s))) {\n    return null;\n  }\n  return isNegative ? -num : num;\n};\nconst profileData = (data) => {\n  if (!data || data.length === 0) return { profiles: [], issues: [] };\n  const headers = collectOrderedColumnNames(data);\n  const profiles = [];\n  const issues = [];\n  const MISSING_VALUE_THRESHOLD = 0.5;\n  for (const header of headers) {\n    let isNumerical = true;\n    const values = data.map((row) => row[header]);\n    let numericCount = 0;\n    for (const value of values) {\n      const parsedNum = robustParseFloat(value);\n      if (value !== null && String(value).trim() !== "") {\n        if (parsedNum === null) {\n          isNumerical = false;\n          break;\n        }\n        numericCount++;\n      }\n    }\n    const missingPercentage = values.filter((v) => v === null || String(v).trim() === "").length / data.length;\n    if (missingPercentage > MISSING_VALUE_THRESHOLD) {\n      issues.push(`Column \'${header}\' has a high percentage of missing values (${(missingPercentage * 100).toFixed(0)}%).`);\n    }\n    if (isNumerical && numericCount > 0) {\n      const numericValues = values.map(robustParseFloat).filter((v) => v !== null);\n      const COMMA_THOUSANDS_PATTERN = /\\d{1,3}(,\\d{3})+/;\n      const hasFormattedNumbers = values.some((v) => {\n        const s = String(v ?? "").trim();\n        return s !== "" && COMMA_THOUSANDS_PATTERN.test(s);\n      });\n      const APOSTROPHE_PREFIX_PATTERN = /^[\'\\u2018\\u2019]/;\n      const hasApostrophePrefixedNumbers = values.some((v) => {\n        const s = String(v ?? "").trim();\n        return s !== "" && APOSTROPHE_PREFIX_PATTERN.test(s);\n      });\n      profiles.push({\n        name: header,\n        type: "numerical",\n        valueRange: [Math.min(...numericValues), Math.max(...numericValues)],\n        missingPercentage: missingPercentage * 100,\n        ...hasFormattedNumbers ? { hasFormattedNumbers: true } : {},\n        ...hasApostrophePrefixedNumbers ? { hasApostrophePrefixedNumbers: true } : {}\n      });\n      if (hasFormattedNumbers) {\n        issues.push(`Column \'${header}\' contains comma-formatted numbers (e.g. \'1,234.56\'). Strip commas with replace_values before casting to avoid SQL type errors.`);\n      }\n      if (hasApostrophePrefixedNumbers) {\n        issues.push(`Column \'${header}\' contains apostrophe-prefixed numbers (e.g. "\'-852.81"). Strip leading apostrophes with replace_values before casting to avoid SQL type errors.`);\n      }\n    } else {\n      const uniqueValues = new Set(values.map(String));\n      profiles.push({\n        name: header,\n        type: "categorical",\n        uniqueValues: uniqueValues.size,\n        missingPercentage: missingPercentage * 100\n      });\n    }\n  }\n  return { profiles, issues };\n};\nconst buildSchemaSnapshot = (profiles) => {\n  return profiles.map((profile) => ({\n    name: profile.name,\n    type: profile.type,\n    uniqueValues: profile.uniqueValues,\n    missingPercentage: profile.missingPercentage,\n    valueRange: profile.valueRange\n  }));\n};\nconst diffSchemas = (before, after) => {\n  const beforeMap = new Map(before.map((col) => [col.name.toLowerCase(), col]));\n  const afterMap = new Map(after.map((col) => [col.name.toLowerCase(), col]));\n  const addedColumns = after.filter((col) => !beforeMap.has(col.name.toLowerCase())).map((col) => ({ name: col.name, type: col.type }));\n  const removedColumns = before.filter((col) => !afterMap.has(col.name.toLowerCase())).map((col) => ({ name: col.name, type: col.type }));\n  const changedColumns = after.filter((col) => {\n    const previous = beforeMap.get(col.name.toLowerCase());\n    return previous && previous.type !== col.type;\n  }).map((col) => {\n    var _a;\n    return { name: col.name, before: (_a = beforeMap.get(col.name.toLowerCase())) == null ? void 0 : _a.type, after: col.type };\n  });\n  return { addedColumns, removedColumns, changedColumns };\n};\nconst CODE_LIKE_PATTERN = /^(?:\\d{4,8}|[A-Z]{2,}(?:[_-][A-Z0-9]+)*)$/;\nconst PLACEHOLDER_PATTERN = /^_?unnamed(?:_column)?(?:_\\d+)?$/i;\nconst FOOTER_PATTERN = /\\b(?:reporting date|reporting currency|printed by|generated on)\\b|\\d{2}-\\d{2}-\\d{4}@/i;\nconst SUMMARY_LABEL_PATTERN = /^(?:total|subtotal|grand[ _-]?total|net[ _-]?total)$/i;\nconst SUBTOTAL_ROW_PATTERN = /^(?:subtotal)$/i;\nconst TOTAL_ROW_PATTERN = /^(?:total|grand total|net(?: [a-z]+)?|balance)$/i;\nconst SUMMARY_TOKEN_PATTERN = /(?:^|[\\s>_:-])(sub\\s*total|subtotal|grand\\s*total|total|balance|summary|net\\s*total)(?:$|[\\s>_:-])/i;\nconst getRows = (data) => (data == null ? void 0 : data.data) ?? [];\nconst getColumns$1 = (data) => {\n  var _a;\n  return ((_a = data == null ? void 0 : data.data) == null ? void 0 : _a[0]) ? Object.keys(data.data[0]) : [];\n};\nconst getRowCells = (row) => Object.entries(row ?? {}).map(([columnKey, rawValue], columnIndex) => ({\n  columnKey,\n  columnIndex,\n  value: String(rawValue ?? "").trim()\n}));\nconst getRowValues = (row) => getRowCells(row).map((cell) => cell.value);\nconst getNonEmptyValues = (row) => getRowValues(row).filter(Boolean);\nconst isNumericLike = (value) => /^-?\\d[\\d,]*(?:\\.\\d+)?$/.test(value.trim());\nconst isCodeLike = (value) => CODE_LIKE_PATTERN.test(value.trim());\nconst isSummaryLike = (value) => SUMMARY_LABEL_PATTERN.test(value.trim());\nconst isDescriptorLike = (value) => {\n  const trimmed = value.trim();\n  return trimmed.length >= 2 && /[A-Za-z]/.test(trimmed) && !isCodeLike(trimmed) && !isSummaryLike(trimmed) && !isNumericLike(trimmed);\n};\nconst isBlankRow$1 = (row) => getNonEmptyValues(row).length === 0;\nconst isStructuralFooterRow = (row) => {\n  const values = getNonEmptyValues(row);\n  if (values.length === 0) return false;\n  if (values.length === 1 && values[0].length >= 24) return true;\n  if (values.length <= 2 && values.some((v) => /\\d{2}[-/]\\d{2}[-/]\\d{4}/.test(v))) return true;\n  return false;\n};\nconst isFooterLikeRow = (row) => isStructuralFooterRow(row) || FOOTER_PATTERN.test(getNonEmptyValues(row).join(" | "));\nconst getDescriptorPriority = (column) => {\n  const normalized = column.trim().toLowerCase();\n  if (/\\b(?:code|id)\\b/.test(normalized)) return 0;\n  if (/\\b(?:description|name|label)\\b/.test(normalized)) return 1;\n  return 2;\n};\nconst sortDescriptorColumns = (columns) => [...columns].sort(\n  (left, right) => getDescriptorPriority(left) - getDescriptorPriority(right) || left.localeCompare(right)\n);\nconst clamp01 = (value) => Math.max(0, Math.min(1, value));\nconst roundRatio = (value) => Number(clamp01(value).toFixed(4));\nconst SUMMARY_TEXT_HINT_PATTERN = /\\b(?:grand total|subtotal|total|net|balance|variance|delta|allocated|allocation|consolidated|rollup|shared cost|ytd|mtd|qtd)\\b/i;\nconst PERIOD_SCENARIO_SERIES_PATTERN = /^(?:fy\\d{2,4}|q[1-4](?:[-_ ]?\\d{2,4})?|\\d{4}|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|actual|budget|forecast|plan|target|variance)$/i;\nconst isPeriodScenarioSeries = (value) => PERIOD_SCENARIO_SERIES_PATTERN.test(value.trim());\nconst isSummaryTextLike = (value) => SUMMARY_TEXT_HINT_PATTERN.test(value.trim());\nconst classifySummaryKind = (value) => {\n  const normalized = value.trim().toLowerCase();\n  if (/total|subtotal|grand total/.test(normalized)) return "total";\n  if (/variance|delta/.test(normalized)) return "comparison";\n  if (/allocated|allocation|shared/.test(normalized)) return "allocation";\n  if (/consolidated|rollup|balance/.test(normalized)) return "rollup";\n  if (/net|margin/.test(normalized)) return "derived_metric";\n  return "unknown";\n};\nconst getNumericValue = (value) => robustParseFloat(value);\nconst getAggregateConsistencyScore = (rows, detailSeriesIndexes, candidateIndex) => {\n  const scoredRows = rows.map((row) => {\n    var _a;\n    const cells = getRowCells(row);\n    const candidateValue = getNumericValue(((_a = cells[candidateIndex]) == null ? void 0 : _a.value) ?? null);\n    if (candidateValue === null) return null;\n    const detailValues = detailSeriesIndexes.map((index) => {\n      var _a2;\n      return getNumericValue(((_a2 = cells[index]) == null ? void 0 : _a2.value) ?? null);\n    }).filter((value) => value !== null);\n    if (detailValues.length < 3) return null;\n    const absoluteDetailTotal = detailValues.reduce((sum, value) => sum + Math.abs(value), 0);\n    if (absoluteDetailTotal === 0) return null;\n    const ratio = Math.abs(candidateValue) / absoluteDetailTotal;\n    return ratio >= 0.2 && ratio <= 1.25 ? 1 : ratio <= 1.75 ? 0.6 : 0;\n  }).filter((value) => value !== null);\n  if (scoredRows.length === 0) return 0;\n  return roundRatio(scoredRows.reduce((sum, value) => sum + value, 0) / scoredRows.length);\n};\nconst scoreSummarySeriesCandidates = ({\n  rows,\n  headerRowIndex,\n  detailSeriesIndexes,\n  candidateIndexes\n}) => {\n  if (candidateIndexes.length === 0) return [];\n  const headerCells = getRowCells(rows[headerRowIndex]);\n  const bodyRows = rows.slice(headerRowIndex + 1).filter((row) => getRowCells(row).some((cell) => isNumericLike(cell.value)));\n  return candidateIndexes.map((index) => {\n    var _a;\n    const columnName = ((_a = headerCells[index]) == null ? void 0 : _a.value) ?? "";\n    if (!columnName) return null;\n    const textScore = isSummaryTextLike(columnName) ? 0.58 : 0;\n    const positionScore = index > Math.max(...detailSeriesIndexes, -1) ? 0.14 : 0;\n    const codePenalty = isCodeLike(columnName) ? -0.25 : 0;\n    const aggregateConsistency = getAggregateConsistencyScore(bodyRows, detailSeriesIndexes, index);\n    const confidence = roundRatio(Math.max(0, textScore + positionScore + aggregateConsistency * 0.34 + codePenalty));\n    if (confidence < 0.42) return null;\n    return {\n      columnName,\n      summaryKind: classifySummaryKind(columnName),\n      confidence\n    };\n  }).filter((candidate) => Boolean(candidate));\n};\nconst MAX_SERIES_LABEL_LAYERS = 3;\nconst isReportTitleRow = (row) => {\n  const values = getNonEmptyValues(row);\n  return values.length > 0 && values.length <= 2 && values.join(" ").length >= 20;\n};\nconst isMetadataRow = (row) => {\n  const values = getNonEmptyValues(row);\n  return values.length > 0 && values.length <= 2 && (values.join(" ").length >= 30 || values.some((v) => /\\d{2}[-/]\\d{2}[-/]\\d{4}/.test(v)) || values.some((v) => v.includes(":")));\n};\nconst isDetailSeriesHeader = (value) => isCodeLike(value) || /^[A-Za-z]{1,4}\\d{1,4}$/.test(value) || isPeriodScenarioSeries(value);\nconst detectHeaderLayoutCandidate = (rows, rowIndex) => {\n  const row = rows[rowIndex];\n  const cells = getRowCells(row);\n  if (cells.length < 5) return null;\n  const descriptorColumns = [];\n  const descriptorColumnIndexes = [];\n  const detailSeriesColumns = [];\n  const detailSeriesIndexes = [];\n  const trailingCandidateIndexes = [];\n  let seenSeries = false;\n  for (const cell of cells) {\n    if (!cell.value) {\n      if (!seenSeries) continue;\n      continue;\n    }\n    if (!seenSeries && (isDescriptorLike(cell.value) && !isDetailSeriesHeader(cell.value) || descriptorColumns.length < 3 && !isDetailSeriesHeader(cell.value) && !isNumericLike(cell.value) && !isSummaryLike(cell.value))) {\n      descriptorColumns.push(cell.value);\n      descriptorColumnIndexes.push(cell.columnIndex);\n      continue;\n    }\n    seenSeries = true;\n    const codeHeavyDetailBlock = detailSeriesColumns.length >= 3 && detailSeriesColumns.filter((column) => isCodeLike(column)).length / detailSeriesColumns.length >= 0.75;\n    if (isPeriodScenarioSeries(cell.value) && codeHeavyDetailBlock) {\n      trailingCandidateIndexes.push(cell.columnIndex);\n      continue;\n    }\n    if (isDetailSeriesHeader(cell.value)) {\n      detailSeriesColumns.push(cell.value);\n      detailSeriesIndexes.push(cell.columnIndex);\n      continue;\n    }\n    if (descriptorColumns.length === 0) {\n      return null;\n    }\n    if (detailSeriesColumns.length >= 2 && isSummaryLike(cell.value) || detailSeriesColumns.length >= 4 && (isDescriptorLike(cell.value) || /\\w/.test(cell.value))) {\n      trailingCandidateIndexes.push(cell.columnIndex);\n    }\n  }\n  const minimumDetailSeries = rows.length >= 8 && trailingCandidateIndexes.length === 0 ? 3 : 2;\n  if (descriptorColumns.length === 0 || detailSeriesColumns.length < minimumDetailSeries) return null;\n  const summarySeriesCandidates = scoreSummarySeriesCandidates({\n    rows,\n    headerRowIndex: rowIndex,\n    detailSeriesIndexes,\n    candidateIndexes: trailingCandidateIndexes\n  });\n  const summarySeriesColumns = summarySeriesCandidates.map((candidate) => candidate.columnName);\n  const summarySeriesIndexes = trailingCandidateIndexes.filter((index) => {\n    var _a;\n    return summarySeriesColumns.includes(((_a = cells[index]) == null ? void 0 : _a.value) ?? "");\n  });\n  const descriptorScore = Math.min(1, descriptorColumns.length / 2);\n  const detailScore = Math.min(1, detailSeriesColumns.length / 8);\n  const summaryScore = summarySeriesColumns.length > 0 ? 0.1 : 0;\n  return {\n    rowIndex,\n    descriptorColumns,\n    detailSeriesColumns,\n    summarySeriesColumns,\n    summarySeriesCandidates,\n    descriptorColumnIndexes,\n    detailSeriesIndexes,\n    summarySeriesIndexes,\n    score: roundRatio(0.45 + descriptorScore * 0.2 + detailScore * 0.25 + summaryScore)\n  };\n};\nconst isSeriesLabelBandRow = (row, layout) => {\n  const cells = getRowCells(row);\n  if (cells.length === 0) return false;\n  const descriptorBlankCount = layout.descriptorColumnIndexes.filter((index) => {\n    var _a;\n    return !((_a = cells[index]) == null ? void 0 : _a.value);\n  }).length;\n  const detailNonEmptyCount = layout.detailSeriesIndexes.filter((index) => {\n    var _a;\n    return Boolean((_a = cells[index]) == null ? void 0 : _a.value);\n  }).length;\n  const detailLabelLikeCount = layout.detailSeriesIndexes.filter((index) => {\n    var _a;\n    const value = ((_a = cells[index]) == null ? void 0 : _a.value) ?? "";\n    return Boolean(value) && !isNumericLike(value);\n  }).length;\n  const numericCount = layout.detailSeriesIndexes.filter((index) => {\n    var _a;\n    return isNumericLike(((_a = cells[index]) == null ? void 0 : _a.value) ?? "");\n  }).length;\n  if (numericCount >= Math.max(2, Math.floor(layout.detailSeriesIndexes.length * 0.3))) return false;\n  return descriptorBlankCount >= Math.max(1, layout.descriptorColumnIndexes.length - 1) && detailNonEmptyCount >= Math.max(3, Math.floor(layout.detailSeriesIndexes.length * 0.35)) && detailLabelLikeCount >= Math.max(3, Math.floor(layout.detailSeriesIndexes.length * 0.35));\n};\nconst detectSeriesLabelBands = (rows, layout) => {\n  if (!layout) return [];\n  const candidates = [];\n  for (let offset = 1; offset <= MAX_SERIES_LABEL_LAYERS; offset += 1) {\n    const rowIndex = layout.rowIndex + offset;\n    if (!rows[rowIndex] || !isSeriesLabelBandRow(rows[rowIndex], layout)) break;\n    candidates.push({\n      rowIndexes: [rowIndex],\n      role: "series_label_header",\n      confidence: roundRatio(clamp01(0.55 + offset * 0.08)),\n      layerIndex: offset\n    });\n  }\n  return candidates;\n};\nconst buildHeaderBands = (rows, layout, maxTopScanRows = 12) => {\n  const headerBands = [];\n  const topRows = rows.slice(0, Math.min(maxTopScanRows, rows.length));\n  topRows.forEach((row, index) => {\n    if (index === (layout == null ? void 0 : layout.rowIndex)) return;\n    if (isReportTitleRow(row)) {\n      headerBands.push({ rowIndexes: [index], role: "report_title", confidence: 0.7 });\n    } else if (isMetadataRow(row)) {\n      headerBands.push({ rowIndexes: [index], role: "report_metadata", confidence: 0.7 });\n    }\n  });\n  if (layout) {\n    headerBands.push({\n      rowIndexes: [layout.rowIndex],\n      role: "column_header",\n      confidence: layout.score,\n      layerIndex: 0\n    });\n    headerBands.push(...detectSeriesLabelBands(rows, layout));\n  }\n  return headerBands;\n};\nconst countBusinessRows = (rows, layout, startRowIndex, endRowIndex) => rows.slice(startRowIndex, endRowIndex + 1).filter((row) => {\n  if (isBlankRow$1(row) || isFooterLikeRow(row)) return false;\n  const cells = getRowCells(row);\n  const descriptorValues = layout.descriptorColumnIndexes.map((index) => {\n    var _a;\n    return ((_a = cells[index]) == null ? void 0 : _a.value) ?? "";\n  }).filter(Boolean);\n  const numericHits = layout.detailSeriesIndexes.filter((index) => {\n    var _a;\n    return isNumericLike(((_a = cells[index]) == null ? void 0 : _a.value) ?? "");\n  }).length;\n  return descriptorValues.length > 0 && numericHits >= 1;\n}).length;\nconst findSegmentEnd = (rows, layout, layoutIndexes) => {\n  const nextHeaderIndex = layoutIndexes.find((index) => index > layout.rowIndex) ?? rows.length;\n  let endRowIndex = rows.length - 1;\n  for (let index = layout.rowIndex + 1; index < nextHeaderIndex; index += 1) {\n    const row = rows[index];\n    const values = getNonEmptyValues(row);\n    if (isFooterLikeRow(row)) {\n      endRowIndex = index - 1;\n      break;\n    }\n    if (values.length === 0) {\n      const remainingNonEmpty = rows.slice(index + 1, nextHeaderIndex).some((candidate) => getNonEmptyValues(candidate).length > 0);\n      if (!remainingNonEmpty) {\n        endRowIndex = index - 1;\n        break;\n      }\n    }\n  }\n  return Math.max(layout.rowIndex, endRowIndex);\n};\nconst findDominantTabularSegment = (rows, layouts) => {\n  if (layouts.length === 0) return null;\n  const layoutIndexes = layouts.map((layout) => layout.rowIndex).sort((left, right) => left - right);\n  const candidates = layouts.map((layout) => {\n    const startRowIndex = layout.rowIndex;\n    const endRowIndex = findSegmentEnd(rows, layout, layoutIndexes);\n    const businessRowCount = countBusinessRows(rows, layout, startRowIndex + 1, endRowIndex);\n    const preambleRows = rows.slice(0, layout.rowIndex).filter((row) => getNonEmptyValues(row).length > 0).length;\n    const trailingRows = rows.slice(endRowIndex + 1).filter((row) => getNonEmptyValues(row).length > 0).length;\n    const confidence = roundRatio(\n      layout.score + Math.min(0.35, businessRowCount / 20) + (preambleRows > 0 || trailingRows > 0 ? 0.08 : 0)\n    );\n    return {\n      headerLayout: layout,\n      startRowIndex,\n      endRowIndex,\n      businessRowCount,\n      confidence,\n      mixedSignal: preambleRows > 0 || trailingRows > 0 || layout.rowIndex > 2\n    };\n  });\n  return candidates.sort((left, right) => right.confidence - left.confidence)[0] ?? null;\n};\nconst detectMatrixRowRole = (row, layout, signalBundle) => {\n  if (!row) return { role: "unknown", confidence: 0 };\n  if (isBlankRow$1(row) || isFooterLikeRow(row)) return { role: "noise", confidence: 0.98 };\n  const values = getNonEmptyValues(row);\n  if (values.length === 1 && values[0].length >= 16) {\n    return { role: "comment", confidence: 0.82 };\n  }\n  if (values.length <= 2 && !values.some(isNumericLike) && (values.some((v) => /:.+/.test(v)) || values.join(" ").length >= 30)) {\n    return { role: "comment", confidence: 0.76 };\n  }\n  if (!layout) return { role: "unknown", confidence: 0.2 };\n  const cells = getRowCells(row);\n  const descriptorValues = layout.descriptorColumnIndexes.map((index) => {\n    var _a;\n    return ((_a = cells[index]) == null ? void 0 : _a.value) ?? "";\n  }).filter(Boolean);\n  const numericCount = layout.detailSeriesIndexes.filter((index) => {\n    var _a;\n    return isNumericLike(((_a = cells[index]) == null ? void 0 : _a.value) ?? "");\n  }).length;\n  if (descriptorValues.some((value) => SUBTOTAL_ROW_PATTERN.test(value.trim()))) {\n    return { role: "subtotal", confidence: 0.92 };\n  }\n  if (descriptorValues.some((value) => TOTAL_ROW_PATTERN.test(value.trim()))) {\n    return { role: "total", confidence: 0.94 };\n  }\n  if (numericCount === 0 && descriptorValues.length > 0) {\n    return { role: "group_header", confidence: 0.75 };\n  }\n  if (numericCount > 0 && descriptorValues.length > 0) {\n    return { role: "fact", confidence: 0.88 };\n  }\n  return { role: "unknown", confidence: 0.25 };\n};\nconst assignHierarchyDepths = (rowRoles) => {\n  let activeDepth = 0;\n  return rowRoles.map((candidate) => {\n    if (!["group_header", "fact", "subtotal", "total"].includes(candidate.role)) {\n      return candidate;\n    }\n    if (candidate.role === "group_header") {\n      activeDepth += 1;\n      return { ...candidate, depth: activeDepth };\n    }\n    if (candidate.role === "fact") {\n      return { ...candidate, depth: activeDepth };\n    }\n    if (candidate.role === "subtotal") {\n      const depth2 = activeDepth;\n      activeDepth = Math.max(0, activeDepth - 1);\n      return { ...candidate, depth: depth2 };\n    }\n    const depth = activeDepth;\n    activeDepth = 0;\n    return { ...candidate, depth: Math.max(0, depth) };\n  });\n};\nconst DATE_LIKE_PATTERN = /^(?:\\d{1,2}[-/]\\d{1,2}[-/]\\d{2,4}|\\d{4}[-/]\\d{1,2}[-/]\\d{1,2})$/;\nconst normalizeCell = (value) => String(value ?? "").replace(/\\u00a0/g, " ").replace(/\\t/g, " ").replace(/\\s+/g, " ").trim();\nconst isNumericCandidate = (value) => {\n  if (DATE_LIKE_PATTERN.test(value.trim())) {\n    return false;\n  }\n  const cleaned = value.replace(/[^0-9.\\-]/g, "").trim();\n  return Boolean(cleaned) && cleaned !== "-" && cleaned !== "." && Number.isFinite(Number.parseFloat(cleaned));\n};\nconst computeColumnStatistics = (column, columnIndex, bodyRows) => {\n  const sampleSize = bodyRows.length;\n  if (sampleSize === 0) {\n    return {\n      column,\n      columnIndex,\n      nonEmptyCount: 0,\n      sampleSize: 0,\n      fillRate: 0,\n      numericRatio: 0,\n      strictNumericRatio: 0,\n      softNumericRatio: 0,\n      textualRatio: 0,\n      lenientTextualRatio: 0,\n      codeLikeDensity: 0,\n      structuralIdentifierHint: false,\n      blankRatio: 1,\n      blankRunCount: 0,\n      avgBlankRunLength: 0,\n      distinctCount: 0,\n      cardinalityRatio: 0\n    };\n  }\n  let nonEmptyCount = 0;\n  let numericCount = 0;\n  let strictNumericCount = 0;\n  let softNumericCount = 0;\n  let textualCount = 0;\n  let lenientTextualCount = 0;\n  let codeLikeCount = 0;\n  let blankRunCount = 0;\n  let prevNonBlank = false;\n  const distinctSet = /* @__PURE__ */ new Set();\n  for (const row of bodyRows) {\n    const raw = normalizeCell(row[columnIndex] ?? "");\n    if (!raw) {\n      if (prevNonBlank) blankRunCount++;\n      prevNonBlank = false;\n      continue;\n    }\n    nonEmptyCount++;\n    prevNonBlank = true;\n    distinctSet.add(raw.toLowerCase());\n    const lenientNumeric = isNumericCandidate(raw);\n    const strictNumeric = isNumericLike(raw);\n    if (lenientNumeric) numericCount++;\n    if (strictNumeric) strictNumericCount++;\n    if (strictNumeric || /^[-—–]$/.test(raw) || /^[nN]\\/?[aA]$/.test(raw)) softNumericCount++;\n    if (/[A-Za-z]/.test(raw) && !strictNumeric) textualCount++;\n    if (/[A-Za-z]/.test(raw) && !lenientNumeric) lenientTextualCount++;\n    if (isCodeLike(raw) && !strictNumeric) codeLikeCount++;\n  }\n  const totalBlanks = sampleSize - nonEmptyCount;\n  const structuralIdentifierHint = /\\b(?:code|id)\\b/i.test(column);\n  return {\n    column,\n    columnIndex,\n    nonEmptyCount,\n    sampleSize,\n    fillRate: nonEmptyCount / sampleSize,\n    numericRatio: nonEmptyCount > 0 ? numericCount / nonEmptyCount : 0,\n    strictNumericRatio: nonEmptyCount > 0 ? strictNumericCount / nonEmptyCount : 0,\n    softNumericRatio: nonEmptyCount > 0 ? softNumericCount / nonEmptyCount : 0,\n    textualRatio: nonEmptyCount > 0 ? textualCount / nonEmptyCount : 0,\n    lenientTextualRatio: nonEmptyCount > 0 ? lenientTextualCount / nonEmptyCount : 0,\n    codeLikeDensity: nonEmptyCount > 0 ? codeLikeCount / nonEmptyCount : 0,\n    structuralIdentifierHint,\n    blankRatio: totalBlanks / sampleSize,\n    blankRunCount,\n    avgBlankRunLength: totalBlanks / Math.max(blankRunCount, 1),\n    distinctCount: distinctSet.size,\n    cardinalityRatio: nonEmptyCount > 0 ? distinctSet.size / nonEmptyCount : 0\n  };\n};\nconst normalize = (value) => String(value ?? "").trim().toLowerCase();\nconst getNonNoiseRows = (data) => getRows(data).filter((row) => !isBlankRow$1(row) && !isFooterLikeRow(row));\nconst inferTabularShapeContext = (data) => {\n  const rows = getNonNoiseRows(data);\n  const columns = getColumns$1(data);\n  if (rows.length === 0 || columns.length === 0) return null;\n  const rawRows = rows.map((row) => columns.map((col) => String(row[col] ?? "")));\n  const stats = columns.map((column, index) => computeColumnStatistics(column, index, rawRows));\n  const totalRows = rows.length;\n  const valueColumns = stats.filter(\n    (stat) => stat.nonEmptyCount > 0 && stat.codeLikeDensity < 0.3 && !stat.structuralIdentifierHint && !(stat.columnIndex < 3 && stat.nonEmptyCount / totalRows < 0.65) && (stat.softNumericRatio >= 0.55 || stat.strictNumericRatio >= 0.65)\n  ).map((stat) => stat.column);\n  const descriptorColumns = stats.filter(\n    (stat) => !valueColumns.includes(stat.column) && stat.nonEmptyCount > 0 && (stat.codeLikeDensity >= 0.3 || stat.structuralIdentifierHint || stat.strictNumericRatio <= 0.2 || stat.textualRatio >= 0.6 || stat.columnIndex < 3 && stat.strictNumericRatio < 0.5 && stat.textualRatio >= 0.2 || stat.columnIndex < 3 && stat.nonEmptyCount / totalRows < 0.65)\n  ).sort((left, right) => getDescriptorPriority(left.column) - getDescriptorPriority(right.column) || left.columnIndex - right.columnIndex).map((stat) => stat.column).slice(0, 3);\n  if (descriptorColumns.length === 0 || valueColumns.length === 0) return null;\n  return {\n    descriptorColumns,\n    valueColumns,\n    confidence: roundRatio(Math.min(1, 0.4 + descriptorColumns.length * 0.15 + valueColumns.length * 0.1))\n  };\n};\nconst isRepeatedHeaderLikeRow = (row, context) => {\n  const normalizedValues = Object.values(row).map(normalize).filter(Boolean);\n  if (normalizedValues.length === 0) return false;\n  const expected = [...context.descriptorColumns, ...context.valueColumns].map(normalize);\n  const overlap = normalizedValues.filter((value) => expected.includes(value)).length;\n  return overlap >= Math.max(2, Math.floor(expected.length * 0.6));\n};\nconst detectTabularRowRole = (row, context, signalBundle) => {\n  if (!row || !context) return { role: "unknown", confidence: 0 };\n  if (isBlankRow$1(row) || isFooterLikeRow(row)) return { role: "noise", confidence: 0.98 };\n  if (isRepeatedHeaderLikeRow(row, context)) return { role: "noise", confidence: 0.92 };\n  const descriptorValues = context.descriptorColumns.map((column) => String(row[column] ?? "").trim()).filter(Boolean);\n  const allValues = Object.values(row).map((value) => String(value ?? "").trim()).filter(Boolean);\n  const textValueCount = allValues.filter((value) => /[A-Za-z]/.test(value) && !isNumericLike(value)).length;\n  const numericCount = context.valueColumns.filter((column) => isNumericLike(String(row[column] ?? "").trim())).length;\n  const sparseScore = roundRatio(1 - allValues.length / Math.max(Object.keys(row).length, 1));\n  const subtotalHit = descriptorValues.some((value) => SUBTOTAL_ROW_PATTERN.test(value.trim()));\n  const totalHit = descriptorValues.some((value) => TOTAL_ROW_PATTERN.test(value.trim()));\n  const summaryLikeHit = SUMMARY_TOKEN_PATTERN.test(allValues.join(" | ")) || allValues.some(isSummaryLike);\n  const sparseSummaryCandidate = sparseScore >= 0.3 && allValues.length <= Math.max(6, context.valueColumns.length + 2) && textValueCount <= Math.max(2, descriptorValues.length);\n  if (numericCount === 0 && allValues.length <= 2 && allValues.join(" ").length >= 16) {\n    return { role: "comment", confidence: 0.76 };\n  }\n  if (numericCount === 0 && descriptorValues.length <= 1 && descriptorValues.some((value) => value.includes(":") || value.length >= 20)) {\n    return { role: "comment", confidence: 0.76 };\n  }\n  if (subtotalHit) {\n    return { role: "subtotal", confidence: 0.94 };\n  }\n  if (summaryLikeHit && numericCount >= 1 && sparseSummaryCandidate) {\n    return { role: "subtotal", confidence: 0.86 };\n  }\n  if (totalHit || descriptorValues.some(isSummaryLike)) {\n    return { role: "total", confidence: 0.95 };\n  }\n  if (numericCount === 0 && descriptorValues.length > 0) {\n    return { role: "group_header", confidence: 0.82 };\n  }\n  if (numericCount > 0 && descriptorValues.length > 0) {\n    return { role: "fact", confidence: 0.88 };\n  }\n  return { role: "unknown", confidence: 0.2 };\n};\nconst MAX_HEADER_SCAN_ROWS = 40;\nconst PARSER_HEADER_ROW_INDEX = -1;\nconst SERIES_HEADER_PATTERN = /\\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|fy\\d{2,4}|q[1-4]|corp_|corp\\b|ec\\b|re\\b|project\\b|office\\b|capex\\b)\\b/i;\nconst buildParserMetadataBands = (data) => {\n  if (!data) return [];\n  const bands = [];\n  (data.metadataRows ?? []).forEach((row, index) => {\n    const values = row.map((value) => String(value ?? "").trim()).filter(Boolean);\n    if (values.length === 0) return;\n    bands.push({\n      rowIndexes: [-(index + 100)],\n      role: index === 0 ? "report_title" : "report_metadata",\n      confidence: index === 0 ? 0.88 : 0.82\n    });\n  });\n  return bands;\n};\nconst buildParserResolvedHeaderBands = (data, layout) => {\n  if (!data || !layout) return [];\n  const bands = buildParserMetadataBands(data);\n  bands.push({\n    rowIndexes: [PARSER_HEADER_ROW_INDEX],\n    role: "column_header",\n    confidence: layout.score,\n    layerIndex: 0\n  });\n  (data.headerLayers ?? []).forEach((_, index) => {\n    bands.push({\n      rowIndexes: [-(index + 2)],\n      role: "series_label_header",\n      confidence: roundRatio(0.76 + Math.min(index, 2) * 0.06),\n      layerIndex: index + 1\n    });\n  });\n  return bands;\n};\nconst buildExplicitHeaderLayoutCandidate = (data, tabularContext) => {\n  var _a, _b, _c;\n  if (!data || (((_a = data.headerLayers) == null ? void 0 : _a.length) ?? 0) === 0) return null;\n  const columns = getColumns$1(data);\n  if (columns.length < 5) return null;\n  const descriptorColumns = ((_b = tabularContext == null ? void 0 : tabularContext.descriptorColumns) == null ? void 0 : _b.length) ? sortDescriptorColumns(tabularContext.descriptorColumns) : columns.filter((column) => !isCodeLike(column) && !isNumericLike(column) && !isSummaryLike(column)).slice(0, 3);\n  const descriptorColumnSet = new Set(descriptorColumns.map((column) => column.toLowerCase()));\n  const summarySeriesColumns = columns.filter((column) => isSummaryLike(column));\n  const summarySet = new Set(summarySeriesColumns.map((column) => column.toLowerCase()));\n  const detailSeriesColumns = columns.filter((column) => {\n    const normalized = column.toLowerCase();\n    if (descriptorColumnSet.has(normalized) || summarySet.has(normalized)) return false;\n    return isCodeLike(column) || SERIES_HEADER_PATTERN.test(column);\n  });\n  if (detailSeriesColumns.length < 4) return null;\n  const detailSeriesCodeLikeRatio = detailSeriesColumns.filter((column) => isCodeLike(column)).length / detailSeriesColumns.length;\n  if (detailSeriesCodeLikeRatio < 0.35 && (((_c = data.headerLayers) == null ? void 0 : _c.length) ?? 0) < 1) {\n    return null;\n  }\n  const columnIndexByName = new Map(columns.map((column, index) => [column, index]));\n  return {\n    rowIndex: PARSER_HEADER_ROW_INDEX,\n    descriptorColumns,\n    detailSeriesColumns,\n    summarySeriesColumns,\n    summarySeriesCandidates: summarySeriesColumns.map((columnName) => ({\n      columnName,\n      summaryKind: "total",\n      confidence: 0.9\n    })),\n    descriptorColumnIndexes: descriptorColumns.map((column) => columnIndexByName.get(column) ?? -1).filter((index) => index >= 0),\n    detailSeriesIndexes: detailSeriesColumns.map((column) => columnIndexByName.get(column) ?? -1).filter((index) => index >= 0),\n    summarySeriesIndexes: summarySeriesColumns.map((column) => columnIndexByName.get(column) ?? -1).filter((index) => index >= 0),\n    score: roundRatio(0.82 + Math.min(0.12, detailSeriesColumns.length / 48))\n  };\n};\nconst buildSignals = (data, layout, headerBands, rowRoles, tabularContext) => {\n  const rows = getRows(data);\n  const topRows = rows.slice(0, Math.min(12, rows.length));\n  const topNonEmpty = topRows.map((row) => getNonEmptyValues(row).length).filter((count) => count > 0);\n  const seriesLabelBands = headerBands.filter((candidate) => candidate.role === "series_label_header");\n  const bodyRows = layout ? layout.rowIndex >= 0 ? rows.slice(layout.rowIndex + 1 + seriesLabelBands.length) : rows : rows;\n  const bodyNonEmpty = bodyRows.map((row) => getNonEmptyValues(row).length).filter((count) => count > 0);\n  const topAverage = topNonEmpty.length > 0 ? topNonEmpty.reduce((sum, count) => sum + count, 0) / topNonEmpty.length : 0;\n  const bodyAverage = bodyNonEmpty.length > 0 ? bodyNonEmpty.reduce((sum, count) => sum + count, 0) / bodyNonEmpty.length : topAverage;\n  const topBandIrregularityRatio = bodyAverage > 0 ? roundRatio(Math.abs(bodyAverage - topAverage) / bodyAverage) : 0;\n  const detailSeriesColumns = (layout == null ? void 0 : layout.detailSeriesColumns) ?? (tabularContext == null ? void 0 : tabularContext.valueColumns) ?? [];\n  const descriptorColumns = (layout == null ? void 0 : layout.descriptorColumns) ?? (tabularContext == null ? void 0 : tabularContext.descriptorColumns) ?? [];\n  const detailNumericCells = layout ? bodyRows.reduce((count, row) => count + layout.detailSeriesIndexes.filter((index) => {\n    var _a;\n    return isNumericLike(((_a = getRowCells(row)[index]) == null ? void 0 : _a.value) ?? "");\n  }).length, 0) : tabularContext ? bodyRows.reduce((count, row) => count + tabularContext.valueColumns.filter((column) => isNumericLike(String(row[column] ?? ""))).length, 0) : 0;\n  const detailSeriesNumericDensity = detailSeriesColumns.length > 0 && bodyRows.length > 0 ? roundRatio(detailNumericCells / (detailSeriesColumns.length * bodyRows.length)) : 0;\n  const detailSeriesCodeLikeRatio = detailSeriesColumns.length > 0 ? roundRatio(detailSeriesColumns.filter(isCodeLike).length / detailSeriesColumns.length) : 0;\n  const descriptorStabilityRatio = descriptorColumns.length > 0 && bodyRows.length > 0 ? roundRatio(bodyRows.filter(\n    (row) => descriptorColumns.some((column) => Boolean(String(row[column] ?? "").trim()))\n  ).length / bodyRows.length) : 0;\n  const hierarchyHits = rowRoles.filter((candidate) => ["group_header", "subtotal", "total"].includes(candidate.role)).length;\n  const hierarchyRatio = rowRoles.length > 0 ? roundRatio(hierarchyHits / rowRoles.length) : 0;\n  const placeholderColumnRatio = (() => {\n    const columns = getColumns$1(data);\n    if (columns.length === 0) return 0;\n    return roundRatio(columns.filter((column) => PLACEHOLDER_PATTERN.test(column)).length / columns.length);\n  })();\n  const repeatedHeaderRisk = headerBands.some((candidate) => candidate.role === "repeated_header") || rowRoles.some((candidate) => candidate.role === "noise");\n  return [\n    { key: "top_band_irregularity_ratio", kind: "ratio", value: topBandIrregularityRatio, confidence: 0.72 },\n    { key: "header_row_repeat_pattern", kind: "boolean", value: repeatedHeaderRisk, confidence: 0.6 },\n    { key: "descriptor_column_stability_ratio", kind: "ratio", value: descriptorStabilityRatio, confidence: layout ? 0.84 : 0.5 },\n    { key: "detail_series_code_like_ratio", kind: "ratio", value: detailSeriesCodeLikeRatio, confidence: layout ? 0.86 : 0.35 },\n    { key: "detail_series_numeric_density", kind: "ratio", value: detailSeriesNumericDensity, confidence: layout ? 0.86 : 0.35 },\n    {\n      key: "summary_series_separability",\n      kind: "ratio",\n      value: layout ? roundRatio(layout.summarySeriesColumns.length > 0 ? 1 : 0) : 0,\n      confidence: layout ? 0.74 : 0.2\n    },\n    { key: "row_hierarchy_signature", kind: "ratio", value: hierarchyRatio, confidence: 0.8 },\n    { key: "placeholder_column_ratio", kind: "ratio", value: placeholderColumnRatio, confidence: 0.52 },\n    { key: "repeated_header_leakage_risk", kind: "boolean", value: repeatedHeaderRisk, confidence: 0.58 }\n  ];\n};\nconst buildCandidate = (id, kind, score, headerBands, descriptorColumns, detailSeriesColumns, summarySeriesColumns, summarySeriesCandidates, requiredSignalKeys) => ({\n  id,\n  kind,\n  score: roundRatio(score),\n  headerBands,\n  descriptorColumns,\n  detailSeriesColumns,\n  summarySeriesColumns,\n  summarySeriesCandidates,\n  requiredSignalKeys\n});\nconst buildHeaderLayoutCandidates = (rows) => rows.slice(0, Math.min(MAX_HEADER_SCAN_ROWS, rows.length)).map((_, rowIndex) => detectHeaderLayoutCandidate(rows, rowIndex)).filter((candidate) => Boolean(candidate));\nconst buildRowRoles = (data, layout, headerBands, dominantSegment, tabularContext) => {\n  const rows = getRows(data);\n  const repeatedHeaderValues = new Set(\n    layout ? [...layout.descriptorColumns, ...layout.detailSeriesColumns, ...layout.summarySeriesColumns].map((value) => value.trim().toLowerCase()) : []\n  );\n  const protectedHeaderRows = /* @__PURE__ */ new Set([\n    ...layout ? [layout.rowIndex] : [],\n    ...headerBands.filter((candidate) => candidate.role === "series_label_header").flatMap((candidate) => candidate.rowIndexes)\n  ]);\n  const rowRoles = rows.map((row, rowIndex) => {\n    if (protectedHeaderRows.has(rowIndex)) {\n      return { rowIndex, role: "noise", confidence: 0.99 };\n    }\n    if (layout && rowIndex < layout.rowIndex && getNonEmptyValues(row).length > 0) {\n      return {\n        rowIndex,\n        role: "comment",\n        confidence: isReportTitleRow(row) || isMetadataRow(row) ? 0.95 : 0.82\n      };\n    }\n    if (layout) {\n      const rowValues = getNonEmptyValues(row).map((value) => value.trim().toLowerCase());\n      const repeatedHeaderOverlap = rowValues.filter((value) => repeatedHeaderValues.has(value)).length;\n      if (repeatedHeaderOverlap >= Math.max(2, Math.floor(repeatedHeaderValues.size * 0.45))) {\n        return { rowIndex, role: "noise", confidence: 0.9 };\n      }\n    }\n    if (dominantSegment && rowIndex > dominantSegment.endRowIndex && getNonEmptyValues(row).length > 0) {\n      return { rowIndex, role: "comment", confidence: 0.76 };\n    }\n    const role = layout ? detectMatrixRowRole(row, layout) : detectTabularRowRole(row, tabularContext);\n    return {\n      rowIndex,\n      ...role\n    };\n  });\n  return assignHierarchyDepths(rowRoles);\n};\nconst detectReportShape = (data) => {\n  var _a, _b, _c;\n  const rows = getRows(data);\n  if (rows.length === 0) {\n    return {\n      primaryKind: "unknown",\n      confidence: 0,\n      candidates: [],\n      signals: [],\n      headerBands: [],\n      columnRoles: [],\n      rowRoles: []\n    };\n  }\n  const tabularContext = inferTabularShapeContext(data);\n  const explicitHeaderLayout = buildExplicitHeaderLayoutCandidate(data, tabularContext);\n  const schemaColumnNames = getColumns$1(data);\n  const labelStyleColumnCount = schemaColumnNames.filter((col) => /\\s/.test(col) || /[()%]/.test(col)).length;\n  const columnNamesAreLabelStyle = schemaColumnNames.length >= 5 && labelStyleColumnCount / schemaColumnNames.length >= 0.5;\n  const parserResolvedFlatSchema = Boolean(\n    data && data.headerDepth === 1 && (((_a = data.headerLayers) == null ? void 0 : _a.length) ?? 0) === 0 && ((((_b = data.metadataRows) == null ? void 0 : _b.length) ?? 0) > 0 || columnNamesAreLabelStyle)\n  );\n  const headerLayoutCandidates = parserResolvedFlatSchema ? [] : buildHeaderLayoutCandidates(rows);\n  const dominantSegment = explicitHeaderLayout || parserResolvedFlatSchema ? null : findDominantTabularSegment(rows, headerLayoutCandidates);\n  const headerLayout = explicitHeaderLayout ?? (parserResolvedFlatSchema ? null : (dominantSegment == null ? void 0 : dominantSegment.headerLayout) ?? headerLayoutCandidates[0] ?? null);\n  const parserMetadataBands = buildParserMetadataBands(data);\n  const headerBands = explicitHeaderLayout ? buildParserResolvedHeaderBands(data, explicitHeaderLayout) : [\n    ...parserMetadataBands,\n    ...buildHeaderBands(rows, headerLayout).filter(\n      (candidate) => parserMetadataBands.length === 0 || !["report_title", "report_metadata"].includes(candidate.role)\n    )\n  ];\n  const rowRoles = buildRowRoles(data, headerLayout, headerBands, dominantSegment, tabularContext);\n  const signals = buildSignals(data, headerLayout, headerBands, rowRoles, tabularContext);\n  const hierarchySignal = Number(((_c = signals.find((signal) => signal.key === "row_hierarchy_signature")) == null ? void 0 : _c.value) ?? 0);\n  const descriptorColumns = sortDescriptorColumns((headerLayout == null ? void 0 : headerLayout.descriptorColumns) ?? (tabularContext == null ? void 0 : tabularContext.descriptorColumns) ?? []);\n  const detailSeriesColumns = (headerLayout == null ? void 0 : headerLayout.detailSeriesColumns) ?? (tabularContext == null ? void 0 : tabularContext.valueColumns) ?? [];\n  const summarySeriesColumns = (headerLayout == null ? void 0 : headerLayout.summarySeriesColumns) ?? [];\n  const summarySeriesCandidates = (headerLayout == null ? void 0 : headerLayout.summarySeriesCandidates) ?? [];\n  const detailSeriesCount = detailSeriesColumns.length;\n  const seriesLabelBands = headerBands.filter((candidate) => candidate.role === "series_label_header");\n  const hasMatrix = Boolean(headerLayout && seriesLabelBands.length > 0);\n  const hasHeader = Boolean(headerLayout);\n  const hasTabularContext = Boolean(tabularContext);\n  const dominantConfidence = (dominantSegment == null ? void 0 : dominantSegment.confidence) ?? 0;\n  const mixedSignal = Boolean((dominantSegment == null ? void 0 : dominantSegment.mixedSignal) && dominantSegment.businessRowCount >= 6 && dominantConfidence >= 0.62);\n  const candidates = [\n    buildCandidate(\n      "candidate-matrix",\n      "multi_header_matrix",\n      hasMatrix ? 0.66 + Math.min(0.18, detailSeriesCount / 40) + Math.min(0.12, seriesLabelBands.length * 0.06) : 0.1,\n      headerBands,\n      descriptorColumns,\n      detailSeriesColumns,\n      summarySeriesColumns,\n      summarySeriesCandidates,\n      ["top_band_irregularity_ratio", "detail_series_code_like_ratio"]\n    ),\n    buildCandidate(\n      "candidate-wide",\n      "wide_crosstab",\n      hasHeader ? 0.56 + Math.min(0.24, detailSeriesCount / 32) + (hasMatrix ? 0 : 0.1) : 0.1,\n      headerBands,\n      descriptorColumns,\n      detailSeriesColumns,\n      summarySeriesColumns,\n      summarySeriesCandidates,\n      ["detail_series_numeric_density", "summary_series_separability"]\n    ),\n    buildCandidate(\n      "candidate-hierarchical",\n      "hierarchical_statement",\n      hierarchySignal > 0 ? 0.44 + Math.min(0.4, hierarchySignal) + (hasHeader ? 0.05 : 0) + (hasTabularContext ? 0.08 : 0) : 0.05,\n      headerBands,\n      descriptorColumns,\n      detailSeriesColumns,\n      summarySeriesColumns,\n      summarySeriesCandidates,\n      ["row_hierarchy_signature", "descriptor_column_stability_ratio"]\n    ),\n    buildCandidate(\n      "candidate-mixed",\n      "mixed_report",\n      mixedSignal ? 0.56 + Math.min(0.18, dominantConfidence * 0.2) + Math.min(0.14, detailSeriesCount / 40) : 0.08,\n      headerBands,\n      descriptorColumns,\n      detailSeriesColumns,\n      summarySeriesColumns,\n      summarySeriesCandidates,\n      ["top_band_irregularity_ratio", "placeholder_column_ratio"]\n    ),\n    buildCandidate(\n      "candidate-tabular",\n      "already_tabular",\n      hasHeader ? 0.05 : 0.74 - Math.min(0.25, rows.slice(0, 5).filter((row) => isMetadataRow(row) || isReportTitleRow(row)).length / 10) - Math.min(0.2, hierarchySignal * 0.35) + (hasTabularContext ? 0.06 : 0),\n      [],\n      descriptorColumns.length > 0 ? descriptorColumns : (() => {\n        const schemaColumns = getColumns$1(data);\n        const positional = schemaColumns.filter(\n          (column) => !isCodeLike(column) && !isNumericLike(column) && !isSummaryLike(column)\n        );\n        return positional.length > 0 ? positional.slice(0, 3) : schemaColumns.slice(0, 2);\n      })(),\n      detailSeriesColumns,\n      summarySeriesColumns,\n      summarySeriesCandidates,\n      ["descriptor_column_stability_ratio"]\n    )\n  ].sort((left, right) => right.score - left.score).slice(0, 3);\n  const primary = candidates[0];\n  const columnRoles = [\n    ...descriptorColumns.map((columnName) => ({ columnName, role: "descriptor", confidence: hasHeader ? 0.92 : 0.78 })),\n    ...detailSeriesColumns.map((columnName) => ({ columnName, role: "detail_series", confidence: hasHeader ? 0.9 : 0.74 })),\n    ...summarySeriesCandidates.map((candidate) => ({\n      columnName: candidate.columnName,\n      role: "summary_series",\n      confidence: candidate.confidence\n    }))\n  ];\n  return {\n    primaryKind: (primary == null ? void 0 : primary.kind) ?? "unknown",\n    confidence: (primary == null ? void 0 : primary.score) ?? 0,\n    candidates,\n    signals,\n    headerBands,\n    columnRoles,\n    rowRoles\n  };\n};\nconst dataOperationBaseSchema = {\n  id: { type: "string", description: "Stable operation identifier." },\n  reason: { type: "string", description: "Short explanation for why this operation is needed." }\n};\nconst deriveOperandSchema = {\n  type: "object",\n  properties: {\n    kind: { type: "string", enum: ["column", "literal"] },\n    column: { type: "string" },\n    value: {}\n  },\n  required: ["kind"]\n};\nconst deriveMetricComponentSchema = {\n  type: "object",\n  properties: {\n    operator: { type: "string", enum: ["add", "subtract"] },\n    matchAny: {\n      type: "array",\n      minItems: 1,\n      items: { type: "string" }\n    },\n    valueTransform: { type: "string", enum: ["raw", "absolute"] }\n  },\n  required: ["operator", "matchAny"]\n};\nconst deriveMetricByLabelFormulaSchema = {\n  anyOf: [\n    {\n      type: "object",\n      properties: {\n        kind: { type: "string", enum: ["linear_combination"] },\n        components: {\n          type: "array",\n          minItems: 1,\n          items: deriveMetricComponentSchema\n        }\n      },\n      required: ["kind", "components"]\n    },\n    {\n      type: "object",\n      properties: {\n        kind: { type: "string", enum: ["ratio"] },\n        numerator: {\n          type: "array",\n          minItems: 1,\n          items: deriveMetricComponentSchema\n        },\n        denominator: {\n          type: "array",\n          minItems: 1,\n          items: deriveMetricComponentSchema\n        },\n        scale: { type: "number" }\n      },\n      required: ["kind", "numerator", "denominator"]\n    }\n  ]\n};\nconst filterPredicateSchema = {\n  type: "object",\n  properties: {\n    column: { type: "string", minLength: 1 },\n    operator: { type: "string", enum: ["eq", "neq", "gt", "gte", "lt", "lte", "between", "contains", "starts_with", "ends_with", "in", "is_null", "not_null"] },\n    value: {}\n  },\n  required: ["column", "operator"]\n};\nconst filterPredicateGroupSchema = {\n  type: "object",\n  properties: {\n    predicates: {\n      type: "array",\n      items: filterPredicateSchema\n    }\n  },\n  required: ["predicates"]\n};\nconst filterRowsOperationSchema = {\n  type: "object",\n  properties: {\n    ...dataOperationBaseSchema,\n    type: { type: "string", enum: ["filter_rows"] },\n    predicates: {\n      type: "array",\n      items: filterPredicateSchema\n    },\n    groups: {\n      type: "array",\n      description: "Optional OR groups. Each group is AND-only internally; the overall result matches if any group matches.",\n      items: filterPredicateGroupSchema\n    }\n  },\n  required: ["id", "type", "reason"],\n  anyOf: [{ required: ["predicates"] }, { required: ["groups"] }]\n};\nconst dropRowsByConditionOperationSchema = {\n  type: "object",\n  properties: {\n    ...dataOperationBaseSchema,\n    type: { type: "string", enum: ["drop_rows_by_condition"] },\n    predicates: {\n      type: "array",\n      items: filterPredicateSchema\n    },\n    groups: {\n      type: "array",\n      description: "Optional OR groups. Each group is AND-only internally; matching rows will be removed.",\n      items: filterPredicateGroupSchema\n    }\n  },\n  required: ["id", "type", "reason"],\n  anyOf: [{ required: ["predicates"] }, { required: ["groups"] }]\n};\nconst createOperationSchema = (type, extra, requiredFields) => ({\n  type: "object",\n  properties: {\n    ...dataOperationBaseSchema,\n    type: { type: "string", enum: [type] },\n    ...extra\n  },\n  required: ["id", "type", "reason", ...requiredFields]\n});\nconst unpivotLabelMappingSchema = {\n  type: "object",\n  properties: {\n    sourceColumn: { type: "string" },\n    label: {}\n  },\n  required: ["sourceColumn", "label"]\n};\nconst unpivotRowClassMappingSchema = {\n  type: "object",\n  properties: {\n    sourceRowIndex: { type: "integer" },\n    rowClass: { type: "string" }\n  },\n  required: ["sourceRowIndex", "rowClass"]\n};\nconst unpivotLabelColumnSchema = {\n  type: "object",\n  properties: {\n    outputColumn: { type: "string" },\n    mappings: {\n      type: "array",\n      items: unpivotLabelMappingSchema\n    }\n  },\n  required: ["outputColumn", "mappings"]\n};\nconst unpivotHierarchyDepthMappingSchema = {\n  type: "object",\n  properties: {\n    sourceRowIndex: { type: "integer" },\n    depth: { type: "integer" }\n  },\n  required: ["sourceRowIndex", "depth"]\n};\nconst isRecord$2 = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);\nconst OPERATION_WRAPPER_KEYS = ["args", "params", "payload", "config", "operation"];\nconst normalizeString = (value) => typeof value === "string" ? value.trim() : "";\nconst flattenOperationRecord = (value) => {\n  if (!isRecord$2(value)) return null;\n  let flattened = { ...value };\n  for (let depth = 0; depth < 3; depth += 1) {\n    let changed = false;\n    for (const key of OPERATION_WRAPPER_KEYS) {\n      const nested = isRecord$2(flattened[key]) ? flattened[key] : null;\n      if (!nested) {\n        continue;\n      }\n      const { [key]: _ignored, ...rest } = flattened;\n      flattened = { ...nested, ...rest };\n      changed = true;\n    }\n    if (!changed) {\n      break;\n    }\n  }\n  return flattened;\n};\nconst normalizeFilterOperator = (value) => {\n  const normalized = normalizeString(value).toLowerCase();\n  if (!normalized) return "";\n  if (["eq", "=", "==", "===", "equals", "equal", "is", "match"].includes(normalized)) return "eq";\n  if (["neq", "!=", "!==", "not_equals", "not_equal", "is_not"].includes(normalized)) return "neq";\n  if (["gt", ">"].includes(normalized)) return "gt";\n  if (["gte", ">="].includes(normalized)) return "gte";\n  if (["lt", "<"].includes(normalized)) return "lt";\n  if (["lte", "<="].includes(normalized)) return "lte";\n  if (normalized === "between") return "between";\n  if (["contains", "includes"].includes(normalized)) return "contains";\n  if (["starts_with", "startswith", "startswith"].includes(normalized)) return "starts_with";\n  if (["ends_with", "endswith"].includes(normalized)) return "ends_with";\n  if (normalized === "in") return "in";\n  if (["not_in", "notin", "not in"].includes(normalized)) return "not_in";\n  if (["is_null", "null", "empty"].includes(normalized)) return "is_null";\n  if (["not_null", "notnull", "not_empty"].includes(normalized)) return "not_null";\n  return "";\n};\nconst normalizeLooseFilterPredicate = (value) => {\n  if (!isRecord$2(value)) return null;\n  const column = normalizeString(value.column ?? value.columnName ?? value.field ?? value.key ?? value.name);\n  const inferredOperator = normalizeFilterOperator(\n    value.operator ?? value.op ?? value.comparator ?? value.matchType ?? ("equals" in value ? "eq" : void 0) ?? ("is" in value ? "eq" : void 0) ?? ("match" in value ? "eq" : void 0) ?? ("notEquals" in value ? "neq" : void 0) ?? ("not" in value ? "neq" : void 0) ?? ("gt" in value ? "gt" : void 0) ?? ("gte" in value ? "gte" : void 0) ?? ("lt" in value ? "lt" : void 0) ?? ("lte" in value ? "lte" : void 0)\n  );\n  if (!column || !inferredOperator) return null;\n  const next = {\n    column,\n    operator: inferredOperator\n  };\n  const resolvedValue = value.value ?? value.values ?? value.targetValue ?? value.expectedValue ?? value.equals ?? value.is ?? value.match ?? value.notEquals ?? value.not ?? value.gt ?? value.gte ?? value.lt ?? value.lte;\n  if (resolvedValue !== void 0 && inferredOperator !== "is_null" && inferredOperator !== "not_null") {\n    next.value = resolvedValue;\n  }\n  return next;\n};\nconst normalizeFilterPredicate$1 = (value) => {\n  return normalizeLooseFilterPredicate(value);\n};\nconst normalizeFilterPredicateGroup$1 = (value) => {\n  if (!isRecord$2(value)) return null;\n  const sourcePredicates = Array.isArray(value.predicates) ? value.predicates : Array.isArray(value.conditions) ? value.conditions : [];\n  const predicates = sourcePredicates.map(normalizeFilterPredicate$1).filter((predicate) => Boolean(predicate));\n  return predicates.length > 0 ? { predicates } : null;\n};\nconst parseLegacyFilterCondition = (condition) => {\n  const trimmed = condition.trim();\n  const segments = trimmed.split(/\\s*&&\\s*/g);\n  const predicates = segments.map((segment) => segment.trim()).map((segment) => {\n    const rowMatch = segment.match(/^row\\[[\'"](.+?)[\'"]\\]\\s*(===|==|=|!==|!=|>=|<=|>|<)\\s*(.+)$/);\n    const directMatch = segment.match(/^([A-Za-z0-9_ .-]+)\\s*(===|==|=|!==|!=|>=|<=|>|<)\\s*(.+)$/);\n    const match = rowMatch ?? directMatch;\n    if (!match) return null;\n    const [, rawColumn, operator, rawValue] = match;\n    const column = rawColumn.trim();\n    const valueText = rawValue.trim();\n    const quotedValue = valueText.match(/^[\'"](.*)[\'"]$/);\n    const parsedValue = quotedValue ? quotedValue[1] : valueText === "null" ? null : Number.isNaN(Number(valueText)) ? valueText : Number(valueText);\n    switch (operator) {\n      case "===":\n      case "==":\n      case "=":\n        return { column, operator: parsedValue === null ? "is_null" : "eq", value: parsedValue === null ? void 0 : parsedValue };\n      case "!==":\n      case "!=":\n        return { column, operator: parsedValue === null ? "not_null" : "neq", value: parsedValue === null ? void 0 : parsedValue };\n      case ">":\n        return { column, operator: "gt", value: parsedValue };\n      case ">=":\n        return { column, operator: "gte", value: parsedValue };\n      case "<":\n        return { column, operator: "lt", value: parsedValue };\n      case "<=":\n        return { column, operator: "lte", value: parsedValue };\n      default:\n        return null;\n    }\n  }).filter((predicate) => Boolean(predicate)).filter((predicate) => !(predicate.operator === "neq" && predicate.value === ""));\n  return predicates.length > 0 ? predicates : null;\n};\nconst normalizeRenameMappings = (value) => {\n  if (isRecord$2(value)) {\n    return Object.entries(value).map(([from, to]) => ({ from: normalizeString(from), to: normalizeString(to) })).filter((mapping) => Boolean(mapping.from && mapping.to));\n  }\n  if (!Array.isArray(value)) return [];\n  return value.map((item) => isRecord$2(item) ? { from: normalizeString(item.from), to: normalizeString(item.to) } : null).filter((mapping) => Boolean((mapping == null ? void 0 : mapping.from) && mapping.to));\n};\nconst normalizeReplacementEntry = (value) => {\n  if (!isRecord$2(value)) {\n    return null;\n  }\n  const from = normalizeString(\n    value.from ?? value.search ?? value.find ?? value.match ?? value.oldValue ?? value.sourceValue\n  );\n  const hasToValue = ["to", "replaceWith", "replacement", "newValue", "normalizedValue", "targetValue"].some((key) => key in value);\n  const to = value.to ?? value.replaceWith ?? value.replacement ?? value.newValue ?? value.normalizedValue ?? value.targetValue;\n  if (!from || !hasToValue) {\n    return null;\n  }\n  const column = normalizeString(value.column ?? value.columnName ?? value.field ?? value.targetColumn);\n  return column ? { from, to, column } : { from, to };\n};\nconst normalizeReplaceValueReplacements = (value) => {\n  if (isRecord$2(value)) {\n    const directEntry = normalizeReplacementEntry(value);\n    if (directEntry) {\n      return [directEntry];\n    }\n    return Object.entries(value).map(([from, to]) => ({ from: normalizeString(from), to })).filter((entry) => Boolean(entry.from));\n  }\n  if (!Array.isArray(value)) {\n    return [];\n  }\n  return value.map(normalizeReplacementEntry).filter((entry) => Boolean(entry));\n};\nconst inferReplaceValueColumn = (value) => {\n  const columns = Array.from(new Set(\n    normalizeReplaceValueReplacements(value).map((entry) => normalizeString(entry.column)).filter(Boolean)\n  ));\n  return columns.length === 1 ? columns[0] : "";\n};\nconst normalizeCastTargetType = (value) => {\n  const raw = normalizeString(value);\n  const normalized = raw === "numerical" || raw === "numeric" || raw === "float" || raw === "double" || raw === "decimal" || raw === "int" || raw === "integer" ? "number" : raw;\n  return ["number", "currency", "percentage", "date", "boolean", "string"].includes(normalized) ? normalized : null;\n};\nconst isRecordLike = isRecord$2;\nconst isValidLabelMapping = (mapping) => Boolean(mapping == null ? void 0 : mapping.sourceColumn);\nconst isValidLabelColumn = (labelColumn) => Boolean(labelColumn == null ? void 0 : labelColumn.outputColumn) && Array.isArray(labelColumn == null ? void 0 : labelColumn.mappings) && labelColumn.mappings.some(isValidLabelMapping);\nconst normalizeUnpivotLabelColumns = (operation) => {\n  if (Array.isArray(operation.labelColumns) && operation.labelColumns.length > 0) {\n    return operation.labelColumns.map((labelColumn) => ({\n      outputColumn: labelColumn.outputColumn,\n      mappings: (labelColumn.mappings ?? []).filter(isValidLabelMapping)\n    })).filter(isValidLabelColumn);\n  }\n  if (operation.labelColumn && Array.isArray(operation.labelMappings) && operation.labelMappings.length > 0) {\n    return [{\n      outputColumn: operation.labelColumn,\n      mappings: operation.labelMappings.filter(isValidLabelMapping)\n    }].filter(isValidLabelColumn);\n  }\n  return [];\n};\nconst normalizeUnpivotHierarchyDepthMappings = (operation) => Array.isArray(operation.hierarchyDepthMappings) ? operation.hierarchyDepthMappings.filter(\n  (mapping) => Number.isInteger(mapping == null ? void 0 : mapping.sourceRowIndex) && mapping.sourceRowIndex >= 0 && Number.isInteger(mapping == null ? void 0 : mapping.depth) && mapping.depth >= 0\n) : [];\nconst operationManifests = [\n  {\n    type: "drop_rows_by_index",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("drop_rows_by_index", { indices: { type: "array", items: { type: "integer" } } }, ["indices"]),\n    requiredFields: ["id", "type", "reason", "indices"],\n    summarize: () => "drop_rows_by_index requires indices",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const indices = Array.isArray(value.indices) ? value.indices.map(Number).filter((index) => Number.isInteger(index) && index >= 0) : [];\n      return id && reason && indices.length > 0 ? { operation: { id, reason, type: "drop_rows_by_index", indices }, errors: [] } : { operation: null, errors: ["drop_rows_by_index requires id, reason, and at least one valid index."] };\n    }\n  },\n  {\n    type: "drop_blank_rows",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("drop_blank_rows", {}, []),\n    requiredFields: ["id", "type", "reason"],\n    summarize: () => "drop_blank_rows removes empty rows",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      return id && reason ? { operation: { id, reason, type: "drop_blank_rows" }, errors: [] } : { operation: null, errors: ["drop_blank_rows requires id and reason."] };\n    }\n  },\n  {\n    type: "drop_rows_by_condition",\n    stages: ["cleaning", "analysis"],\n    schema: dropRowsByConditionOperationSchema,\n    requiredFields: ["id", "type", "reason", "predicates/groups"],\n    summarize: () => "drop_rows_by_condition requires predicates[] or groups[]",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const predicates = Array.isArray(value.predicates) ? value.predicates.map(normalizeFilterPredicate$1).filter((predicate) => Boolean(predicate)) : typeof value.condition === "string" ? parseLegacyFilterCondition(value.condition) ?? void 0 : void 0;\n      const groups = Array.isArray(value.groups) ? value.groups.map(normalizeFilterPredicateGroup$1).filter((group) => Boolean(group)) : void 0;\n      return id && reason && (((predicates == null ? void 0 : predicates.length) ?? 0) > 0 || ((groups == null ? void 0 : groups.length) ?? 0) > 0) ? { operation: { id, reason, type: "drop_rows_by_condition", ...(predicates == null ? void 0 : predicates.length) ? { predicates } : {}, ...(groups == null ? void 0 : groups.length) ? { groups } : {} }, errors: [] } : { operation: null, errors: ["drop_rows_by_condition requires id, reason, and predicates[] or groups[]."] };\n    }\n  },\n  {\n    type: "promote_header_row",\n    stages: ["cleaning"],\n    schema: createOperationSchema("promote_header_row", { rowIndex: { type: "integer" } }, ["rowIndex"]),\n    requiredFields: ["id", "type", "reason", "rowIndex"],\n    summarize: () => "promote_header_row requires rowIndex",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const rowIndex = Number(value.rowIndex);\n      return id && reason && Number.isInteger(rowIndex) && rowIndex >= 0 ? { operation: { id, reason, type: "promote_header_row", rowIndex }, errors: [] } : { operation: null, errors: ["promote_header_row requires id, reason, and a non-negative rowIndex."] };\n    }\n  },\n  {\n    type: "rename_columns",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("rename_columns", { mappings: { type: "array", items: { type: "object", properties: { from: { type: "string" }, to: { type: "string" } }, required: ["from", "to"] } } }, ["mappings"]),\n    requiredFields: ["id", "type", "reason", "mappings"],\n    summarize: () => "rename_columns requires mappings[]",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const mappings = normalizeRenameMappings(value.mappings ?? value.columns);\n      return id && reason && mappings.length > 0 ? { operation: { id, reason, type: "rename_columns", mappings }, errors: [] } : { operation: null, errors: ["rename_columns requires id, reason, and mappings[]."] };\n    }\n  },\n  {\n    type: "drop_columns",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("drop_columns", { columns: { type: "array", items: { type: "string" } } }, ["columns"]),\n    requiredFields: ["id", "type", "reason", "columns"],\n    summarize: () => "drop_columns requires columns[]",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const columns = Array.isArray(value.columns) ? value.columns.map(normalizeString).filter(Boolean) : [];\n      return id && reason && columns.length > 0 ? { operation: { id, reason, type: "drop_columns", columns }, errors: [] } : { operation: null, errors: ["drop_columns requires id, reason, and columns[]."] };\n    }\n  },\n  {\n    type: "trim_whitespace",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("trim_whitespace", { columns: { anyOf: [{ type: "string", enum: ["*"] }, { type: "array", items: { type: "string" } }] } }, ["columns"]),\n    requiredFields: ["id", "type", "reason", "columns"],\n    summarize: () => \'trim_whitespace requires columns or "*"\',\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const columns = value.columns === "*" || Array.isArray(value.columns) ? value.columns : "*";\n      return id && reason ? { operation: { ...value, id, reason, type: "trim_whitespace", columns }, errors: [] } : { operation: null, errors: ["trim_whitespace requires id and reason."] };\n    }\n  },\n  {\n    type: "normalize_empty_values",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("normalize_empty_values", { columns: { anyOf: [{ type: "string", enum: ["*"] }, { type: "array", items: { type: "string" } }] }, emptyMarkers: { type: "array", items: { type: "string" } } }, ["columns"]),\n    requiredFields: ["id", "type", "reason", "columns"],\n    summarize: () => \'normalize_empty_values requires columns or "*"\',\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const columns = value.columns === "*" || Array.isArray(value.columns) ? value.columns : "*";\n      return id && reason ? { operation: { ...value, id, reason, type: "normalize_empty_values", columns }, errors: [] } : { operation: null, errors: ["normalize_empty_values requires id and reason."] };\n    }\n  },\n  {\n    type: "replace_values",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("replace_values", { column: { type: "string" }, caseSensitive: { type: "boolean" }, replacements: { type: "array", items: { type: "object", properties: { from: { type: "string" }, to: {} }, required: ["from", "to"] } } }, ["column", "replacements"]),\n    requiredFields: ["id", "type", "reason", "column", "replacements"],\n    summarize: () => "replace_values requires column and replacements[]",\n    normalize: (value) => {\n      const candidate = flattenOperationRecord(value);\n      if (!candidate) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(candidate.id);\n      const reason = normalizeString(candidate.reason);\n      const replacements = normalizeReplaceValueReplacements(\n        candidate.replacements ?? candidate.replacement ?? candidate.replacementMap ?? candidate.mapping ?? candidate.mappings\n      );\n      const column = normalizeString(candidate.column ?? candidate.columnName ?? candidate.field) || inferReplaceValueColumn(candidate.replacements ?? candidate.replacement);\n      return id && reason && column && replacements.length > 0 ? { operation: { ...candidate, id, reason, type: "replace_values", column, replacements }, errors: [] } : { operation: null, errors: ["replace_values requires id, reason, column, and replacements[]."] };\n    }\n  },\n  {\n    type: "cast_column",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("cast_column", { column: { type: "string" }, targetType: { type: "string", enum: ["number", "currency", "percentage", "date", "boolean", "string"] } }, ["column", "targetType"]),\n    requiredFields: ["id", "type", "reason", "column", "targetType"],\n    summarize: () => "cast_column requires column and targetType",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const column = normalizeString(value.column);\n      const targetType = normalizeCastTargetType(value.targetType);\n      return id && reason && column && targetType ? { operation: { ...value, id, reason, type: "cast_column", column, targetType }, errors: [] } : { operation: null, errors: ["cast_column requires id, reason, column, and targetType."] };\n    }\n  },\n  {\n    type: "fill_missing",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("fill_missing", { column: { type: "string" }, strategy: { type: "string", enum: ["constant", "forward_fill", "zero"] }, value: {} }, ["column", "strategy"]),\n    requiredFields: ["id", "type", "reason", "column", "strategy"],\n    summarize: () => "fill_missing requires column and strategy",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const column = normalizeString(value.column);\n      const strategy = normalizeString(value.strategy);\n      return id && reason && column && ["constant", "forward_fill", "zero"].includes(strategy) ? { operation: { ...value, id, reason, type: "fill_missing", column, strategy }, errors: [] } : { operation: null, errors: ["fill_missing requires id, reason, column, and strategy."] };\n    }\n  },\n  {\n    type: "dedupe_rows",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("dedupe_rows", { keyColumns: { type: "array", items: { type: "string" } }, keep: { type: "string", enum: ["first"] } }, ["keyColumns", "keep"]),\n    requiredFields: ["id", "type", "reason", "keyColumns", "keep"],\n    summarize: () => "dedupe_rows requires keyColumns and keep",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const keyColumns = Array.isArray(value.keyColumns) ? value.keyColumns.map(normalizeString).filter(Boolean) : [];\n      const keep = normalizeString(value.keep);\n      return id && reason && keyColumns.length > 0 && keep === "first" ? { operation: { id, reason, type: "dedupe_rows", keyColumns, keep: "first" }, errors: [] } : { operation: null, errors: [\'dedupe_rows requires id, reason, keyColumns, and keep="first".\'] };\n    }\n  },\n  {\n    type: "filter_rows",\n    stages: ["cleaning", "analysis"],\n    schema: filterRowsOperationSchema,\n    requiredFields: ["id", "type", "reason", "predicates/groups"],\n    summarize: () => "filter_rows requires predicates[] or groups[]",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const predicates = Array.isArray(value.predicates) ? value.predicates.map(normalizeFilterPredicate$1).filter((predicate) => Boolean(predicate)) : typeof value.condition === "string" ? parseLegacyFilterCondition(value.condition) ?? void 0 : void 0;\n      const groups = Array.isArray(value.groups) ? value.groups.map(normalizeFilterPredicateGroup$1).filter((group) => Boolean(group)) : void 0;\n      return id && reason && (((predicates == null ? void 0 : predicates.length) ?? 0) > 0 || ((groups == null ? void 0 : groups.length) ?? 0) > 0) ? { operation: { id, reason, type: "filter_rows", ...(predicates == null ? void 0 : predicates.length) ? { predicates } : {}, ...(groups == null ? void 0 : groups.length) ? { groups } : {} }, errors: [] } : { operation: null, errors: ["filter_rows requires id, reason, and predicates[] or groups[]."] };\n    }\n  },\n  {\n    type: "derive_column",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("derive_column", { newColumn: { type: "string" }, expression: { type: "object", properties: { kind: { type: "string", enum: ["copy", "math_binary", "ratio", "concat"] }, source: deriveOperandSchema, left: deriveOperandSchema, right: deriveOperandSchema, numerator: deriveOperandSchema, denominator: deriveOperandSchema, parts: { type: "array", items: deriveOperandSchema }, separator: { type: "string" }, operator: { type: "string", enum: ["add", "subtract", "multiply", "divide"] } }, required: ["kind"] } }, ["newColumn", "expression"]),\n    requiredFields: ["id", "type", "reason", "newColumn", "expression"],\n    summarize: () => "derive_column requires newColumn and expression",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const newColumn = normalizeString(value.newColumn);\n      const expression = isRecordLike(value.expression) ? value.expression : null;\n      return id && reason && newColumn && expression ? { operation: { ...value, id, reason, type: "derive_column", newColumn, expression }, errors: [] } : { operation: null, errors: ["derive_column requires id, reason, newColumn, and expression."] };\n    }\n  },\n  {\n    type: "derive_metric_by_label",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("derive_metric_by_label", {\n      groupByColumns: { type: "array", items: { type: "string" } },\n      labelColumn: { type: "string" },\n      valueColumn: { type: "string" },\n      outputMetricLabel: { type: "string" },\n      carryForwardColumns: { type: "array", items: { type: "string" } },\n      formula: deriveMetricByLabelFormulaSchema\n    }, ["groupByColumns", "labelColumn", "valueColumn", "outputMetricLabel", "formula"]),\n    requiredFields: ["id", "type", "reason", "groupByColumns", "labelColumn", "valueColumn", "outputMetricLabel", "formula"],\n    summarize: () => "derive_metric_by_label requires groupByColumns, labelColumn, valueColumn, outputMetricLabel, and a linear_combination or ratio formula",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const groupByColumns = Array.isArray(value.groupByColumns) ? value.groupByColumns.map(normalizeString).filter(Boolean) : [];\n      const labelColumn = normalizeString(value.labelColumn);\n      const valueColumn = normalizeString(value.valueColumn);\n      const outputMetricLabel = normalizeString(value.outputMetricLabel);\n      const carryForwardColumns = Array.isArray(value.carryForwardColumns) ? value.carryForwardColumns.map(normalizeString).filter(Boolean) : void 0;\n      const rawFormula = isRecordLike(value.formula) ? value.formula : null;\n      if (!id || !reason || groupByColumns.length === 0 || !labelColumn || !valueColumn || !outputMetricLabel || !rawFormula) {\n        return { operation: null, errors: ["derive_metric_by_label requires id, reason, groupByColumns, labelColumn, valueColumn, outputMetricLabel, and formula."] };\n      }\n      if (labelColumn.toLowerCase() === valueColumn.toLowerCase()) {\n        return { operation: null, errors: ["derive_metric_by_label must use different labelColumn and valueColumn fields."] };\n      }\n      if (groupByColumns.some((column) => column.toLowerCase() === labelColumn.toLowerCase())) {\n        return { operation: null, errors: ["derive_metric_by_label groupByColumns must not include labelColumn."] };\n      }\n      const normalizeComponents = (components) => Array.isArray(components) ? components.filter(isRecordLike).map((component) => ({\n        operator: normalizeString(component.operator) === "subtract" ? "subtract" : "add",\n        matchAny: Array.isArray(component.matchAny) ? component.matchAny.map(normalizeString).filter(Boolean) : [],\n        valueTransform: normalizeString(component.valueTransform) === "absolute" ? "absolute" : "raw"\n      })).filter((component) => component.matchAny.length > 0) : [];\n      let formula = null;\n      if (normalizeString(rawFormula.kind) === "linear_combination") {\n        const components = normalizeComponents(rawFormula.components);\n        if (components.length === 0) {\n          return { operation: null, errors: ["derive_metric_by_label linear_combination requires at least one formula component with matchAny labels."] };\n        }\n        formula = { kind: "linear_combination", components };\n      } else if (normalizeString(rawFormula.kind) === "ratio") {\n        const numerator = normalizeComponents(rawFormula.numerator);\n        const denominator = normalizeComponents(rawFormula.denominator);\n        if (numerator.length === 0 || denominator.length === 0) {\n          return { operation: null, errors: ["derive_metric_by_label ratio requires numerator and denominator components with matchAny labels."] };\n        }\n        const scale = Number(rawFormula.scale);\n        formula = {\n          kind: "ratio",\n          numerator,\n          denominator,\n          ...Number.isFinite(scale) ? { scale } : {}\n        };\n      }\n      if (!formula) {\n        return { operation: null, errors: [\'derive_metric_by_label formula.kind must be "linear_combination" or "ratio".\'] };\n      }\n      return {\n        operation: {\n          id,\n          reason,\n          type: "derive_metric_by_label",\n          groupByColumns,\n          labelColumn,\n          valueColumn,\n          outputMetricLabel,\n          ...(carryForwardColumns == null ? void 0 : carryForwardColumns.length) ? { carryForwardColumns } : {},\n          formula\n        },\n        errors: []\n      };\n    }\n  },\n  {\n    type: "annotate_hierarchy",\n    stages: ["cleaning"],\n    schema: createOperationSchema("annotate_hierarchy", {\n      rowClassColumn: { type: "string" },\n      hierarchyDepthColumn: { type: "string" },\n      sourceRowIndexColumn: { type: "string" }\n    }, []),\n    requiredFields: ["id", "type", "reason"],\n    summarize: () => "annotate_hierarchy adds row class, hierarchy depth, and source row index columns for hierarchical statements",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const rowClassColumn = normalizeString(value.rowClassColumn);\n      const hierarchyDepthColumn = normalizeString(value.hierarchyDepthColumn);\n      const sourceRowIndexColumn = normalizeString(value.sourceRowIndexColumn);\n      return id && reason ? {\n        operation: {\n          id,\n          reason,\n          type: "annotate_hierarchy",\n          ...rowClassColumn ? { rowClassColumn } : {},\n          ...hierarchyDepthColumn ? { hierarchyDepthColumn } : {},\n          ...sourceRowIndexColumn ? { sourceRowIndexColumn } : {}\n        },\n        errors: []\n      } : { operation: null, errors: ["annotate_hierarchy requires id and reason."] };\n    }\n  },\n  {\n    type: "split_column",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("split_column", { column: { type: "string" }, delimiter: { type: "string" }, targetColumns: { type: "array", items: { type: "string" } } }, ["column", "delimiter", "targetColumns"]),\n    requiredFields: ["id", "type", "reason", "column", "delimiter", "targetColumns"],\n    summarize: () => "split_column requires column, delimiter, and targetColumns",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const column = normalizeString(value.column);\n      const delimiter = typeof value.delimiter === "string" ? value.delimiter : "";\n      const targetColumns = Array.isArray(value.targetColumns) ? value.targetColumns.map(normalizeString).filter(Boolean) : [];\n      return id && reason && column && delimiter && targetColumns.length > 0 ? { operation: { id, reason, type: "split_column", column, delimiter, targetColumns }, errors: [] } : { operation: null, errors: ["split_column requires id, reason, column, delimiter, and targetColumns."] };\n    }\n  },\n  {\n    type: "unpivot_columns",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("unpivot_columns", {\n      sourceColumns: { type: "array", items: { type: "string" } },\n      keyColumn: { type: "string" },\n      valueColumn: { type: "string" },\n      keepColumns: { type: "array", items: { type: "string" } },\n      labelColumn: { type: "string" },\n      labelMappings: { type: "array", items: unpivotLabelMappingSchema },\n      labelColumns: { type: "array", items: unpivotLabelColumnSchema },\n      sourceColumnNameColumn: { type: "string" },\n      sourceRowIndexColumn: { type: "string" },\n      rowClassColumn: { type: "string" },\n      rowClassMappings: { type: "array", items: unpivotRowClassMappingSchema },\n      hierarchyDepthColumn: { type: "string" },\n      hierarchyDepthMappings: { type: "array", items: unpivotHierarchyDepthMappingSchema }\n    }, ["sourceColumns", "keyColumn", "valueColumn"]),\n    requiredFields: ["id", "type", "reason", "sourceColumns", "keyColumn", "valueColumn"],\n    summarize: () => "unpivot_columns requires sourceColumns, keyColumn, and valueColumn; optional multi-label, source coordinate, row class, and hierarchy depth fields preserve report semantics",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const sourceColumns = Array.isArray(value.sourceColumns) ? value.sourceColumns.map(normalizeString).filter(Boolean) : [];\n      const keyColumn = normalizeString(value.keyColumn);\n      const valueColumn = normalizeString(value.valueColumn);\n      const keepColumns = Array.isArray(value.keepColumns) ? value.keepColumns.map(normalizeString).filter(Boolean) : void 0;\n      const labelColumn = normalizeString(value.labelColumn);\n      const labelMappings = Array.isArray(value.labelMappings) ? value.labelMappings.filter((item) => isRecordLike(item)).map((item) => ({\n        sourceColumn: normalizeString(item.sourceColumn),\n        label: item.label ?? null\n      })).filter((item) => item.sourceColumn) : void 0;\n      const labelColumns = normalizeUnpivotLabelColumns({\n        labelColumn,\n        labelMappings,\n        labelColumns: Array.isArray(value.labelColumns) ? value.labelColumns.filter((item) => isRecordLike(item)).map((item) => ({\n          outputColumn: normalizeString(item.outputColumn),\n          mappings: Array.isArray(item.mappings) ? item.mappings.filter((entry) => isRecordLike(entry)).map((entry) => ({\n            sourceColumn: normalizeString(entry.sourceColumn),\n            label: entry.label ?? null\n          })).filter((entry) => entry.sourceColumn) : []\n        })) : void 0\n      });\n      const sourceColumnNameColumn = normalizeString(value.sourceColumnNameColumn);\n      const sourceRowIndexColumn = normalizeString(value.sourceRowIndexColumn);\n      const rowClassColumn = normalizeString(value.rowClassColumn);\n      const rowClassMappings = Array.isArray(value.rowClassMappings) ? value.rowClassMappings.filter((item) => isRecordLike(item)).map((item) => ({\n        sourceRowIndex: Number(item.sourceRowIndex),\n        rowClass: normalizeString(item.rowClass)\n      })).filter((item) => Number.isInteger(item.sourceRowIndex) && item.sourceRowIndex >= 0 && item.rowClass) : void 0;\n      const hierarchyDepthColumn = normalizeString(value.hierarchyDepthColumn);\n      const hierarchyDepthMappings = normalizeUnpivotHierarchyDepthMappings({\n        hierarchyDepthMappings: Array.isArray(value.hierarchyDepthMappings) ? value.hierarchyDepthMappings.filter((item) => isRecordLike(item)).map((item) => ({\n          sourceRowIndex: Number(item.sourceRowIndex),\n          depth: Number(item.depth)\n        })) : void 0\n      });\n      return id && reason && sourceColumns.length > 0 && keyColumn && valueColumn ? {\n        operation: {\n          id,\n          reason,\n          type: "unpivot_columns",\n          sourceColumns,\n          keyColumn,\n          valueColumn,\n          ...(keepColumns == null ? void 0 : keepColumns.length) ? { keepColumns } : {},\n          ...labelColumn ? { labelColumn } : {},\n          ...(labelMappings == null ? void 0 : labelMappings.length) ? { labelMappings } : {},\n          ...labelColumns.length > 0 ? { labelColumns } : {},\n          ...sourceColumnNameColumn ? { sourceColumnNameColumn } : {},\n          ...sourceRowIndexColumn ? { sourceRowIndexColumn } : {},\n          ...rowClassColumn ? { rowClassColumn } : {},\n          ...(rowClassMappings == null ? void 0 : rowClassMappings.length) ? { rowClassMappings } : {},\n          ...hierarchyDepthColumn ? { hierarchyDepthColumn } : {},\n          ...hierarchyDepthMappings.length > 0 ? { hierarchyDepthMappings } : {}\n        },\n        errors: []\n      } : { operation: null, errors: ["unpivot_columns requires id, reason, sourceColumns, keyColumn, and valueColumn."] };\n    }\n  }\n];\nnew Map(\n  operationManifests.map((manifest) => [manifest.type, manifest])\n);\nconst DEFAULT_EMPTY_MARKERS = ["", "n/a", "na", "null", "none", "-", "--"];\nconst FILTER_OPERATORS = /* @__PURE__ */ new Set([\n  "eq",\n  "neq",\n  "gt",\n  "gte",\n  "lt",\n  "lte",\n  "between",\n  "contains",\n  "starts_with",\n  "ends_with",\n  "in",\n  "is_null",\n  "not_null"\n]);\nconst DEFAULT_ROW_CLASS_COLUMN = "RowClass";\nconst DEFAULT_HIERARCHY_DEPTH_COLUMN = "HierarchyDepth";\nconst DEFAULT_SOURCE_ROW_INDEX_COLUMN = "SourceRowIndex";\nconst cloneRows = (rows) => rows.map((row) => ({ ...row }));\nconst isRecord$1 = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);\nconst getColumns = (rows) => {\n  const columns = /* @__PURE__ */ new Set();\n  rows.forEach((row) => {\n    Object.keys(row).forEach((key) => columns.add(key));\n  });\n  return [...columns];\n};\nconst colKey = (name) => name.trim().replace(/\\s+/g, " ").toLowerCase();\nconst buildColumnLookup = (columns) => {\n  const lookup = /* @__PURE__ */ new Map();\n  columns.forEach((column) => {\n    lookup.set(colKey(column), column);\n  });\n  return lookup;\n};\nconst normalizeColumnName = (column, lookup, context) => {\n  if (typeof column !== "string" || !column.trim()) {\n    throw new Error(`${context} requires a non-empty column name.`);\n  }\n  const normalized = lookup.get(colKey(column));\n  if (!normalized) {\n    throw new Error(`${context} references missing column: ${column}`);\n  }\n  return normalized;\n};\nconst isMissingValue$1 = (value) => {\n  if (value === null || value === void 0) return true;\n  return typeof value === "string" && value.trim() === "";\n};\nconst isBlankRow = (row) => Object.values(row).every((value) => isMissingValue$1(value));\nconst sanitizeHeaderName = (value, fallback, index) => {\n  const normalized = String(value ?? "").trim();\n  if (!normalized) {\n    return fallback.trim() || `_unnamed_column_${index + 1}`;\n  }\n  return normalized;\n};\nconst uniquifyHeaders = (headers) => {\n  const seen = /* @__PURE__ */ new Map();\n  return headers.map((header) => {\n    const normalized = header.trim() || "_unnamed_column";\n    const key = normalized.toLowerCase();\n    const count = seen.get(key) ?? 0;\n    seen.set(key, count + 1);\n    return count === 0 ? normalized : `${normalized}_${count + 1}`;\n  });\n};\nconst buildDistinctKeyCount = (rows, columns) => {\n  if (columns.length === 0) return 0;\n  return new Set(rows.map((row) => columns.map((column) => String(row[column] ?? "")).join("||"))).size;\n};\nconst normalizeMarker = (value) => value.trim().toLowerCase();\nconst getOperationColumns = (rows, columns) => columns === "*" ? getColumns(rows) : columns;\nconst assertColumnsExist = (rows, columns, operation) => {\n  const existing = new Set(getColumns(rows).map((column) => column.toLowerCase()));\n  const missing = columns.filter((column) => !existing.has(column.toLowerCase()));\n  if (missing.length > 0) {\n    throw new Error(`Operation "${operation.id}" references missing columns: ${missing.join(", ")}`);\n  }\n};\nconst formatDate = (value) => {\n  if (isMissingValue$1(value)) return null;\n  const parsed = new Date(String(value));\n  if (Number.isNaN(parsed.getTime())) return null;\n  return parsed.toISOString().slice(0, 10);\n};\nconst formatBoolean = (value) => {\n  if (isMissingValue$1(value)) return null;\n  const normalized = String(value).trim().toLowerCase();\n  if (["true", "yes", "y", "1"].includes(normalized)) return true;\n  if (["false", "no", "n", "0"].includes(normalized)) return false;\n  return null;\n};\nconst castValue = (value, operation) => {\n  if (operation.targetType === "string") {\n    return isMissingValue$1(value) ? null : String(value).trim();\n  }\n  if (operation.targetType === "date") {\n    return formatDate(value);\n  }\n  if (operation.targetType === "boolean") {\n    return formatBoolean(value);\n  }\n  const numeric = robustParseFloat(value);\n  return numeric;\n};\nconst resolveOperand = (row, operand) => operand.kind === "literal" ? operand.value : row[operand.column] ?? null;\nconst deriveValue = (row, expression) => {\n  switch (expression.kind) {\n    case "copy":\n      return resolveOperand(row, expression.source);\n    case "math_binary": {\n      const left = robustParseFloat(resolveOperand(row, expression.left));\n      const right = robustParseFloat(resolveOperand(row, expression.right));\n      if (left === null || right === null) return null;\n      switch (expression.operator) {\n        case "add":\n          return left + right;\n        case "subtract":\n          return left - right;\n        case "multiply":\n          return left * right;\n        case "divide":\n          return right === 0 ? null : left / right;\n      }\n      break;\n    }\n    case "ratio": {\n      const numerator = robustParseFloat(resolveOperand(row, expression.numerator));\n      const denominator = robustParseFloat(resolveOperand(row, expression.denominator));\n      if (numerator === null || denominator === null || denominator === 0) return null;\n      return numerator / denominator;\n    }\n    case "concat":\n      return expression.parts.map((part) => resolveOperand(row, part)).filter((value) => value !== null && value !== void 0 && String(value).length > 0).map((value) => String(value)).join(expression.separator ?? "");\n  }\n  return null;\n};\nconst comparePredicate = (row, predicate) => {\n  const value = row[predicate.column] ?? null;\n  switch (predicate.operator) {\n    case "is_null":\n      return isMissingValue$1(value);\n    case "not_null":\n      return !isMissingValue$1(value);\n    case "contains":\n      return String(value ?? "").toLowerCase().includes(String(predicate.value ?? "").toLowerCase());\n    case "starts_with":\n      return String(value ?? "").toLowerCase().startsWith(String(predicate.value ?? "").toLowerCase());\n    case "ends_with":\n      return String(value ?? "").toLowerCase().endsWith(String(predicate.value ?? "").toLowerCase());\n    case "in": {\n      const values = Array.isArray(predicate.value) ? predicate.value : [predicate.value];\n      const normalized = String(value ?? "").toLowerCase();\n      return values.some((candidate) => String(candidate ?? "").toLowerCase() === normalized);\n    }\n    case "eq":\n      return String(value ?? "").toLowerCase() === String(predicate.value ?? "").toLowerCase();\n    case "neq":\n      return String(value ?? "").toLowerCase() !== String(predicate.value ?? "").toLowerCase();\n    case "gt":\n    case "gte":\n    case "lt":\n    case "lte":\n    case "between": {\n      const left = robustParseFloat(value);\n      if (predicate.operator === "between") {\n        const values = Array.isArray(predicate.value) ? predicate.value : [];\n        const lower = robustParseFloat(values[0]);\n        const upper = robustParseFloat(values[1]);\n        if (left === null || lower === null || upper === null) return false;\n        return left >= lower && left <= upper;\n      }\n      const right = robustParseFloat(predicate.value);\n      if (left === null || right === null) return false;\n      if (predicate.operator === "gt") return left > right;\n      if (predicate.operator === "gte") return left >= right;\n      if (predicate.operator === "lt") return left < right;\n      return left <= right;\n    }\n  }\n};\nconst buildRowTemplate = (row) => Object.fromEntries(Object.keys(row).map((column) => [column, null]));\nconst getMetricComponentTotal = (rows, labelColumn, valueColumn, component) => {\n  const matchTerms = component.matchAny.map((term) => term.toLowerCase());\n  const matchedRows = rows.filter((row) => {\n    const labelValue = String(row[labelColumn] ?? "").trim().toLowerCase();\n    return matchTerms.some((term) => labelValue.includes(term));\n  });\n  if (matchedRows.length === 0) {\n    return null;\n  }\n  return matchedRows.reduce((total, row) => {\n    const parsed = robustParseFloat(row[valueColumn] ?? null);\n    if (parsed === null) {\n      return total;\n    }\n    const value = component.valueTransform === "absolute" ? Math.abs(parsed) : parsed;\n    return component.operator === "subtract" ? total - value : total + value;\n  }, 0);\n};\nconst evaluateDerivedMetricFormula = (rows, labelColumn, valueColumn, formula) => {\n  if (formula.kind === "linear_combination") {\n    const totals = formula.components.map((component) => getMetricComponentTotal(rows, labelColumn, valueColumn, component));\n    return totals.some((total) => total === null) ? null : totals.reduce((sum, total) => sum + (total ?? 0), 0);\n  }\n  const numeratorTotals = formula.numerator.map((component) => getMetricComponentTotal(rows, labelColumn, valueColumn, component));\n  const denominatorTotals = formula.denominator.map((component) => getMetricComponentTotal(rows, labelColumn, valueColumn, component));\n  if (numeratorTotals.some((total) => total === null) || denominatorTotals.some((total) => total === null)) {\n    return null;\n  }\n  const numerator = numeratorTotals.reduce((sum, total) => sum + (total ?? 0), 0);\n  const denominator = denominatorTotals.reduce((sum, total) => sum + (total ?? 0), 0);\n  if (denominator === 0) {\n    return null;\n  }\n  return numerator / denominator * (Number.isFinite(formula.scale) ? formula.scale : 1);\n};\nconst appendDerivedMetricRows = (rows, operation) => {\n  assertColumnsExist(rows, [\n    ...operation.groupByColumns,\n    operation.labelColumn,\n    operation.valueColumn,\n    ...operation.carryForwardColumns ?? []\n  ], operation);\n  const groups = /* @__PURE__ */ new Map();\n  rows.forEach((row) => {\n    const key = JSON.stringify(operation.groupByColumns.map((column) => row[column] ?? null));\n    const existing = groups.get(key);\n    if (existing) {\n      existing.push(row);\n      return;\n    }\n    groups.set(key, [row]);\n  });\n  const derivedRows = [...groups.values()].flatMap((groupRows) => {\n    const computedValue = evaluateDerivedMetricFormula(\n      groupRows,\n      operation.labelColumn,\n      operation.valueColumn,\n      operation.formula\n    );\n    if (computedValue === null) {\n      return [];\n    }\n    const seedRow = groupRows[0] ?? {};\n    const derivedRow = buildRowTemplate(seedRow);\n    operation.groupByColumns.forEach((column) => {\n      derivedRow[column] = seedRow[column] ?? null;\n    });\n    (operation.carryForwardColumns ?? []).forEach((column) => {\n      derivedRow[column] = seedRow[column] ?? null;\n    });\n    if (Object.prototype.hasOwnProperty.call(derivedRow, "RowClass")) {\n      derivedRow.RowClass = "derived_metric";\n    }\n    derivedRow[operation.labelColumn] = operation.outputMetricLabel;\n    derivedRow[operation.valueColumn] = computedValue;\n    return [derivedRow];\n  });\n  return [...rows, ...derivedRows];\n};\nconst comparePredicateGroup = (row, group) => Array.isArray(group.predicates) && group.predicates.every((predicate) => comparePredicate(row, predicate));\nconst normalizeFilterPredicate = (value) => {\n  if (!isRecord$1(value)) return null;\n  const column = typeof value.column === "string" ? value.column.trim() : "";\n  const operator = typeof value.operator === "string" ? value.operator : "";\n  if (!column || !FILTER_OPERATORS.has(operator)) {\n    return null;\n  }\n  const predicate = {\n    column,\n    operator\n  };\n  if ("value" in value) {\n    predicate.value = value.value;\n  }\n  return predicate;\n};\nconst normalizeFilterPredicateGroup = (value) => {\n  if (!isRecord$1(value) || !Array.isArray(value.predicates)) return null;\n  const predicates = value.predicates.map(normalizeFilterPredicate).filter((predicate) => Boolean(predicate));\n  if (predicates.length === 0) {\n    return null;\n  }\n  return { predicates };\n};\nconst applyFillMissing = (rows, operation) => {\n  let lastSeen = null;\n  return rows.map((row) => {\n    const nextRow = { ...row };\n    const current = nextRow[operation.column] ?? null;\n    if (!isMissingValue$1(current)) {\n      lastSeen = current;\n      return nextRow;\n    }\n    if (operation.strategy === "zero") {\n      nextRow[operation.column] = 0;\n    } else if (operation.strategy === "constant") {\n      nextRow[operation.column] = operation.value ?? null;\n    } else if (operation.strategy === "forward_fill") {\n      nextRow[operation.column] = lastSeen;\n    }\n    return nextRow;\n  });\n};\nconst resolveFilterOperationClauses = (rows, operation) => {\n  const predicates = Array.isArray(operation.predicates) ? operation.predicates.filter((predicate) => predicate && typeof predicate.column === "string" && typeof predicate.operator === "string") : [];\n  const groups = Array.isArray(operation.groups) ? operation.groups.filter((group) => group && Array.isArray(group.predicates)).map((group) => ({\n    predicates: group.predicates.filter((predicate) => predicate && typeof predicate.column === "string" && typeof predicate.operator === "string")\n  })).filter((group) => group.predicates.length > 0) : [];\n  assertColumnsExist(rows, [\n    ...predicates.map((predicate) => predicate.column),\n    ...groups.flatMap((group) => group.predicates.map((predicate) => predicate.column))\n  ], operation);\n  if (predicates.length === 0 && groups.length === 0) {\n    throw new Error(`Operation "${operation.id}" must include valid predicates or groups.`);\n  }\n  return { predicates, groups };\n};\nconst matchesFilterOperation = (row, clauses) => {\n  const predicateMatch = clauses.predicates.length > 0 ? clauses.predicates.every((predicate) => comparePredicate(row, predicate)) : false;\n  const groupMatch = clauses.groups.length > 0 ? clauses.groups.some((group) => comparePredicateGroup(row, group)) : false;\n  return predicateMatch || groupMatch;\n};\nconst applyOperation = (rows, operation) => {\n  const draft = cloneRows(rows);\n  switch (operation.type) {\n    case "drop_rows_by_index": {\n      const outOfBounds = operation.indices.filter((i) => i < 0 || i >= draft.length);\n      if (outOfBounds.length > 0) {\n        console.warn(\n          `[DataOperationMutator] drop_rows_by_index: ${outOfBounds.length} of ${operation.indices.length} indices are out of bounds (dataset has ${draft.length} rows). Out-of-bounds: [${outOfBounds.join(", ")}].`\n        );\n      }\n      const toDrop = new Set(operation.indices);\n      return draft.filter((_, index) => !toDrop.has(index));\n    }\n    case "drop_rows_by_condition": {\n      const clauses = resolveFilterOperationClauses(draft, operation);\n      return draft.filter((row) => !matchesFilterOperation(row, clauses));\n    }\n    case "drop_blank_rows":\n      return draft.filter((row) => !isBlankRow(row));\n    case "promote_header_row": {\n      if (operation.rowIndex >= draft.length) {\n        throw new Error(`Operation "${operation.id}" references missing row index ${operation.rowIndex}.`);\n      }\n      const currentColumns = getColumns(draft);\n      if (currentColumns.length === 0) {\n        throw new Error(`Operation "${operation.id}" requires at least one existing column.`);\n      }\n      const headerRow = draft[operation.rowIndex];\n      const promotedHeaders = uniquifyHeaders(\n        currentColumns.map((column, index) => sanitizeHeaderName(headerRow[column] ?? null, column, index))\n      );\n      return draft.filter((_, index) => index !== operation.rowIndex).map((row) => {\n        const nextRow = {};\n        currentColumns.forEach((column, index) => {\n          nextRow[promotedHeaders[index]] = row[column] ?? null;\n        });\n        return nextRow;\n      });\n    }\n    case "rename_columns":\n      assertColumnsExist(draft, operation.mappings.map((mapping) => mapping.from), operation);\n      return draft.map((row) => {\n        const nextRow = {};\n        Object.entries(row).forEach(([key, value]) => {\n          const mapping = operation.mappings.find((entry) => entry.from.toLowerCase() === key.toLowerCase());\n          nextRow[(mapping == null ? void 0 : mapping.to) ?? key] = value;\n        });\n        return nextRow;\n      });\n    case "drop_columns":\n      assertColumnsExist(draft, operation.columns, operation);\n      return draft.map((row) => {\n        const nextRow = { ...row };\n        operation.columns.forEach((column) => {\n          delete nextRow[column];\n        });\n        return nextRow;\n      });\n    case "trim_whitespace": {\n      const columns = getOperationColumns(draft, operation.columns);\n      assertColumnsExist(draft, columns, operation);\n      return draft.map((row) => {\n        const nextRow = { ...row };\n        columns.forEach((column) => {\n          if (typeof nextRow[column] === "string") {\n            nextRow[column] = nextRow[column].trim();\n          }\n        });\n        return nextRow;\n      });\n    }\n    case "normalize_empty_values": {\n      const columns = getOperationColumns(draft, operation.columns);\n      assertColumnsExist(draft, columns, operation);\n      const markers = new Set((operation.emptyMarkers ?? DEFAULT_EMPTY_MARKERS).map(normalizeMarker));\n      return draft.map((row) => {\n        const nextRow = { ...row };\n        columns.forEach((column) => {\n          if (typeof nextRow[column] === "string" && markers.has(normalizeMarker(nextRow[column]))) {\n            nextRow[column] = null;\n          }\n        });\n        return nextRow;\n      });\n    }\n    case "replace_values":\n      assertColumnsExist(draft, [operation.column], operation);\n      return draft.map((row) => {\n        const nextRow = { ...row };\n        const current = nextRow[operation.column];\n        const replacement = operation.replacements.find((entry) => {\n          if (current === null || current === void 0) return false;\n          if (operation.caseSensitive) {\n            return String(current) === entry.from;\n          }\n          return String(current).toLowerCase() === entry.from.toLowerCase();\n        });\n        if (replacement) {\n          nextRow[operation.column] = replacement.to;\n        }\n        return nextRow;\n      });\n    case "cast_column":\n      assertColumnsExist(draft, [operation.column], operation);\n      return draft.map((row) => ({\n        ...row,\n        [operation.column]: castValue(row[operation.column] ?? null, operation)\n      }));\n    case "fill_missing":\n      assertColumnsExist(draft, [operation.column], operation);\n      return applyFillMissing(draft, operation);\n    case "dedupe_rows":\n      assertColumnsExist(draft, operation.keyColumns, operation);\n      return draft.filter((row, index, allRows) => {\n        const key = operation.keyColumns.map((column) => String(row[column] ?? "")).join("||");\n        return allRows.findIndex(\n          (candidate) => operation.keyColumns.every((column) => String(candidate[column] ?? "") === String(row[column] ?? ""))\n        ) === index && key.length >= 0;\n      });\n    case "filter_rows": {\n      const clauses = resolveFilterOperationClauses(draft, operation);\n      return draft.filter((row) => matchesFilterOperation(row, clauses));\n    }\n    case "derive_column":\n      return draft.map((row) => ({\n        ...row,\n        [operation.newColumn]: deriveValue(row, operation.expression)\n      }));\n    case "derive_metric_by_label":\n      return appendDerivedMetricRows(draft, operation);\n    case "annotate_hierarchy": {\n      const profile = detectReportShape({\n        fileName: "annotate-hierarchy.csv",\n        data: draft,\n        metadataRows: [],\n        headerLayers: [],\n        summaryRows: [],\n        headerDepth: 1\n      });\n      const rowRoleMap = new Map(profile.rowRoles.map((candidate) => [candidate.rowIndex, candidate]));\n      const hasHierarchySignals = profile.primaryKind === "hierarchical_statement" || profile.rowRoles.some(\n        (candidate) => ["group_header", "subtotal", "total"].includes(candidate.role)\n      );\n      if (!hasHierarchySignals) {\n        throw new Error(`Operation "${operation.id}" requires a hierarchical statement shape.`);\n      }\n      const rowClassColumn = operation.rowClassColumn ?? DEFAULT_ROW_CLASS_COLUMN;\n      const hierarchyDepthColumn = operation.hierarchyDepthColumn ?? DEFAULT_HIERARCHY_DEPTH_COLUMN;\n      const sourceRowIndexColumn = operation.sourceRowIndexColumn ?? DEFAULT_SOURCE_ROW_INDEX_COLUMN;\n      return draft.map((row, index) => {\n        const role = rowRoleMap.get(index);\n        return {\n          ...row,\n          [rowClassColumn]: (role == null ? void 0 : role.role) ?? "fact",\n          [hierarchyDepthColumn]: (role == null ? void 0 : role.depth) ?? 0,\n          [sourceRowIndexColumn]: index\n        };\n      });\n    }\n    case "split_column":\n      assertColumnsExist(draft, [operation.column], operation);\n      return draft.map((row) => {\n        const nextRow = { ...row };\n        const parts = String(row[operation.column] ?? "").split(operation.delimiter);\n        operation.targetColumns.forEach((column, index) => {\n          var _a;\n          nextRow[column] = ((_a = parts[index]) == null ? void 0 : _a.trim()) ?? null;\n        });\n        return nextRow;\n      });\n    case "unpivot_columns":\n      assertColumnsExist(draft, operation.sourceColumns, operation);\n      if (operation.keepColumns && operation.keepColumns.length > 0) {\n        assertColumnsExist(draft, operation.keepColumns, operation);\n      }\n      if (operation.sourceColumns.some((column) => SUMMARY_LABEL_PATTERN.test(column.trim()))) {\n        throw new Error(`Operation "${operation.id}" cannot unpivot summary columns such as Total or Subtotal.`);\n      }\n      return draft.flatMap((row, rowIndex) => {\n        const keepColumns = operation.keepColumns && operation.keepColumns.length > 0 ? operation.keepColumns : Object.keys(row).filter((column) => !operation.sourceColumns.includes(column));\n        const labelColumns = normalizeUnpivotLabelColumns(operation);\n        const labelMaps = labelColumns.map((labelColumn) => ({\n          outputColumn: labelColumn.outputColumn,\n          map: new Map(labelColumn.mappings.map((mapping) => [mapping.sourceColumn, mapping.label]))\n        }));\n        const rowClassMap = new Map((operation.rowClassMappings ?? []).map((mapping) => [mapping.sourceRowIndex, mapping.rowClass]));\n        const hierarchyDepthMap = new Map(\n          normalizeUnpivotHierarchyDepthMappings(operation).map((mapping) => [mapping.sourceRowIndex, mapping.depth])\n        );\n        return operation.sourceColumns.map((column) => {\n          const nextRow = {};\n          keepColumns.forEach((keepColumn) => {\n            nextRow[keepColumn] = row[keepColumn] ?? null;\n          });\n          nextRow[operation.keyColumn] = column;\n          nextRow[operation.valueColumn] = row[column] ?? null;\n          labelMaps.forEach((labelColumn) => {\n            nextRow[labelColumn.outputColumn] = labelColumn.map.get(column) ?? null;\n          });\n          if (operation.sourceColumnNameColumn) {\n            nextRow[operation.sourceColumnNameColumn] = column;\n          }\n          if (operation.sourceRowIndexColumn) {\n            nextRow[operation.sourceRowIndexColumn] = rowIndex;\n          }\n          if (operation.rowClassColumn) {\n            nextRow[operation.rowClassColumn] = rowClassMap.get(rowIndex) ?? null;\n          }\n          if (operation.hierarchyDepthColumn) {\n            nextRow[operation.hierarchyDepthColumn] = hierarchyDepthMap.get(rowIndex) ?? null;\n          }\n          return nextRow;\n        });\n      });\n  }\n};\nconst verifyOperationOutput = (before, after, operation) => {\n  if (!Array.isArray(after) || after.some((row) => row === null || typeof row !== "object" || Array.isArray(row))) {\n    throw new Error(`Operation "${operation.id}" produced an invalid dataset shape.`);\n  }\n  const columns = getColumns(after);\n  const seen = /* @__PURE__ */ new Set();\n  columns.forEach((column) => {\n    const key = column.toLowerCase();\n    if (seen.has(key)) {\n      throw new Error(`Operation "${operation.id}" produced duplicate columns.`);\n    }\n    seen.add(key);\n  });\n  if (before.length < 0 || after.length < 0) {\n    throw new Error(`Operation "${operation.id}" produced an invalid row count.`);\n  }\n  if (operation.type === "unpivot_columns") {\n    const keepColumns = operation.keepColumns && operation.keepColumns.length > 0 ? operation.keepColumns : getColumns(before).filter((column) => !operation.sourceColumns.includes(column));\n    const beforeKeyCount = buildDistinctKeyCount(before, keepColumns);\n    const afterKeyCount = buildDistinctKeyCount(after, keepColumns);\n    if (afterKeyCount < beforeKeyCount) {\n      throw new Error(`Operation "${operation.id}" reduced distinct keep-column combinations after unpivot.`);\n    }\n  }\n};\nconst applyDataOperations = (inputRows, operations, options) => {\n  let currentRows = cloneRows(inputRows);\n  const logs = [];\n  operations.forEach((operation) => {\n    const beforeRows = cloneRows(currentRows);\n    const beforeColumns = getColumns(beforeRows);\n    try {\n      const nextRows = applyOperation(beforeRows, operation);\n      verifyOperationOutput(beforeRows, nextRows, operation);\n      if (!(options == null ? void 0 : options.allowEmptyResult) && nextRows.length === 0) {\n        throw new Error(`Operation "${operation.id}" produced an empty dataset.`);\n      }\n      currentRows = nextRows;\n      logs.push({\n        operationId: operation.id,\n        operationType: operation.type,\n        reason: operation.reason,\n        status: "done",\n        rowCountBefore: beforeRows.length,\n        rowCountAfter: nextRows.length,\n        columnCountBefore: beforeColumns.length,\n        columnCountAfter: getColumns(nextRows).length\n      });\n    } catch (error) {\n      logs.push({\n        operationId: operation.id,\n        operationType: operation.type,\n        reason: operation.reason,\n        status: "error",\n        rowCountBefore: beforeRows.length,\n        rowCountAfter: beforeRows.length,\n        columnCountBefore: beforeColumns.length,\n        columnCountAfter: beforeColumns.length,\n        detail: {\n          error: error instanceof Error ? error.message : String(error)\n        }\n      });\n      throw error;\n    }\n  });\n  return {\n    data: currentRows,\n    logs\n  };\n};\nconst applySpreadsheetFilterOperation = (inputRows, operation) => applyDataOperations(inputRows, [operation], { allowEmptyResult: true });\nconst QUERY_AGGREGATE_FUNCTIONS = /* @__PURE__ */ new Set(["count", "count_distinct", "sum", "avg", "min", "max", "median", "percentile"]);\nconst normalizeQueryOrderDirection = (direction) => typeof direction === "string" && direction.trim().toLowerCase() === "desc" ? "desc" : "asc";\nconst normalizeQueryAggregateFunction = (value) => {\n  const normalized = normalizeString(value).toLowerCase();\n  return QUERY_AGGREGATE_FUNCTIONS.has(normalized) ? normalized : null;\n};\nconst DEFAULT_QUERY_MAX_ROWS = 500;\nconst DEFAULT_QUERY_MAX_COLUMNS = 50;\nconst DEFAULT_QUERY_MAX_ORDER_BY = 3;\nconst isRecord = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);\nconst isMissingValue = (value) => {\n  if (value === null || value === void 0) return true;\n  return typeof value === "string" && value.trim() === "";\n};\nconst tryNormalizeColumnName = (column, lookup) => {\n  const trimmed = column.trim();\n  if (!trimmed) return null;\n  return lookup.get(trimmed.toLowerCase()) ?? null;\n};\nconst normalizeWhereClause = (where, lookup) => {\n  if (!where) return void 0;\n  let inputPredicateCount = 0;\n  let droppedColumns = [];\n  const predicates = Array.isArray(where.predicates) ? where.predicates.map((predicate) => {\n    const normalizedPredicate = normalizeFilterPredicate(predicate);\n    if (!normalizedPredicate) return null;\n    inputPredicateCount++;\n    const resolved = tryNormalizeColumnName(normalizedPredicate.column, lookup);\n    if (!resolved) {\n      droppedColumns.push(normalizedPredicate.column);\n      console.warn(`[dataQueryExecutor] Skipping where predicate for missing column: ${normalizedPredicate.column}`);\n      return null;\n    }\n    return { ...normalizedPredicate, column: resolved };\n  }).filter((predicate) => predicate !== null) : void 0;\n  const groups = Array.isArray(where.groups) ? where.groups.map((group) => {\n    const normalizedGroup = normalizeFilterPredicateGroup(group);\n    if (!normalizedGroup) return null;\n    const resolvedPredicates = normalizedGroup.predicates.map((predicate) => {\n      const normalizedPredicate = normalizeFilterPredicate(predicate);\n      if (!normalizedPredicate) return null;\n      inputPredicateCount++;\n      const resolved = tryNormalizeColumnName(normalizedPredicate.column, lookup);\n      if (!resolved) {\n        droppedColumns.push(normalizedPredicate.column);\n        console.warn(`[dataQueryExecutor] Skipping where group predicate for missing column: ${normalizedPredicate.column}`);\n        return null;\n      }\n      return { ...normalizedPredicate, column: resolved };\n    }).filter((predicate) => predicate !== null);\n    return resolvedPredicates.length > 0 ? { predicates: resolvedPredicates } : null;\n  }).filter((group) => group !== null) : void 0;\n  const survivingCount = ((predicates == null ? void 0 : predicates.length) ?? 0) + ((groups == null ? void 0 : groups.reduce((sum, g) => sum + g.predicates.length, 0)) ?? 0);\n  if (inputPredicateCount > 0 && survivingCount === 0) {\n    throw new Error(\n      `All where filter columns are missing from the dataset: ${droppedColumns.join(", ")}. Query cannot proceed without valid filter conditions.`\n    );\n  }\n  if ((!predicates || predicates.length === 0) && (!groups || groups.length === 0)) {\n    return void 0;\n  }\n  return {\n    ...predicates && predicates.length > 0 ? { predicates } : {},\n    ...groups && groups.length > 0 ? { groups } : {}\n  };\n};\nconst sortQueryRows = (rows, orderBy) => {\n  if (orderBy.length === 0) return rows;\n  return [...rows].sort((leftRow, rightRow) => {\n    for (const clause of orderBy) {\n      const leftValue = leftRow[clause.column];\n      const rightValue = rightRow[clause.column];\n      if (leftValue === null || leftValue === void 0) return 1;\n      if (rightValue === null || rightValue === void 0) return -1;\n      const leftNumber = robustParseFloat(leftValue);\n      const rightNumber = robustParseFloat(rightValue);\n      if (leftNumber !== null && rightNumber !== null) {\n        if (leftNumber !== rightNumber) {\n          return clause.direction === "asc" ? leftNumber - rightNumber : rightNumber - leftNumber;\n        }\n        continue;\n      }\n      const leftString = String(leftValue).toLowerCase();\n      const rightString = String(rightValue).toLowerCase();\n      if (leftString !== rightString) {\n        if (leftString < rightString) return clause.direction === "asc" ? -1 : 1;\n        return clause.direction === "asc" ? 1 : -1;\n      }\n    }\n    return 0;\n  });\n};\nconst POST_AGGREGATE_OPERATORS = /* @__PURE__ */ new Set([\n  "eq",\n  "neq",\n  "gt",\n  "gte",\n  "lt",\n  "lte",\n  "between",\n  "is_null",\n  "not_null"\n]);\nconst normalizeAggregateAlias = (value, context) => {\n  if (typeof value !== "string") {\n    throw new Error(`${context} requires a non-empty alias.`);\n  }\n  const normalized = value.trim();\n  if (!normalized) {\n    throw new Error(`${context} requires a non-empty alias.`);\n  }\n  return normalized;\n};\nconst normalizeAggregateClauses = (aggregates, lookup, groupByColumns) => {\n  const seenOutputs = new Set(groupByColumns.map((column) => column.toLowerCase()));\n  return (Array.isArray(aggregates) ? aggregates : []).map((aggregate, index) => {\n    if (!aggregate || typeof aggregate !== "object" || Array.isArray(aggregate)) {\n      throw new Error(`Query aggregate ${index + 1} must be an object.`);\n    }\n    const alias = normalizeAggregateAlias(aggregate.as, `Query aggregate ${index + 1}`);\n    const aliasKey = alias.toLowerCase();\n    if (seenOutputs.has(aliasKey)) {\n      throw new Error(`Query aggregate alias "${alias}" must be unique and must not overlap with groupBy columns.`);\n    }\n    seenOutputs.add(aliasKey);\n    const functionName = normalizeQueryAggregateFunction(aggregate.function);\n    if (!functionName) {\n      throw new Error(`Query aggregate "${alias}" must use one of: count, count_distinct, sum, avg, min, max, median, percentile.`);\n    }\n    if (functionName === "count") {\n      return {\n        function: "count",\n        as: alias,\n        ...aggregate.column ? { column: normalizeColumnName(aggregate.column, lookup, `Query aggregate "${alias}"`) } : {},\n        ...aggregate.where ? { where: normalizeWhereClause(aggregate.where, lookup) } : {}\n      };\n    }\n    if (!aggregate.column) {\n      throw new Error(`Query aggregate "${alias}" requires a source column for ${functionName}.`);\n    }\n    return {\n      function: functionName,\n      column: normalizeColumnName(aggregate.column, lookup, `Query aggregate "${alias}"`),\n      as: alias,\n      ...functionName === "percentile" ? { percentile: aggregate.percentile } : {},\n      ...aggregate.where ? { where: normalizeWhereClause(aggregate.where, lookup) } : {}\n    };\n  });\n};\nconst calculateMedian = (values) => {\n  if (values.length === 0) {\n    return null;\n  }\n  const sorted = [...values].sort((left, right) => left - right);\n  const middle = Math.floor(sorted.length / 2);\n  if (sorted.length % 2 === 0) {\n    return (sorted[middle - 1] + sorted[middle]) / 2;\n  }\n  return sorted[middle];\n};\nconst calculatePercentile = (values, percentile) => {\n  if (values.length === 0) {\n    return null;\n  }\n  const safePercentile = Number.isFinite(percentile) ? Math.min(1, Math.max(0, percentile)) : 0.5;\n  const sorted = [...values].sort((left, right) => left - right);\n  const index = Math.min(sorted.length - 1, Math.max(0, Math.round((sorted.length - 1) * safePercentile)));\n  return sorted[index] ?? null;\n};\nconst normalizePostAggregatePredicate = (predicate) => {\n  if (!isRecord(predicate)) {\n    return null;\n  }\n  const column = normalizeString(predicate.column);\n  const operator = normalizeString(predicate.operator).toLowerCase();\n  if (!column || !POST_AGGREGATE_OPERATORS.has(operator)) {\n    return null;\n  }\n  return {\n    column,\n    operator,\n    ...predicate.value !== void 0 ? { value: predicate.value } : {}\n  };\n};\nconst normalizePostAggregateClause = (value) => {\n  if (!isRecord(value)) {\n    return void 0;\n  }\n  const predicates = Array.isArray(value.predicates) ? value.predicates.map(normalizePostAggregatePredicate).filter((predicate) => Boolean(predicate)) : void 0;\n  const groups = Array.isArray(value.groups) ? value.groups.map((group) => {\n    if (!isRecord(group) || !Array.isArray(group.predicates)) {\n      return null;\n    }\n    const normalizedPredicates = group.predicates.map(normalizePostAggregatePredicate).filter((predicate) => Boolean(predicate));\n    return normalizedPredicates.length > 0 ? { predicates: normalizedPredicates } : null;\n  }).filter((group) => Boolean(group)) : void 0;\n  if (((predicates == null ? void 0 : predicates.length) ?? 0) === 0 && ((groups == null ? void 0 : groups.length) ?? 0) === 0) {\n    return void 0;\n  }\n  return {\n    ...predicates && predicates.length > 0 ? { predicates } : {},\n    ...groups && groups.length > 0 ? { groups } : {}\n  };\n};\nconst aggregateRowsForQuery = (rows, groupByColumns, aggregates) => {\n  const groups = /* @__PURE__ */ new Map();\n  rows.forEach((row) => {\n    const groupValues = groupByColumns.reduce((acc, column) => {\n      acc[column] = row[column] ?? null;\n      return acc;\n    }, {});\n    const key = groupByColumns.length === 0 ? "__all__" : JSON.stringify(groupByColumns.map((column) => row[column] ?? null));\n    const existing = groups.get(key);\n    if (existing) {\n      existing.rows.push(row);\n      return;\n    }\n    groups.set(key, { groupValues, rows: [row] });\n  });\n  if (groups.size === 0 && groupByColumns.length === 0) {\n    groups.set("__all__", { groupValues: {}, rows: [] });\n  }\n  return [...groups.values()].map((group) => {\n    const nextRow = { ...group.groupValues };\n    aggregates.forEach((aggregate) => {\n      const aggregateRows = aggregate.where ? applySpreadsheetFilterOperation(group.rows, {\n        id: `query_aggregate_filter_${aggregate.as}`,\n        type: "filter_rows",\n        reason: `Read-only aggregate filter for ${aggregate.as}`,\n        ...aggregate.where.predicates ? { predicates: aggregate.where.predicates } : {},\n        ...aggregate.where.groups ? { groups: aggregate.where.groups } : {}\n      }).data : group.rows;\n      if (aggregate.function === "count") {\n        if (!aggregate.column) {\n          nextRow[aggregate.as] = aggregateRows.length;\n          return;\n        }\n        nextRow[aggregate.as] = aggregateRows.filter((row) => !isMissingValue(row[aggregate.column] ?? null)).length;\n        return;\n      }\n      if (aggregate.function === "count_distinct") {\n        nextRow[aggregate.as] = aggregate.column ? new Set(aggregateRows.map((row) => row[aggregate.column] ?? null).filter((value) => !isMissingValue(value))).size : aggregateRows.length;\n        return;\n      }\n      const numericValues = aggregateRows.map((row) => robustParseFloat(row[aggregate.column] ?? null)).filter((value) => value !== null);\n      if (aggregate.function === "sum") {\n        nextRow[aggregate.as] = numericValues.length > 0 ? numericValues.reduce((total, value) => total + value, 0) : null;\n        return;\n      }\n      if (aggregate.function === "avg") {\n        nextRow[aggregate.as] = numericValues.length > 0 ? numericValues.reduce((total, value) => total + value, 0) / numericValues.length : null;\n        return;\n      }\n      if (aggregate.function === "min") {\n        nextRow[aggregate.as] = numericValues.length > 0 ? Math.min(...numericValues) : null;\n        return;\n      }\n      if (aggregate.function === "max") {\n        nextRow[aggregate.as] = numericValues.length > 0 ? Math.max(...numericValues) : null;\n        return;\n      }\n      if (aggregate.function === "median") {\n        nextRow[aggregate.as] = calculateMedian(numericValues);\n        return;\n      }\n      nextRow[aggregate.as] = calculatePercentile(numericValues, aggregate.percentile);\n    });\n    return nextRow;\n  });\n};\nconst executeDataQuery = (inputRows, plan, options) => {\n  const startedAt = Date.now();\n  const maxRows = (options == null ? void 0 : options.maxRows) ?? DEFAULT_QUERY_MAX_ROWS;\n  const maxColumns = (options == null ? void 0 : options.maxColumns) ?? DEFAULT_QUERY_MAX_COLUMNS;\n  const maxOrderBy = (options == null ? void 0 : options.maxOrderBy) ?? DEFAULT_QUERY_MAX_ORDER_BY;\n  const availableColumns = (options == null ? void 0 : options.allowedColumns) && options.allowedColumns.length > 0 ? options.allowedColumns : getColumns(inputRows);\n  const lookup = buildColumnLookup(availableColumns);\n  const normalizedGroupBy = Array.isArray(plan.groupBy) && plan.groupBy.length > 0 ? [...new Set(plan.groupBy.map((column) => normalizeColumnName(column, lookup, "Query groupBy")))] : [];\n  const normalizedAggregates = normalizeAggregateClauses(plan.aggregates, lookup, normalizedGroupBy);\n  const isAggregateQuery = normalizedGroupBy.length > 0 || normalizedAggregates.length > 0;\n  if (normalizedGroupBy.length > 0 && normalizedAggregates.length === 0) {\n    throw new Error("Query aggregate mode requires at least one aggregate when groupBy is provided.");\n  }\n  const outputColumns = isAggregateQuery ? [...normalizedGroupBy, ...normalizedAggregates.map((aggregate) => aggregate.as)] : availableColumns;\n  const outputLookup = buildColumnLookup(outputColumns);\n  const selectedColumns = Array.isArray(plan.select) && plan.select.length > 0 ? plan.select.map((column) => normalizeColumnName(column, outputLookup, "Query select")) : outputColumns.slice(0, maxColumns);\n  const dedupedSelectedColumns = [...new Set(selectedColumns)];\n  if (dedupedSelectedColumns.length > maxColumns) {\n    throw new Error(`Query select exceeds the maximum allowed column count (${maxColumns}).`);\n  }\n  const normalizedWhere = normalizeWhereClause(plan.where, lookup);\n  const normalizedPostAggregateFilter = normalizePostAggregateClause(plan.postAggregateFilter);\n  const orderBy = Array.isArray(plan.orderBy) ? plan.orderBy : [];\n  if (orderBy.length > maxOrderBy) {\n    throw new Error(`Query orderBy exceeds the maximum allowed clause count (${maxOrderBy}).`);\n  }\n  const normalizedOrderBy = orderBy.map((clause, index) => {\n    if (!clause || typeof clause !== "object" || Array.isArray(clause)) {\n      throw new Error(`Query orderBy ${index + 1} must be an object.`);\n    }\n    return {\n      column: normalizeColumnName(clause.column, outputLookup, "Query orderBy"),\n      direction: normalizeQueryOrderDirection(clause.direction)\n    };\n  });\n  if (Array.isArray(plan.select) && plan.select.length > 0) {\n    normalizedOrderBy.forEach((clause) => {\n      if (!dedupedSelectedColumns.some((column) => column.toLowerCase() === clause.column.toLowerCase())) {\n        throw new Error(`Query orderBy column "${clause.column}" must also appear in select for read-only query execution.`);\n      }\n    });\n  }\n  const appliedLimit = Math.min(\n    Math.max(0, Number.isInteger(plan.limit) ? plan.limit : maxRows),\n    maxRows\n  );\n  const filteredRows = normalizedWhere ? applySpreadsheetFilterOperation(inputRows, {\n    id: "query_where_bridge",\n    type: "filter_rows",\n    reason: "Read-only query where clause",\n    ...normalizedWhere.predicates ? { predicates: normalizedWhere.predicates } : {},\n    ...normalizedWhere.groups ? { groups: normalizedWhere.groups } : {}\n  }).data : cloneRows(inputRows);\n  const rowsBeforeProjection = isAggregateQuery ? aggregateRowsForQuery(filteredRows, normalizedGroupBy, normalizedAggregates) : filteredRows;\n  const rowsAfterPostAggregateFilter = normalizedPostAggregateFilter ? applySpreadsheetFilterOperation(rowsBeforeProjection, {\n    id: "query_post_aggregate_bridge",\n    type: "filter_rows",\n    reason: "Read-only query post-aggregate filter",\n    ...normalizedPostAggregateFilter.predicates ? { predicates: normalizedPostAggregateFilter.predicates } : {},\n    ...normalizedPostAggregateFilter.groups ? { groups: normalizedPostAggregateFilter.groups } : {}\n  }).data : rowsBeforeProjection;\n  const projectedRows = rowsAfterPostAggregateFilter.map((row) => {\n    const nextRow = {};\n    dedupedSelectedColumns.forEach((column) => {\n      nextRow[column] = row[column] ?? null;\n    });\n    return nextRow;\n  });\n  const sortedRows = sortQueryRows(projectedRows, normalizedOrderBy);\n  const rows = sortedRows.slice(0, appliedLimit);\n  return {\n    rows,\n    totalMatchedRows: rowsAfterPostAggregateFilter.length,\n    returnedRows: rows.length,\n    truncated: rowsAfterPostAggregateFilter.length > rows.length,\n    selectedColumns: dedupedSelectedColumns,\n    appliedOrderBy: normalizedOrderBy,\n    appliedLimit,\n    durationMs: Date.now() - startedAt\n  };\n};\nconst MONTH_ORDINAL = {\n  jan: 1,\n  january: 1,\n  feb: 2,\n  february: 2,\n  mar: 3,\n  march: 3,\n  apr: 4,\n  april: 4,\n  may: 5,\n  jun: 6,\n  june: 6,\n  jul: 7,\n  july: 7,\n  aug: 8,\n  august: 8,\n  sep: 9,\n  september: 9,\n  oct: 10,\n  october: 10,\n  nov: 11,\n  november: 11,\n  dec: 12,\n  december: 12\n};\nconst PERIOD_VALUE_PATTERN = /^([a-z]+)\\s+(\\d{4})$/i;\nconst parsePeriodValue = (value) => {\n  const match = PERIOD_VALUE_PATTERN.exec(value.trim());\n  if (!match) return null;\n  const monthKey = match[1].toLowerCase();\n  const month = MONTH_ORDINAL[monthKey];\n  if (month === void 0) return null;\n  return { month, year: parseInt(match[2], 10) };\n};\nconst QUARTER_ORDINAL = { q1: 1, q2: 2, q3: 3, q4: 4 };\nconst WEEKDAY_ORDINAL = {\n  mon: 1,\n  monday: 1,\n  tue: 2,\n  tuesday: 2,\n  wed: 3,\n  wednesday: 3,\n  thu: 4,\n  thursday: 4,\n  fri: 5,\n  friday: 5,\n  sat: 6,\n  saturday: 6,\n  sun: 7,\n  sunday: 7\n};\nconst getOrdinalSortKey = (value) => {\n  const lower = value.toLowerCase().trim();\n  const bare = MONTH_ORDINAL[lower] ?? QUARTER_ORDINAL[lower] ?? WEEKDAY_ORDINAL[lower] ?? null;\n  if (bare !== null) return bare;\n  const period = parsePeriodValue(lower);\n  if (period) return period.year * 12 + period.month;\n  return null;\n};\nconst looksLikeDate = (value) => {\n  if (typeof value !== "string" || !value) return false;\n  return !isNaN(new Date(value).getTime()) && /[0-9]{1,4}[-/][0-9]{1,2}[-/][0-9]{1,4}/.test(value);\n};\nconst QUARTER_REGEX = /^Q([1-4])(?:\\s*\\/?\\s*(\'?\\d{2,4}))?$/i;\nconst MONTHS = {\n  "january": 1,\n  "jan": 1,\n  "february": 2,\n  "feb": 2,\n  "march": 3,\n  "mar": 3,\n  "april": 4,\n  "apr": 4,\n  "may": 5,\n  "june": 6,\n  "jun": 6,\n  "july": 7,\n  "jul": 7,\n  "august": 8,\n  "aug": 8,\n  "september": 9,\n  "sep": 9,\n  "october": 10,\n  "oct": 10,\n  "november": 11,\n  "nov": 11,\n  "december": 12,\n  "dec": 12\n};\nconst DAYS = {\n  "monday": 1,\n  "mon": 1,\n  "tuesday": 2,\n  "tue": 2,\n  "wednesday": 3,\n  "wed": 3,\n  "thursday": 4,\n  "thu": 4,\n  "friday": 5,\n  "fri": 5,\n  "saturday": 6,\n  "sat": 6,\n  "sunday": 7,\n  "sun": 7\n};\nconst getChronologicalSortValue = (value, sorter) => {\n  const lowerValue = String(value).toLowerCase().trim();\n  switch (sorter) {\n    case "quarter":\n      const match = lowerValue.match(QUARTER_REGEX);\n      if (match) {\n        const quarter = parseInt(match[1], 10);\n        let year = 0;\n        if (match[2]) {\n          const yearStr = match[2].replace("\'", "");\n          year = parseInt(yearStr, 10);\n          if (yearStr.length === 2) {\n            year += year > 50 ? 1900 : 2e3;\n          }\n        }\n        return year * 10 + quarter;\n      }\n      return Infinity;\n    case "month":\n      return MONTHS[lowerValue] || Infinity;\n    case "day":\n      return DAYS[lowerValue] || Infinity;\n  }\n  return Infinity;\n};\nconst tryChronologicalSort = (data, key) => {\n  if (data.length < 2) return data;\n  const sampleValues = data.slice(0, 10).map((r) => String(r[key]).toLowerCase().trim());\n  let sorter = null;\n  const quarterMatches = sampleValues.filter((v) => QUARTER_REGEX.test(v)).length;\n  const monthMatches = sampleValues.filter((v) => MONTHS[v] !== void 0).length;\n  const dayMatches = sampleValues.filter((v) => DAYS[v] !== void 0).length;\n  const dateMatches = sampleValues.filter(looksLikeDate).length;\n  if (quarterMatches / sampleValues.length >= 0.5) sorter = "quarter";\n  else if (monthMatches / sampleValues.length >= 0.5) sorter = "month";\n  else if (dayMatches / sampleValues.length >= 0.5) sorter = "day";\n  else if (dateMatches / sampleValues.length >= 0.5) {\n    return [...data].sort((a, b) => new Date(String(a[key])).getTime() - new Date(String(b[key])).getTime());\n  }\n  const ordinalMatches = sampleValues.filter((v) => getOrdinalSortKey(v) !== null).length;\n  if (!sorter && ordinalMatches / sampleValues.length >= 0.5) {\n    return [...data].sort((a, b) => {\n      const keyA = getOrdinalSortKey(String(a[key])) ?? Infinity;\n      const keyB = getOrdinalSortKey(String(b[key])) ?? Infinity;\n      return keyA - keyB;\n    });\n  }\n  const numericMatches = sampleValues.filter((v) => v !== "" && isFinite(Number(v))).length;\n  if (numericMatches / sampleValues.length >= 0.5) {\n    return [...data].sort((a, b) => Number(a[key]) - Number(b[key]));\n  }\n  if (sorter) {\n    return [...data].sort((a, b) => {\n      const valA = getChronologicalSortValue(String(a[key]), sorter);\n      const valB = getChronologicalSortValue(String(b[key]), sorter);\n      return valA - valB;\n    });\n  }\n  return null;\n};\nconst getValueCaseInsensitive = (obj, key) => {\n  if (!key || !obj) return void 0;\n  const keyLower = key.toLowerCase();\n  const foundKey = Object.keys(obj).find((k) => k.toLowerCase() === keyLower);\n  if (!foundKey) return void 0;\n  const value = obj[foundKey];\n  return typeof value === "string" || typeof value === "number" ? value : void 0;\n};\nconst calculateAggregation = (values, aggregation) => {\n  if (values.length === 0) return 0;\n  switch (aggregation) {\n    case "sum":\n      return values.reduce((acc, val) => acc + val, 0);\n    case "count":\n      return values.length;\n    case "avg":\n      const sum = values.reduce((acc, val) => acc + val, 0);\n      return sum / values.length;\n  }\n};\nconst PRE_FILTER_OPERATORS = [\n  "eq",\n  "neq",\n  "gt",\n  "gte",\n  "lt",\n  "lte",\n  "between",\n  "contains",\n  "starts_with",\n  "ends_with",\n  "in",\n  "not_in"\n];\nnew Set(PRE_FILTER_OPERATORS);\nconst toLowerText = (value) => String(value ?? "").trim().toLowerCase();\nconst compareNumeric = (rowValue, value, comparator) => {\n  const actual = robustParseFloat(rowValue);\n  const expected = robustParseFloat(value);\n  if (actual === null || expected === null) {\n    return false;\n  }\n  return comparator(actual, expected);\n};\nconst applyPreFilter = (rowValue, operator, value) => {\n  const actual = toLowerText(rowValue);\n  const expected = Array.isArray(value) ? value.map(toLowerText) : [toLowerText(value)];\n  switch (operator) {\n    case "in":\n      return expected.includes(actual);\n    case "not_in":\n      return !expected.includes(actual);\n    case "contains":\n      return actual.includes(expected[0] ?? "");\n    case "starts_with":\n      return actual.startsWith(expected[0] ?? "");\n    case "ends_with":\n      return actual.endsWith(expected[0] ?? "");\n    case "neq":\n      return actual !== (expected[0] ?? "");\n    case "gt":\n      return compareNumeric(rowValue, Array.isArray(value) ? value[0] : value, (left, right) => left > right);\n    case "gte":\n      return compareNumeric(rowValue, Array.isArray(value) ? value[0] : value, (left, right) => left >= right);\n    case "lt":\n      return compareNumeric(rowValue, Array.isArray(value) ? value[0] : value, (left, right) => left < right);\n    case "lte":\n      return compareNumeric(rowValue, Array.isArray(value) ? value[0] : value, (left, right) => left <= right);\n    case "between": {\n      const [lower, upper] = Array.isArray(value) ? value : [];\n      const actualNumber = robustParseFloat(rowValue);\n      const lowerNumber = robustParseFloat(lower);\n      const upperNumber = robustParseFloat(upper);\n      if (actualNumber === null || lowerNumber === null || upperNumber === null) {\n        return false;\n      }\n      return actualNumber >= lowerNumber && actualNumber <= upperNumber;\n    }\n    case "eq":\n    default:\n      return actual === (expected[0] ?? "");\n  }\n};\nconst executeAggregationCore = (data, spec) => {\n  let dataToProcess = data.data;\n  if (spec.preFilter) {\n    spec.preFilter.forEach((filter) => {\n      if (filter && typeof filter === "object" && filter.column && filter.value !== void 0) {\n        dataToProcess = dataToProcess.filter((row) => {\n          const rowValue = getValueCaseInsensitive(row, filter.column);\n          return applyPreFilter(rowValue, filter.operator || "eq", filter.value);\n        });\n      }\n    });\n  }\n  if (spec._internal_groupByColumns && spec.groupByColumn) {\n    const originalGroupColumns = spec._internal_groupByColumns;\n    const compositeKey = spec.groupByColumn;\n    dataToProcess = dataToProcess.map((row) => ({\n      ...row,\n      [compositeKey]: originalGroupColumns.map((col) => getValueCaseInsensitive(row, col)).join(" - ")\n    }));\n  }\n  if (spec.chartType === "combo" && spec.secondaryValueColumn && spec.secondaryAggregation) {\n    const { groupByColumn: groupByColumn2, valueColumn: valueColumn2, aggregation: aggregation2, secondaryValueColumn, secondaryAggregation } = spec;\n    const groups2 = {};\n    dataToProcess.forEach((row) => {\n      const groupKey = String(getValueCaseInsensitive(row, groupByColumn2));\n      if (groupKey === "undefined" || groupKey === "null") return;\n      if (!groups2[groupKey]) {\n        groups2[groupKey] = { primaryValues: [], secondaryValues: [] };\n      }\n      const primaryValue = robustParseFloat(getValueCaseInsensitive(row, valueColumn2));\n      if (primaryValue !== null) {\n        groups2[groupKey].primaryValues.push(primaryValue);\n      }\n      const secondaryValue = robustParseFloat(getValueCaseInsensitive(row, secondaryValueColumn));\n      if (secondaryValue !== null) {\n        groups2[groupKey].secondaryValues.push(secondaryValue);\n      }\n    });\n    const aggregatedResult2 = Object.keys(groups2).filter((key) => groups2[key].primaryValues.length > 0 || groups2[key].secondaryValues.length > 0).map((key) => ({\n      [groupByColumn2]: key,\n      [valueColumn2]: calculateAggregation(groups2[key].primaryValues, aggregation2),\n      [secondaryValueColumn]: calculateAggregation(groups2[key].secondaryValues, secondaryAggregation)\n    }));\n    const chronologicallySorted2 = tryChronologicalSort(aggregatedResult2, groupByColumn2);\n    return chronologicallySorted2 || aggregatedResult2.sort(\n      (a, b) => (Number(getValueCaseInsensitive(b, valueColumn2)) || 0) - (Number(getValueCaseInsensitive(a, valueColumn2)) || 0)\n    );\n  }\n  const { groupByColumn, aggregation } = spec;\n  const { valueColumn } = spec;\n  const groups = {};\n  dataToProcess.forEach((row) => {\n    const groupKey = String(getValueCaseInsensitive(row, groupByColumn));\n    if (groupKey === "undefined" || groupKey === "null") return;\n    if (!groups[groupKey]) groups[groupKey] = [];\n    if (valueColumn) {\n      const value = robustParseFloat(getValueCaseInsensitive(row, valueColumn));\n      if (value !== null) groups[groupKey].push(value);\n    } else if (aggregation === "count") {\n      groups[groupKey].push(1);\n    }\n  });\n  const finalValueColumn = valueColumn || "count";\n  const aggregatedResult = Object.keys(groups).filter((key) => groups[key].length > 0).map((key) => ({\n    [groupByColumn]: key,\n    [finalValueColumn]: calculateAggregation(groups[key], aggregation)\n  }));\n  const chronologicallySorted = tryChronologicalSort(aggregatedResult, groupByColumn);\n  return chronologicallySorted || aggregatedResult.sort(\n    (a, b) => (Number(getValueCaseInsensitive(b, finalValueColumn)) || 0) - (Number(getValueCaseInsensitive(a, finalValueColumn)) || 0)\n  );\n};\nconst NUMERIC_PROFILE_TYPES = /* @__PURE__ */ new Set(["numerical", "currency", "percentage"]);\nconst FINGERPRINT_PRECISION = 12;\nconst UNNAMED_COLUMN_PATTERN = /^_unnamed_column_/i;\nconst DESCRIPTOR_HIGH_CONFIDENCE_PATTERN = /\\b(description|name|label|category|brand|customer|vendor|supplier|item|stock[ _-]?code|document)\\b/i;\nconst DESCRIPTOR_WEAK_PATTERN = /\\b(code|number|account|acct)\\b/i;\nconst UNIT_MIXED_COLUMN_PATTERN = /\\b(uom|unit|pcs|ea|nos|kg|ltr|litre|pair|pack|box|roll)\\b/i;\nconst roundNumeric = (value) => Number(value.toFixed(FINGERPRINT_PRECISION));\nconst fingerprintEquals = (expected, actual) => expected.parsedCount === actual.parsedCount && expected.zeroCount === actual.zeroCount && expected.negativeCount === actual.negativeCount && roundNumeric(expected.sum) === roundNumeric(actual.sum) && roundNumeric(expected.absoluteSum) === roundNumeric(actual.absoluteSum) && roundNumeric(expected.min ?? 0) === roundNumeric(actual.min ?? 0) && roundNumeric(expected.max ?? 0) === roundNumeric(actual.max ?? 0);\nconst buildFingerprint = (column, rows) => {\n  let parsedCount = 0;\n  let nullCount = 0;\n  let blankCount = 0;\n  let zeroCount = 0;\n  let negativeCount = 0;\n  let sum = 0;\n  let absoluteSum = 0;\n  let min = null;\n  let max = null;\n  const distinct = /* @__PURE__ */ new Set();\n  for (const row of rows) {\n    const rawValue = row[column];\n    if (rawValue === null || rawValue === void 0) {\n      nullCount += 1;\n      continue;\n    }\n    if (typeof rawValue === "string" && rawValue.trim() === "") {\n      blankCount += 1;\n      continue;\n    }\n    const parsed = robustParseFloat(rawValue);\n    if (parsed === null) {\n      continue;\n    }\n    parsedCount += 1;\n    sum += parsed;\n    absoluteSum += Math.abs(parsed);\n    if (parsed === 0) zeroCount += 1;\n    if (parsed < 0) negativeCount += 1;\n    min = min === null ? parsed : Math.min(min, parsed);\n    max = max === null ? parsed : Math.max(max, parsed);\n    distinct.add(String(roundNumeric(parsed)));\n  }\n  const nonBlankCount = rows.length - nullCount - blankCount;\n  return {\n    column,\n    parsedCount,\n    parseRate: nonBlankCount > 0 ? roundNumeric(parsedCount / nonBlankCount) : 0,\n    nullCount,\n    blankCount,\n    zeroCount,\n    negativeCount,\n    min: min === null ? null : roundNumeric(min),\n    max: max === null ? null : roundNumeric(max),\n    sum: roundNumeric(sum),\n    absoluteSum: roundNumeric(absoluteSum),\n    distinctCount: distinct.size\n  };\n};\nconst buildFingerprintMap = (fingerprints) => new Map(fingerprints.map((fingerprint) => [fingerprint.column.toLowerCase(), fingerprint]));\nconst collectRowsForToken = (rows, column, token) => rows.filter((row) => String(row[column] ?? "") === token);\nconst buildDestructiveImpact = (step, beforeRows, afterRows, beforeFingerprints, afterFingerprints) => {\n  const afterMap = buildFingerprintMap(afterFingerprints);\n  return {\n    stepId: step.id,\n    rowsRemoved: Math.max(0, beforeRows.length - afterRows.length),\n    affectedColumns: beforeFingerprints.map((fingerprint) => {\n      const after = afterMap.get(fingerprint.column.toLowerCase());\n      return {\n        column: fingerprint.column,\n        sumDelta: roundNumeric(((after == null ? void 0 : after.sum) ?? 0) - fingerprint.sum),\n        absoluteSumDelta: roundNumeric(((after == null ? void 0 : after.absoluteSum) ?? 0) - fingerprint.absoluteSum),\n        parsedCountDelta: ((after == null ? void 0 : after.parsedCount) ?? 0) - fingerprint.parsedCount\n      };\n    }).filter((entry) => entry.sumDelta !== 0 || entry.absoluteSumDelta !== 0 || entry.parsedCountDelta !== 0)\n  };\n};\nconst getRenameMappings = (step) => {\n  const mappings = /* @__PURE__ */ new Map();\n  step.operations.forEach((operation) => {\n    if (operation.type !== "rename_columns") return;\n    operation.mappings.forEach((mapping) => {\n      if (mapping.from.trim() && mapping.to.trim()) {\n        mappings.set(mapping.from.toLowerCase(), mapping.to);\n      }\n    });\n  });\n  return mappings;\n};\nconst resolveUnpivotToken = (sourceColumn, operation) => {\n  var _a;\n  if (operation.sourceColumnNameColumn) {\n    return sourceColumn;\n  }\n  const directMapping = (_a = operation.labelMappings) == null ? void 0 : _a.find((mapping) => mapping.sourceColumn === sourceColumn);\n  if (directMapping) {\n    return String(directMapping.label ?? "");\n  }\n  for (const labelColumn of operation.labelColumns ?? []) {\n    const labelMapping = labelColumn.mappings.find((mapping) => mapping.sourceColumn === sourceColumn);\n    if (labelMapping) {\n      return String(labelMapping.label ?? "");\n    }\n  }\n  return sourceColumn;\n};\nconst DATE_COMPONENT_PATTERN = /\\b(date|day|month|year|time|period|week|quarter|yr|mo|dt)\\b/i;\nconst isLikelyDateComponent = (column, fingerprint) => {\n  if (!DATE_COMPONENT_PATTERN.test(column)) return false;\n  if (fingerprint.min !== null && fingerprint.max !== null) {\n    const isDay = fingerprint.min >= 1 && fingerprint.max <= 31;\n    const isMonth = fingerprint.min >= 1 && fingerprint.max <= 12;\n    const isYear = fingerprint.min >= 1900 && fingerprint.max <= 2100;\n    if (isDay || isMonth || isYear) return true;\n  }\n  return false;\n};\nconst isAmbiguousNumericColumn = (column, declaredType) => {\n  if (UNNAMED_COLUMN_PATTERN.test(column)) return true;\n  if (DESCRIPTOR_HIGH_CONFIDENCE_PATTERN.test(column)) return true;\n  if (UNIT_MIXED_COLUMN_PATTERN.test(column)) return true;\n  if (DESCRIPTOR_WEAK_PATTERN.test(column) && (!declaredType || !NUMERIC_PROFILE_TYPES.has(declaredType))) {\n    return true;\n  }\n  return false;\n};\nconst collectNumericFingerprints = (rows, profiles) => {\n  if (!Array.isArray(rows) || rows.length === 0) return [];\n  const columns = /* @__PURE__ */ new Set();\n  rows.forEach((row) => Object.keys(row ?? {}).forEach((column) => columns.add(column)));\n  const profileMap = new Map((profiles ?? []).map((profile) => [profile.name.toLowerCase(), profile.type]));\n  return [...columns].map((column) => buildFingerprint(column, rows)).filter((fingerprint) => {\n    if (isStructuralMetadataColumn(fingerprint.column)) {\n      return false;\n    }\n    if (isLikelyDateComponent(fingerprint.column, fingerprint)) {\n      return false;\n    }\n    const declaredType = profileMap.get(fingerprint.column.toLowerCase());\n    if (isAmbiguousNumericColumn(fingerprint.column, declaredType ?? void 0)) {\n      return false;\n    }\n    if (declaredType && NUMERIC_PROFILE_TYPES.has(declaredType)) {\n      return fingerprint.parsedCount > 0 && fingerprint.parseRate >= 0.75;\n    }\n    if (UNNAMED_COLUMN_PATTERN.test(fingerprint.column)) {\n      return false;\n    }\n    if (declaredType && !NUMERIC_PROFILE_TYPES.has(declaredType)) {\n      return false;\n    }\n    return false;\n  });\n};\nconst reconcileAiCleaningStep = (step, beforeRows, afterRows, profiles) => {\n  const beforeFingerprints = collectNumericFingerprints(beforeRows, profiles);\n  const afterFingerprints = collectNumericFingerprints(afterRows, profiles);\n  const failures = [];\n  if (step.mode === "reshape") {\n    const unpivotOperation = step.operations.find((operation) => operation.type === "unpivot_columns");\n    if (!unpivotOperation) {\n      failures.push({\n        stepId: step.id,\n        column: "*",\n        reason: "unsupported_reshape",\n        detail: "Only unpivot-based reshape steps are currently supported for deterministic numeric reconciliation."\n      });\n    } else {\n      const metricColumn = unpivotOperation.valueColumn;\n      for (const sourceColumn of unpivotOperation.sourceColumns) {\n        const expected = beforeFingerprints.find((fingerprint) => fingerprint.column === sourceColumn);\n        if (!expected) continue;\n        const discriminatorColumn = unpivotOperation.sourceColumnNameColumn ?? unpivotOperation.keyColumn;\n        const token = resolveUnpivotToken(sourceColumn, unpivotOperation);\n        if (!token) {\n          failures.push({\n            stepId: step.id,\n            column: sourceColumn,\n            reason: "unsupported_reshape",\n            detail: `Unable to resolve a source token for "${sourceColumn}".`\n          });\n          continue;\n        }\n        const bucketRows = collectRowsForToken(afterRows, discriminatorColumn, token).map((row) => ({ [metricColumn]: row[metricColumn] }));\n        const actual = buildFingerprint(metricColumn, bucketRows);\n        if (!fingerprintEquals(expected, { ...actual })) {\n          failures.push({\n            stepId: step.id,\n            column: sourceColumn,\n            reason: "numeric_mismatch",\n            expected,\n            actual: {\n              ...actual,\n              column: sourceColumn\n            },\n            detail: `Reshape step changed the numeric total for source column "${sourceColumn}".`\n          });\n        }\n      }\n    }\n    return {\n      stepId: step.id,\n      mode: step.mode,\n      passed: failures.length === 0,\n      failures\n    };\n  }\n  if (step.mode === "destructive") {\n    const destructiveImpact = buildDestructiveImpact(step, beforeRows, afterRows, beforeFingerprints, afterFingerprints);\n    return {\n      stepId: step.id,\n      mode: step.mode,\n      passed: true,\n      failures,\n      destructiveImpact\n    };\n  }\n  const renameMappings = getRenameMappings(step);\n  const afterMap = buildFingerprintMap(afterFingerprints);\n  for (const expected of beforeFingerprints) {\n    const targetColumn = renameMappings.get(expected.column.toLowerCase()) ?? expected.column;\n    const actual = afterMap.get(targetColumn.toLowerCase());\n    if (!actual) {\n      failures.push({\n        stepId: step.id,\n        column: expected.column,\n        reason: "missing_after_lossless",\n        expected,\n        detail: `Lossless step removed numeric column "${expected.column}".`\n      });\n      continue;\n    }\n    if (!fingerprintEquals(expected, actual)) {\n      failures.push({\n        stepId: step.id,\n        column: expected.column,\n        reason: "numeric_mismatch",\n        expected,\n        actual,\n        detail: `Lossless step changed numeric values for "${expected.column}".`\n      });\n    }\n  }\n  return {\n    stepId: step.id,\n    mode: step.mode,\n    passed: failures.length === 0,\n    failures\n  };\n};\nconst buildNumericReconciliationReport = (baselineRows, finalRows, stepReports, profiles) => {\n  const failures = stepReports.flatMap((report) => report.failures);\n  const destructiveImpacts = stepReports.map((report) => report.destructiveImpact).filter((impact) => Boolean(impact));\n  return {\n    passed: failures.length === 0,\n    baselineFingerprints: collectNumericFingerprints(baselineRows, profiles),\n    finalFingerprints: collectNumericFingerprints(finalRows, profiles),\n    steps: stepReports,\n    failures,\n    destructiveImpacts\n  };\n};\nconst normalizeNumericProfiles = (profiles) => profiles == null ? void 0 : profiles.map((profile) => ({\n  name: profile.name,\n  type: profile.type,\n  uniqueValues: profile.uniqueValues ?? 0,\n  missingPercentage: profile.missingPercentage ?? 0,\n  valueRange: profile.valueRange ?? [0, 0]\n}));\nconst executeAiCleaningProgram = (inputRows, program, profiles) => {\n  let currentRows = inputRows.map((row) => ({ ...row }));\n  const allLogs = [];\n  const stepReports = [];\n  const normalizedProfiles = normalizeNumericProfiles(profiles);\n  for (const step of program.steps) {\n    const beforeRows = currentRows.map((row) => ({ ...row }));\n    const execution = applyDataOperations(beforeRows, step.operations, { allowEmptyResult: false });\n    const stepReport = reconcileAiCleaningStep(step, beforeRows, execution.data, normalizedProfiles);\n    stepReports.push(stepReport);\n    currentRows = execution.data.map((row) => ({ ...row }));\n    allLogs.push(...execution.logs);\n  }\n  const numericReconciliation = buildNumericReconciliationReport(\n    inputRows,\n    currentRows,\n    stepReports,\n    normalizedProfiles\n  );\n  const beforeProfiles = buildSchemaSnapshot(profileData(inputRows).profiles);\n  const afterProfiles = buildSchemaSnapshot(profileData(currentRows).profiles);\n  return {\n    data: currentRows,\n    logs: allLogs,\n    program,\n    numericReconciliation,\n    schemaDiff: diffSchemas(beforeProfiles, afterProfiles)\n  };\n};\nconst ctx = self;\nctx.onmessage = (event) => {\n  const { id, task, payload } = event.data;\n  const taskStart = Date.now();\n  try {\n    let result;\n    if (task === "profileData") {\n      result = profileData(payload.rows);\n    } else if (task === "executeAggregation") {\n      result = executeAggregationCore(payload.data, payload.spec);\n    } else if (task === "executeDataQuery") {\n      result = executeDataQuery(payload.rows, payload.plan, payload.options);\n    } else if (task === "executeAiCleaningProgram") {\n      result = executeAiCleaningProgram(\n        payload.rows,\n        payload.program,\n        payload.profiles\n      );\n    } else if (task === "ping") {\n      result = { pong: true };\n    } else {\n      throw new Error(`Unknown task: ${task}`);\n    }\n    const taskMs = Date.now() - taskStart;\n    if (taskMs > 50) {\n      console.warn(\n        `[DataWorker] ⚠ Slow task \'${task}\': ${taskMs}ms (id=${id})`\n      );\n    }\n    const response = { id, success: true, result };\n    ctx.postMessage(response);\n  } catch (error) {\n    const taskMs = Date.now() - taskStart;\n    console.warn(`[DataWorker] ⚠ Failed task \'${task}\': ${taskMs}ms (id=${id})`, error);\n    const response = {\n      id,\n      success: false,\n      error: error instanceof Error ? error.message : String(error)\n    };\n    ctx.postMessage(response);\n  }\n};\n';
+const jsContent = 'const STRUCTURAL_METADATA_COLUMNS = [\n  "RowClass",\n  "RowRole",\n  "ResolvedRowRole",\n  "HierarchyDepth",\n  "SourceRowIndex"\n];\nconst STRUCTURAL_METADATA_LOOKUP = new Set(\n  STRUCTURAL_METADATA_COLUMNS.map((column) => column.toLowerCase())\n);\nconst normalizeColumnName$2 = (value) => value.trim().replace(/\\s+/g, " ").toLowerCase();\nconst isStructuralMetadataColumn = (name) => STRUCTURAL_METADATA_LOOKUP.has(normalizeColumnName$2(name));\nconst normalizeColumnName$1 = (value) => value.trim().replace(/\\s+/g, " ").toLowerCase();\nconst collectOrderedColumnNames = (rows, preferredOrder) => {\n  const ordered = [];\n  const seen = /* @__PURE__ */ new Set();\n  const push = (column) => {\n    if (typeof column !== "string" || column.trim().length === 0) {\n      return;\n    }\n    const normalized = normalizeColumnName$1(column);\n    if (seen.has(normalized)) {\n      return;\n    }\n    seen.add(normalized);\n    ordered.push(column);\n  };\n  [].forEach(push);\n  (rows ?? []).forEach((row) => {\n    Object.keys(row ?? {}).forEach(push);\n  });\n  return ordered;\n};\nconst robustParseFloat = (value) => {\n  if (value === null || value === void 0) return null;\n  let s = String(value).trim();\n  if (s === "") return null;\n  if (s.startsWith("\'") || s.startsWith("‘") || s.startsWith("’")) {\n    s = s.substring(1);\n    if (s === "") return null;\n  }\n  let isNegative = false;\n  if (s.startsWith("(") && s.endsWith(")")) {\n    s = s.substring(1, s.length - 1);\n    isNegative = true;\n  }\n  s = s.replace(/[$\\s€£¥%]/g, "");\n  const lastComma = s.lastIndexOf(",");\n  const lastDot = s.lastIndexOf(".");\n  if (lastComma > lastDot) {\n    s = s.replace(/\\./g, "").replace(",", ".");\n  } else {\n    s = s.replace(/,/g, "");\n  }\n  const num = parseFloat(s);\n  if (isNaN(num)) {\n    return null;\n  }\n  if (!Number.isFinite(Number(s))) {\n    return null;\n  }\n  return isNegative ? -num : num;\n};\nconst profileData = (data) => {\n  if (!data || data.length === 0) return { profiles: [], issues: [] };\n  const headers = collectOrderedColumnNames(data);\n  const profiles = [];\n  const issues = [];\n  const MISSING_VALUE_THRESHOLD = 0.5;\n  for (const header of headers) {\n    let isNumerical = true;\n    const values = data.map((row) => row[header]);\n    let numericCount = 0;\n    for (const value of values) {\n      const parsedNum = robustParseFloat(value);\n      if (value !== null && String(value).trim() !== "") {\n        if (parsedNum === null) {\n          isNumerical = false;\n          break;\n        }\n        numericCount++;\n      }\n    }\n    const missingPercentage = values.filter((v) => v === null || String(v).trim() === "").length / data.length;\n    if (missingPercentage > MISSING_VALUE_THRESHOLD) {\n      issues.push(`Column \'${header}\' has a high percentage of missing values (${(missingPercentage * 100).toFixed(0)}%).`);\n    }\n    if (isNumerical && numericCount > 0) {\n      const numericValues = values.map(robustParseFloat).filter((v) => v !== null);\n      const COMMA_THOUSANDS_PATTERN = /\\d{1,3}(,\\d{3})+/;\n      const hasFormattedNumbers = values.some((v) => {\n        const s = String(v ?? "").trim();\n        return s !== "" && COMMA_THOUSANDS_PATTERN.test(s);\n      });\n      const APOSTROPHE_PREFIX_PATTERN = /^[\'\\u2018\\u2019]/;\n      const hasApostrophePrefixedNumbers = values.some((v) => {\n        const s = String(v ?? "").trim();\n        return s !== "" && APOSTROPHE_PREFIX_PATTERN.test(s);\n      });\n      profiles.push({\n        name: header,\n        type: "numerical",\n        valueRange: [Math.min(...numericValues), Math.max(...numericValues)],\n        missingPercentage: missingPercentage * 100,\n        ...hasFormattedNumbers ? { hasFormattedNumbers: true } : {},\n        ...hasApostrophePrefixedNumbers ? { hasApostrophePrefixedNumbers: true } : {}\n      });\n      if (hasFormattedNumbers) {\n        issues.push(`Column \'${header}\' contains comma-formatted numbers (e.g. \'1,234.56\'). Strip commas with replace_values before casting to avoid SQL type errors.`);\n      }\n      if (hasApostrophePrefixedNumbers) {\n        issues.push(`Column \'${header}\' contains apostrophe-prefixed numbers (e.g. "\'-852.81"). Strip leading apostrophes with replace_values before casting to avoid SQL type errors.`);\n      }\n    } else {\n      const uniqueValues = new Set(values.map(String));\n      profiles.push({\n        name: header,\n        type: "categorical",\n        uniqueValues: uniqueValues.size,\n        missingPercentage: missingPercentage * 100\n      });\n    }\n  }\n  return { profiles, issues };\n};\nconst buildSchemaSnapshot = (profiles) => {\n  return profiles.map((profile) => ({\n    name: profile.name,\n    type: profile.type,\n    uniqueValues: profile.uniqueValues,\n    missingPercentage: profile.missingPercentage,\n    valueRange: profile.valueRange\n  }));\n};\nconst diffSchemas = (before, after) => {\n  const beforeMap = new Map(before.map((col) => [col.name.toLowerCase(), col]));\n  const afterMap = new Map(after.map((col) => [col.name.toLowerCase(), col]));\n  const addedColumns = after.filter((col) => !beforeMap.has(col.name.toLowerCase())).map((col) => ({ name: col.name, type: col.type }));\n  const removedColumns = before.filter((col) => !afterMap.has(col.name.toLowerCase())).map((col) => ({ name: col.name, type: col.type }));\n  const changedColumns = after.filter((col) => {\n    const previous = beforeMap.get(col.name.toLowerCase());\n    return previous && previous.type !== col.type;\n  }).map((col) => {\n    var _a;\n    return { name: col.name, before: (_a = beforeMap.get(col.name.toLowerCase())) == null ? void 0 : _a.type, after: col.type };\n  });\n  return { addedColumns, removedColumns, changedColumns };\n};\nconst CODE_LIKE_PATTERN = /^(?:\\d{4,8}|[A-Z]{2,}(?:[_-][A-Z0-9]+)*)$/;\nconst PLACEHOLDER_PATTERN = /^_?unnamed(?:_column)?(?:_\\d+)?$/i;\nconst FOOTER_PATTERN = /\\b(?:reporting date|reporting currency|printed by|generated on)\\b|\\d{2}-\\d{2}-\\d{4}@/i;\nconst SUMMARY_LABEL_PATTERN = /^(?:total|subtotal|grand[ _-]?total|net[ _-]?total)$/i;\nconst SUBTOTAL_ROW_PATTERN = /^(?:subtotal)$/i;\nconst TOTAL_ROW_PATTERN = /^(?:total|grand total|net(?: [a-z]+)?|balance)$/i;\nconst SUMMARY_TOKEN_PATTERN = /(?:^|[\\s>_:-])(sub\\s*total|subtotal|grand\\s*total|total|balance|summary|net\\s*total)(?:$|[\\s>_:-])/i;\nconst getRows = (data) => (data == null ? void 0 : data.data) ?? [];\nconst getColumns$1 = (data) => {\n  var _a;\n  return ((_a = data == null ? void 0 : data.data) == null ? void 0 : _a[0]) ? Object.keys(data.data[0]) : [];\n};\nconst getRowCells = (row) => Object.entries(row ?? {}).map(([columnKey, rawValue], columnIndex) => ({\n  columnKey,\n  columnIndex,\n  value: String(rawValue ?? "").trim()\n}));\nconst getRowValues = (row) => getRowCells(row).map((cell) => cell.value);\nconst getNonEmptyValues = (row) => getRowValues(row).filter(Boolean);\nconst isNumericLike = (value) => /^-?\\d[\\d,]*(?:\\.\\d+)?$/.test(value.trim());\nconst isCodeLike = (value) => CODE_LIKE_PATTERN.test(value.trim());\nconst isSummaryLike = (value) => SUMMARY_LABEL_PATTERN.test(value.trim());\nconst isDescriptorLike = (value) => {\n  const trimmed = value.trim();\n  return trimmed.length >= 2 && /[A-Za-z]/.test(trimmed) && !isCodeLike(trimmed) && !isSummaryLike(trimmed) && !isNumericLike(trimmed);\n};\nconst isBlankRow$1 = (row) => getNonEmptyValues(row).length === 0;\nconst isStructuralFooterRow = (row) => {\n  const values = getNonEmptyValues(row);\n  if (values.length === 0) return false;\n  if (values.length === 1 && values[0].length >= 24) return true;\n  if (values.length <= 2 && values.some((v) => /\\d{2}[-/]\\d{2}[-/]\\d{4}/.test(v))) return true;\n  return false;\n};\nconst isFooterLikeRow = (row) => isStructuralFooterRow(row) || FOOTER_PATTERN.test(getNonEmptyValues(row).join(" | "));\nconst getDescriptorPriority = (column) => {\n  const normalized = column.trim().toLowerCase();\n  if (/\\b(?:code|id)\\b/.test(normalized)) return 0;\n  if (/\\b(?:description|name|label)\\b/.test(normalized)) return 1;\n  return 2;\n};\nconst sortDescriptorColumns = (columns) => [...columns].sort(\n  (left, right) => getDescriptorPriority(left) - getDescriptorPriority(right) || left.localeCompare(right)\n);\nconst clamp01 = (value) => Math.max(0, Math.min(1, value));\nconst roundRatio = (value) => Number(clamp01(value).toFixed(4));\nconst SUMMARY_TEXT_HINT_PATTERN = /\\b(?:grand total|subtotal|total|net|balance|variance|delta|allocated|allocation|consolidated|rollup|shared cost|ytd|mtd|qtd)\\b/i;\nconst PERIOD_SCENARIO_SERIES_PATTERN = /^(?:fy\\d{2,4}|q[1-4](?:[-_ ]?\\d{2,4})?|\\d{4}|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|actual|budget|forecast|plan|target|variance)$/i;\nconst isPeriodScenarioSeries = (value) => PERIOD_SCENARIO_SERIES_PATTERN.test(value.trim());\nconst isSummaryTextLike = (value) => SUMMARY_TEXT_HINT_PATTERN.test(value.trim());\nconst classifySummaryKind = (value) => {\n  const normalized = value.trim().toLowerCase();\n  if (/total|subtotal|grand total/.test(normalized)) return "total";\n  if (/variance|delta/.test(normalized)) return "comparison";\n  if (/allocated|allocation|shared/.test(normalized)) return "allocation";\n  if (/consolidated|rollup|balance/.test(normalized)) return "rollup";\n  if (/net|margin/.test(normalized)) return "derived_metric";\n  return "unknown";\n};\nconst getNumericValue = (value) => robustParseFloat(value);\nconst getAggregateConsistencyScore = (rows, detailSeriesIndexes, candidateIndex) => {\n  const scoredRows = rows.map((row) => {\n    var _a;\n    const cells = getRowCells(row);\n    const candidateValue = getNumericValue(((_a = cells[candidateIndex]) == null ? void 0 : _a.value) ?? null);\n    if (candidateValue === null) return null;\n    const detailValues = detailSeriesIndexes.map((index) => {\n      var _a2;\n      return getNumericValue(((_a2 = cells[index]) == null ? void 0 : _a2.value) ?? null);\n    }).filter((value) => value !== null);\n    if (detailValues.length < 3) return null;\n    const absoluteDetailTotal = detailValues.reduce((sum, value) => sum + Math.abs(value), 0);\n    if (absoluteDetailTotal === 0) return null;\n    const ratio = Math.abs(candidateValue) / absoluteDetailTotal;\n    return ratio >= 0.2 && ratio <= 1.25 ? 1 : ratio <= 1.75 ? 0.6 : 0;\n  }).filter((value) => value !== null);\n  if (scoredRows.length === 0) return 0;\n  return roundRatio(scoredRows.reduce((sum, value) => sum + value, 0) / scoredRows.length);\n};\nconst scoreSummarySeriesCandidates = ({\n  rows,\n  headerRowIndex,\n  detailSeriesIndexes,\n  candidateIndexes\n}) => {\n  if (candidateIndexes.length === 0) return [];\n  const headerCells = getRowCells(rows[headerRowIndex]);\n  const bodyRows = rows.slice(headerRowIndex + 1).filter((row) => getRowCells(row).some((cell) => isNumericLike(cell.value)));\n  return candidateIndexes.map((index) => {\n    var _a;\n    const columnName = ((_a = headerCells[index]) == null ? void 0 : _a.value) ?? "";\n    if (!columnName) return null;\n    const textScore = isSummaryTextLike(columnName) ? 0.58 : 0;\n    const positionScore = index > Math.max(...detailSeriesIndexes, -1) ? 0.14 : 0;\n    const codePenalty = isCodeLike(columnName) ? -0.25 : 0;\n    const aggregateConsistency = getAggregateConsistencyScore(bodyRows, detailSeriesIndexes, index);\n    const confidence = roundRatio(Math.max(0, textScore + positionScore + aggregateConsistency * 0.34 + codePenalty));\n    if (confidence < 0.42) return null;\n    return {\n      columnName,\n      summaryKind: classifySummaryKind(columnName),\n      confidence\n    };\n  }).filter((candidate) => Boolean(candidate));\n};\nconst MAX_SERIES_LABEL_LAYERS = 3;\nconst isReportTitleRow = (row) => {\n  const values = getNonEmptyValues(row);\n  return values.length > 0 && values.length <= 2 && values.join(" ").length >= 20;\n};\nconst isMetadataRow = (row) => {\n  const values = getNonEmptyValues(row);\n  return values.length > 0 && values.length <= 2 && (values.join(" ").length >= 30 || values.some((v) => /\\d{2}[-/]\\d{2}[-/]\\d{4}/.test(v)) || values.some((v) => v.includes(":")));\n};\nconst isDetailSeriesHeader = (value) => isCodeLike(value) || /^[A-Za-z]{1,4}\\d{1,4}$/.test(value) || isPeriodScenarioSeries(value);\nconst detectHeaderLayoutCandidate = (rows, rowIndex) => {\n  const row = rows[rowIndex];\n  const cells = getRowCells(row);\n  if (cells.length < 5) return null;\n  const descriptorColumns = [];\n  const descriptorColumnIndexes = [];\n  const detailSeriesColumns = [];\n  const detailSeriesIndexes = [];\n  const trailingCandidateIndexes = [];\n  let seenSeries = false;\n  for (const cell of cells) {\n    if (!cell.value) {\n      if (!seenSeries) continue;\n      continue;\n    }\n    if (!seenSeries && (isDescriptorLike(cell.value) && !isDetailSeriesHeader(cell.value) || descriptorColumns.length < 3 && !isDetailSeriesHeader(cell.value) && !isNumericLike(cell.value) && !isSummaryLike(cell.value))) {\n      descriptorColumns.push(cell.value);\n      descriptorColumnIndexes.push(cell.columnIndex);\n      continue;\n    }\n    seenSeries = true;\n    const codeHeavyDetailBlock = detailSeriesColumns.length >= 3 && detailSeriesColumns.filter((column) => isCodeLike(column)).length / detailSeriesColumns.length >= 0.75;\n    if (isPeriodScenarioSeries(cell.value) && codeHeavyDetailBlock) {\n      trailingCandidateIndexes.push(cell.columnIndex);\n      continue;\n    }\n    if (isDetailSeriesHeader(cell.value)) {\n      detailSeriesColumns.push(cell.value);\n      detailSeriesIndexes.push(cell.columnIndex);\n      continue;\n    }\n    if (descriptorColumns.length === 0) {\n      return null;\n    }\n    if (detailSeriesColumns.length >= 2 && isSummaryLike(cell.value) || detailSeriesColumns.length >= 4 && (isDescriptorLike(cell.value) || /\\w/.test(cell.value))) {\n      trailingCandidateIndexes.push(cell.columnIndex);\n    }\n  }\n  const minimumDetailSeries = rows.length >= 8 && trailingCandidateIndexes.length === 0 ? 3 : 2;\n  if (descriptorColumns.length === 0 || detailSeriesColumns.length < minimumDetailSeries) return null;\n  const summarySeriesCandidates = scoreSummarySeriesCandidates({\n    rows,\n    headerRowIndex: rowIndex,\n    detailSeriesIndexes,\n    candidateIndexes: trailingCandidateIndexes\n  });\n  const summarySeriesColumns = summarySeriesCandidates.map((candidate) => candidate.columnName);\n  const summarySeriesIndexes = trailingCandidateIndexes.filter((index) => {\n    var _a;\n    return summarySeriesColumns.includes(((_a = cells[index]) == null ? void 0 : _a.value) ?? "");\n  });\n  const descriptorScore = Math.min(1, descriptorColumns.length / 2);\n  const detailScore = Math.min(1, detailSeriesColumns.length / 8);\n  const summaryScore = summarySeriesColumns.length > 0 ? 0.1 : 0;\n  return {\n    rowIndex,\n    descriptorColumns,\n    detailSeriesColumns,\n    summarySeriesColumns,\n    summarySeriesCandidates,\n    descriptorColumnIndexes,\n    detailSeriesIndexes,\n    summarySeriesIndexes,\n    score: roundRatio(0.45 + descriptorScore * 0.2 + detailScore * 0.25 + summaryScore)\n  };\n};\nconst isSeriesLabelBandRow = (row, layout) => {\n  const cells = getRowCells(row);\n  if (cells.length === 0) return false;\n  const descriptorBlankCount = layout.descriptorColumnIndexes.filter((index) => {\n    var _a;\n    return !((_a = cells[index]) == null ? void 0 : _a.value);\n  }).length;\n  const detailNonEmptyCount = layout.detailSeriesIndexes.filter((index) => {\n    var _a;\n    return Boolean((_a = cells[index]) == null ? void 0 : _a.value);\n  }).length;\n  const detailLabelLikeCount = layout.detailSeriesIndexes.filter((index) => {\n    var _a;\n    const value = ((_a = cells[index]) == null ? void 0 : _a.value) ?? "";\n    return Boolean(value) && !isNumericLike(value);\n  }).length;\n  const numericCount = layout.detailSeriesIndexes.filter((index) => {\n    var _a;\n    return isNumericLike(((_a = cells[index]) == null ? void 0 : _a.value) ?? "");\n  }).length;\n  if (numericCount >= Math.max(2, Math.floor(layout.detailSeriesIndexes.length * 0.3))) return false;\n  return descriptorBlankCount >= Math.max(1, layout.descriptorColumnIndexes.length - 1) && detailNonEmptyCount >= Math.max(3, Math.floor(layout.detailSeriesIndexes.length * 0.35)) && detailLabelLikeCount >= Math.max(3, Math.floor(layout.detailSeriesIndexes.length * 0.35));\n};\nconst detectSeriesLabelBands = (rows, layout) => {\n  if (!layout) return [];\n  const candidates = [];\n  for (let offset = 1; offset <= MAX_SERIES_LABEL_LAYERS; offset += 1) {\n    const rowIndex = layout.rowIndex + offset;\n    if (!rows[rowIndex] || !isSeriesLabelBandRow(rows[rowIndex], layout)) break;\n    candidates.push({\n      rowIndexes: [rowIndex],\n      role: "series_label_header",\n      confidence: roundRatio(clamp01(0.55 + offset * 0.08)),\n      layerIndex: offset\n    });\n  }\n  return candidates;\n};\nconst buildHeaderBands = (rows, layout, maxTopScanRows = 12) => {\n  const headerBands = [];\n  const topRows = rows.slice(0, Math.min(maxTopScanRows, rows.length));\n  topRows.forEach((row, index) => {\n    if (index === (layout == null ? void 0 : layout.rowIndex)) return;\n    if (isReportTitleRow(row)) {\n      headerBands.push({ rowIndexes: [index], role: "report_title", confidence: 0.7 });\n    } else if (isMetadataRow(row)) {\n      headerBands.push({ rowIndexes: [index], role: "report_metadata", confidence: 0.7 });\n    }\n  });\n  if (layout) {\n    headerBands.push({\n      rowIndexes: [layout.rowIndex],\n      role: "column_header",\n      confidence: layout.score,\n      layerIndex: 0\n    });\n    headerBands.push(...detectSeriesLabelBands(rows, layout));\n  }\n  return headerBands;\n};\nconst countBusinessRows = (rows, layout, startRowIndex, endRowIndex) => rows.slice(startRowIndex, endRowIndex + 1).filter((row) => {\n  if (isBlankRow$1(row) || isFooterLikeRow(row)) return false;\n  const cells = getRowCells(row);\n  const descriptorValues = layout.descriptorColumnIndexes.map((index) => {\n    var _a;\n    return ((_a = cells[index]) == null ? void 0 : _a.value) ?? "";\n  }).filter(Boolean);\n  const numericHits = layout.detailSeriesIndexes.filter((index) => {\n    var _a;\n    return isNumericLike(((_a = cells[index]) == null ? void 0 : _a.value) ?? "");\n  }).length;\n  return descriptorValues.length > 0 && numericHits >= 1;\n}).length;\nconst findSegmentEnd = (rows, layout, layoutIndexes) => {\n  const nextHeaderIndex = layoutIndexes.find((index) => index > layout.rowIndex) ?? rows.length;\n  let endRowIndex = rows.length - 1;\n  for (let index = layout.rowIndex + 1; index < nextHeaderIndex; index += 1) {\n    const row = rows[index];\n    const values = getNonEmptyValues(row);\n    if (isFooterLikeRow(row)) {\n      endRowIndex = index - 1;\n      break;\n    }\n    if (values.length === 0) {\n      const remainingNonEmpty = rows.slice(index + 1, nextHeaderIndex).some((candidate) => getNonEmptyValues(candidate).length > 0);\n      if (!remainingNonEmpty) {\n        endRowIndex = index - 1;\n        break;\n      }\n    }\n  }\n  return Math.max(layout.rowIndex, endRowIndex);\n};\nconst findDominantTabularSegment = (rows, layouts) => {\n  if (layouts.length === 0) return null;\n  const layoutIndexes = layouts.map((layout) => layout.rowIndex).sort((left, right) => left - right);\n  const candidates = layouts.map((layout) => {\n    const startRowIndex = layout.rowIndex;\n    const endRowIndex = findSegmentEnd(rows, layout, layoutIndexes);\n    const businessRowCount = countBusinessRows(rows, layout, startRowIndex + 1, endRowIndex);\n    const preambleRows = rows.slice(0, layout.rowIndex).filter((row) => getNonEmptyValues(row).length > 0).length;\n    const trailingRows = rows.slice(endRowIndex + 1).filter((row) => getNonEmptyValues(row).length > 0).length;\n    const confidence = roundRatio(\n      layout.score + Math.min(0.35, businessRowCount / 20) + (preambleRows > 0 || trailingRows > 0 ? 0.08 : 0)\n    );\n    return {\n      headerLayout: layout,\n      startRowIndex,\n      endRowIndex,\n      businessRowCount,\n      confidence,\n      mixedSignal: preambleRows > 0 || trailingRows > 0 || layout.rowIndex > 2\n    };\n  });\n  return candidates.sort((left, right) => right.confidence - left.confidence)[0] ?? null;\n};\nconst detectMatrixRowRole = (row, layout, signalBundle) => {\n  if (!row) return { role: "unknown", confidence: 0 };\n  if (isBlankRow$1(row) || isFooterLikeRow(row)) return { role: "noise", confidence: 0.98 };\n  const values = getNonEmptyValues(row);\n  if (values.length === 1 && values[0].length >= 16) {\n    return { role: "comment", confidence: 0.82 };\n  }\n  if (values.length <= 2 && !values.some(isNumericLike) && (values.some((v) => /:.+/.test(v)) || values.join(" ").length >= 30)) {\n    return { role: "comment", confidence: 0.76 };\n  }\n  if (!layout) return { role: "unknown", confidence: 0.2 };\n  const cells = getRowCells(row);\n  const descriptorValues = layout.descriptorColumnIndexes.map((index) => {\n    var _a;\n    return ((_a = cells[index]) == null ? void 0 : _a.value) ?? "";\n  }).filter(Boolean);\n  const numericCount = layout.detailSeriesIndexes.filter((index) => {\n    var _a;\n    return isNumericLike(((_a = cells[index]) == null ? void 0 : _a.value) ?? "");\n  }).length;\n  if (descriptorValues.some((value) => SUBTOTAL_ROW_PATTERN.test(value.trim()))) {\n    return { role: "subtotal", confidence: 0.92 };\n  }\n  if (descriptorValues.some((value) => TOTAL_ROW_PATTERN.test(value.trim()))) {\n    return { role: "total", confidence: 0.94 };\n  }\n  if (numericCount === 0 && descriptorValues.length > 0) {\n    return { role: "group_header", confidence: 0.75 };\n  }\n  if (numericCount > 0 && descriptorValues.length > 0) {\n    return { role: "fact", confidence: 0.88 };\n  }\n  return { role: "unknown", confidence: 0.25 };\n};\nconst assignHierarchyDepths = (rowRoles) => {\n  let activeDepth = 0;\n  return rowRoles.map((candidate) => {\n    if (!["group_header", "fact", "subtotal", "total"].includes(candidate.role)) {\n      return candidate;\n    }\n    if (candidate.role === "group_header") {\n      activeDepth += 1;\n      return { ...candidate, depth: activeDepth };\n    }\n    if (candidate.role === "fact") {\n      return { ...candidate, depth: activeDepth };\n    }\n    if (candidate.role === "subtotal") {\n      const depth2 = activeDepth;\n      activeDepth = Math.max(0, activeDepth - 1);\n      return { ...candidate, depth: depth2 };\n    }\n    const depth = activeDepth;\n    activeDepth = 0;\n    return { ...candidate, depth: Math.max(0, depth) };\n  });\n};\nconst DATE_LIKE_PATTERN = /^(?:\\d{1,2}[-/]\\d{1,2}[-/]\\d{2,4}|\\d{4}[-/]\\d{1,2}[-/]\\d{1,2})$/;\nconst normalizeCell = (value) => String(value ?? "").replace(/\\u00a0/g, " ").replace(/\\t/g, " ").replace(/\\s+/g, " ").trim();\nconst isNumericCandidate = (value) => {\n  if (DATE_LIKE_PATTERN.test(value.trim())) {\n    return false;\n  }\n  const cleaned = value.replace(/[^0-9.\\-]/g, "").trim();\n  return Boolean(cleaned) && cleaned !== "-" && cleaned !== "." && Number.isFinite(Number.parseFloat(cleaned));\n};\nconst computeColumnStatistics = (column, columnIndex, bodyRows) => {\n  const sampleSize = bodyRows.length;\n  if (sampleSize === 0) {\n    return {\n      column,\n      columnIndex,\n      nonEmptyCount: 0,\n      sampleSize: 0,\n      fillRate: 0,\n      numericRatio: 0,\n      strictNumericRatio: 0,\n      softNumericRatio: 0,\n      textualRatio: 0,\n      lenientTextualRatio: 0,\n      codeLikeDensity: 0,\n      structuralIdentifierHint: false,\n      blankRatio: 1,\n      blankRunCount: 0,\n      avgBlankRunLength: 0,\n      distinctCount: 0,\n      cardinalityRatio: 0\n    };\n  }\n  let nonEmptyCount = 0;\n  let numericCount = 0;\n  let strictNumericCount = 0;\n  let softNumericCount = 0;\n  let textualCount = 0;\n  let lenientTextualCount = 0;\n  let codeLikeCount = 0;\n  let blankRunCount = 0;\n  let prevNonBlank = false;\n  const distinctSet = /* @__PURE__ */ new Set();\n  for (const row of bodyRows) {\n    const raw = normalizeCell(row[columnIndex] ?? "");\n    if (!raw) {\n      if (prevNonBlank) blankRunCount++;\n      prevNonBlank = false;\n      continue;\n    }\n    nonEmptyCount++;\n    prevNonBlank = true;\n    distinctSet.add(raw.toLowerCase());\n    const lenientNumeric = isNumericCandidate(raw);\n    const strictNumeric = isNumericLike(raw);\n    if (lenientNumeric) numericCount++;\n    if (strictNumeric) strictNumericCount++;\n    if (strictNumeric || /^[-—–]$/.test(raw) || /^[nN]\\/?[aA]$/.test(raw)) softNumericCount++;\n    if (/[A-Za-z]/.test(raw) && !strictNumeric) textualCount++;\n    if (/[A-Za-z]/.test(raw) && !lenientNumeric) lenientTextualCount++;\n    if (isCodeLike(raw) && !strictNumeric) codeLikeCount++;\n  }\n  const totalBlanks = sampleSize - nonEmptyCount;\n  const structuralIdentifierHint = /\\b(?:code|id)\\b/i.test(column);\n  return {\n    column,\n    columnIndex,\n    nonEmptyCount,\n    sampleSize,\n    fillRate: nonEmptyCount / sampleSize,\n    numericRatio: nonEmptyCount > 0 ? numericCount / nonEmptyCount : 0,\n    strictNumericRatio: nonEmptyCount > 0 ? strictNumericCount / nonEmptyCount : 0,\n    softNumericRatio: nonEmptyCount > 0 ? softNumericCount / nonEmptyCount : 0,\n    textualRatio: nonEmptyCount > 0 ? textualCount / nonEmptyCount : 0,\n    lenientTextualRatio: nonEmptyCount > 0 ? lenientTextualCount / nonEmptyCount : 0,\n    codeLikeDensity: nonEmptyCount > 0 ? codeLikeCount / nonEmptyCount : 0,\n    structuralIdentifierHint,\n    blankRatio: totalBlanks / sampleSize,\n    blankRunCount,\n    avgBlankRunLength: totalBlanks / Math.max(blankRunCount, 1),\n    distinctCount: distinctSet.size,\n    cardinalityRatio: nonEmptyCount > 0 ? distinctSet.size / nonEmptyCount : 0\n  };\n};\nconst normalize = (value) => String(value ?? "").trim().toLowerCase();\nconst getNonNoiseRows = (data) => getRows(data).filter((row) => !isBlankRow$1(row) && !isFooterLikeRow(row));\nconst inferTabularShapeContext = (data) => {\n  const rows = getNonNoiseRows(data);\n  const columns = getColumns$1(data);\n  if (rows.length === 0 || columns.length === 0) return null;\n  const rawRows = rows.map((row) => columns.map((col) => String(row[col] ?? "")));\n  const stats = columns.map((column, index) => computeColumnStatistics(column, index, rawRows));\n  const totalRows = rows.length;\n  const valueColumns = stats.filter(\n    (stat) => stat.nonEmptyCount > 0 && stat.codeLikeDensity < 0.3 && !stat.structuralIdentifierHint && !(stat.columnIndex < 3 && stat.nonEmptyCount / totalRows < 0.65) && (stat.softNumericRatio >= 0.55 || stat.strictNumericRatio >= 0.65)\n  ).map((stat) => stat.column);\n  const descriptorColumns = stats.filter(\n    (stat) => !valueColumns.includes(stat.column) && stat.nonEmptyCount > 0 && (stat.codeLikeDensity >= 0.3 || stat.structuralIdentifierHint || stat.strictNumericRatio <= 0.2 || stat.textualRatio >= 0.6 || stat.columnIndex < 3 && stat.strictNumericRatio < 0.5 && stat.textualRatio >= 0.2 || stat.columnIndex < 3 && stat.nonEmptyCount / totalRows < 0.65)\n  ).sort((left, right) => getDescriptorPriority(left.column) - getDescriptorPriority(right.column) || left.columnIndex - right.columnIndex).map((stat) => stat.column).slice(0, 3);\n  if (descriptorColumns.length === 0 || valueColumns.length === 0) return null;\n  return {\n    descriptorColumns,\n    valueColumns,\n    confidence: roundRatio(Math.min(1, 0.4 + descriptorColumns.length * 0.15 + valueColumns.length * 0.1))\n  };\n};\nconst isRepeatedHeaderLikeRow = (row, context) => {\n  const normalizedValues = Object.values(row).map(normalize).filter(Boolean);\n  if (normalizedValues.length === 0) return false;\n  const expected = [...context.descriptorColumns, ...context.valueColumns].map(normalize);\n  const overlap = normalizedValues.filter((value) => expected.includes(value)).length;\n  return overlap >= Math.max(2, Math.floor(expected.length * 0.6));\n};\nconst detectTabularRowRole = (row, context, signalBundle) => {\n  if (!row || !context) return { role: "unknown", confidence: 0 };\n  if (isBlankRow$1(row) || isFooterLikeRow(row)) return { role: "noise", confidence: 0.98 };\n  if (isRepeatedHeaderLikeRow(row, context)) return { role: "noise", confidence: 0.92 };\n  const descriptorValues = context.descriptorColumns.map((column) => String(row[column] ?? "").trim()).filter(Boolean);\n  const allValues = Object.values(row).map((value) => String(value ?? "").trim()).filter(Boolean);\n  const textValueCount = allValues.filter((value) => /[A-Za-z]/.test(value) && !isNumericLike(value)).length;\n  const numericCount = context.valueColumns.filter((column) => isNumericLike(String(row[column] ?? "").trim())).length;\n  const sparseScore = roundRatio(1 - allValues.length / Math.max(Object.keys(row).length, 1));\n  const subtotalHit = descriptorValues.some((value) => SUBTOTAL_ROW_PATTERN.test(value.trim()));\n  const totalHit = descriptorValues.some((value) => TOTAL_ROW_PATTERN.test(value.trim()));\n  const summaryLikeHit = SUMMARY_TOKEN_PATTERN.test(allValues.join(" | ")) || allValues.some(isSummaryLike);\n  const sparseSummaryCandidate = sparseScore >= 0.3 && allValues.length <= Math.max(6, context.valueColumns.length + 2) && textValueCount <= Math.max(2, descriptorValues.length);\n  if (numericCount === 0 && allValues.length <= 2 && allValues.join(" ").length >= 16) {\n    return { role: "comment", confidence: 0.76 };\n  }\n  if (numericCount === 0 && descriptorValues.length <= 1 && descriptorValues.some((value) => value.includes(":") || value.length >= 20)) {\n    return { role: "comment", confidence: 0.76 };\n  }\n  if (subtotalHit) {\n    return { role: "subtotal", confidence: 0.94 };\n  }\n  if (summaryLikeHit && numericCount >= 1 && sparseSummaryCandidate) {\n    return { role: "subtotal", confidence: 0.86 };\n  }\n  if (totalHit || descriptorValues.some(isSummaryLike)) {\n    return { role: "total", confidence: 0.95 };\n  }\n  if (numericCount === 0 && descriptorValues.length > 0) {\n    return { role: "group_header", confidence: 0.82 };\n  }\n  if (numericCount > 0 && descriptorValues.length > 0) {\n    return { role: "fact", confidence: 0.88 };\n  }\n  return { role: "unknown", confidence: 0.2 };\n};\nconst MAX_HEADER_SCAN_ROWS = 40;\nconst PARSER_HEADER_ROW_INDEX = -1;\nconst SERIES_HEADER_PATTERN = /\\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|fy\\d{2,4}|q[1-4]|corp_|corp\\b|ec\\b|re\\b|project\\b|office\\b|capex\\b)\\b/i;\nconst buildParserMetadataBands = (data) => {\n  if (!data) return [];\n  const bands = [];\n  (data.metadataRows ?? []).forEach((row, index) => {\n    const values = row.map((value) => String(value ?? "").trim()).filter(Boolean);\n    if (values.length === 0) return;\n    bands.push({\n      rowIndexes: [-(index + 100)],\n      role: index === 0 ? "report_title" : "report_metadata",\n      confidence: index === 0 ? 0.88 : 0.82\n    });\n  });\n  return bands;\n};\nconst buildParserResolvedHeaderBands = (data, layout) => {\n  if (!data || !layout) return [];\n  const bands = buildParserMetadataBands(data);\n  bands.push({\n    rowIndexes: [PARSER_HEADER_ROW_INDEX],\n    role: "column_header",\n    confidence: layout.score,\n    layerIndex: 0\n  });\n  (data.headerLayers ?? []).forEach((_, index) => {\n    bands.push({\n      rowIndexes: [-(index + 2)],\n      role: "series_label_header",\n      confidence: roundRatio(0.76 + Math.min(index, 2) * 0.06),\n      layerIndex: index + 1\n    });\n  });\n  return bands;\n};\nconst buildExplicitHeaderLayoutCandidate = (data, tabularContext) => {\n  var _a, _b, _c;\n  if (!data || (((_a = data.headerLayers) == null ? void 0 : _a.length) ?? 0) === 0) return null;\n  const columns = getColumns$1(data);\n  if (columns.length < 5) return null;\n  const descriptorColumns = ((_b = tabularContext == null ? void 0 : tabularContext.descriptorColumns) == null ? void 0 : _b.length) ? sortDescriptorColumns(tabularContext.descriptorColumns) : columns.filter((column) => !isCodeLike(column) && !isNumericLike(column) && !isSummaryLike(column)).slice(0, 3);\n  const descriptorColumnSet = new Set(descriptorColumns.map((column) => column.toLowerCase()));\n  const summarySeriesColumns = columns.filter((column) => isSummaryLike(column));\n  const summarySet = new Set(summarySeriesColumns.map((column) => column.toLowerCase()));\n  const detailSeriesColumns = columns.filter((column) => {\n    const normalized = column.toLowerCase();\n    if (descriptorColumnSet.has(normalized) || summarySet.has(normalized)) return false;\n    return isCodeLike(column) || SERIES_HEADER_PATTERN.test(column);\n  });\n  if (detailSeriesColumns.length < 4) return null;\n  const detailSeriesCodeLikeRatio = detailSeriesColumns.filter((column) => isCodeLike(column)).length / detailSeriesColumns.length;\n  if (detailSeriesCodeLikeRatio < 0.35 && (((_c = data.headerLayers) == null ? void 0 : _c.length) ?? 0) < 1) {\n    return null;\n  }\n  const columnIndexByName = new Map(columns.map((column, index) => [column, index]));\n  return {\n    rowIndex: PARSER_HEADER_ROW_INDEX,\n    descriptorColumns,\n    detailSeriesColumns,\n    summarySeriesColumns,\n    summarySeriesCandidates: summarySeriesColumns.map((columnName) => ({\n      columnName,\n      summaryKind: "total",\n      confidence: 0.9\n    })),\n    descriptorColumnIndexes: descriptorColumns.map((column) => columnIndexByName.get(column) ?? -1).filter((index) => index >= 0),\n    detailSeriesIndexes: detailSeriesColumns.map((column) => columnIndexByName.get(column) ?? -1).filter((index) => index >= 0),\n    summarySeriesIndexes: summarySeriesColumns.map((column) => columnIndexByName.get(column) ?? -1).filter((index) => index >= 0),\n    score: roundRatio(0.82 + Math.min(0.12, detailSeriesColumns.length / 48))\n  };\n};\nconst buildSignals = (data, layout, headerBands, rowRoles, tabularContext) => {\n  const rows = getRows(data);\n  const topRows = rows.slice(0, Math.min(12, rows.length));\n  const topNonEmpty = topRows.map((row) => getNonEmptyValues(row).length).filter((count) => count > 0);\n  const seriesLabelBands = headerBands.filter((candidate) => candidate.role === "series_label_header");\n  const bodyRows = layout ? layout.rowIndex >= 0 ? rows.slice(layout.rowIndex + 1 + seriesLabelBands.length) : rows : rows;\n  const bodyNonEmpty = bodyRows.map((row) => getNonEmptyValues(row).length).filter((count) => count > 0);\n  const topAverage = topNonEmpty.length > 0 ? topNonEmpty.reduce((sum, count) => sum + count, 0) / topNonEmpty.length : 0;\n  const bodyAverage = bodyNonEmpty.length > 0 ? bodyNonEmpty.reduce((sum, count) => sum + count, 0) / bodyNonEmpty.length : topAverage;\n  const topBandIrregularityRatio = bodyAverage > 0 ? roundRatio(Math.abs(bodyAverage - topAverage) / bodyAverage) : 0;\n  const detailSeriesColumns = (layout == null ? void 0 : layout.detailSeriesColumns) ?? (tabularContext == null ? void 0 : tabularContext.valueColumns) ?? [];\n  const descriptorColumns = (layout == null ? void 0 : layout.descriptorColumns) ?? (tabularContext == null ? void 0 : tabularContext.descriptorColumns) ?? [];\n  const detailNumericCells = layout ? bodyRows.reduce((count, row) => count + layout.detailSeriesIndexes.filter((index) => {\n    var _a;\n    return isNumericLike(((_a = getRowCells(row)[index]) == null ? void 0 : _a.value) ?? "");\n  }).length, 0) : tabularContext ? bodyRows.reduce((count, row) => count + tabularContext.valueColumns.filter((column) => isNumericLike(String(row[column] ?? ""))).length, 0) : 0;\n  const detailSeriesNumericDensity = detailSeriesColumns.length > 0 && bodyRows.length > 0 ? roundRatio(detailNumericCells / (detailSeriesColumns.length * bodyRows.length)) : 0;\n  const detailSeriesCodeLikeRatio = detailSeriesColumns.length > 0 ? roundRatio(detailSeriesColumns.filter(isCodeLike).length / detailSeriesColumns.length) : 0;\n  const descriptorStabilityRatio = descriptorColumns.length > 0 && bodyRows.length > 0 ? roundRatio(bodyRows.filter(\n    (row) => descriptorColumns.some((column) => Boolean(String(row[column] ?? "").trim()))\n  ).length / bodyRows.length) : 0;\n  const hierarchyHits = rowRoles.filter((candidate) => ["group_header", "subtotal", "total"].includes(candidate.role)).length;\n  const hierarchyRatio = rowRoles.length > 0 ? roundRatio(hierarchyHits / rowRoles.length) : 0;\n  const placeholderColumnRatio = (() => {\n    const columns = getColumns$1(data);\n    if (columns.length === 0) return 0;\n    return roundRatio(columns.filter((column) => PLACEHOLDER_PATTERN.test(column)).length / columns.length);\n  })();\n  const repeatedHeaderRisk = headerBands.some((candidate) => candidate.role === "repeated_header") || rowRoles.some((candidate) => candidate.role === "noise");\n  return [\n    { key: "top_band_irregularity_ratio", kind: "ratio", value: topBandIrregularityRatio, confidence: 0.72 },\n    { key: "header_row_repeat_pattern", kind: "boolean", value: repeatedHeaderRisk, confidence: 0.6 },\n    { key: "descriptor_column_stability_ratio", kind: "ratio", value: descriptorStabilityRatio, confidence: layout ? 0.84 : 0.5 },\n    { key: "detail_series_code_like_ratio", kind: "ratio", value: detailSeriesCodeLikeRatio, confidence: layout ? 0.86 : 0.35 },\n    { key: "detail_series_numeric_density", kind: "ratio", value: detailSeriesNumericDensity, confidence: layout ? 0.86 : 0.35 },\n    {\n      key: "summary_series_separability",\n      kind: "ratio",\n      value: layout ? roundRatio(layout.summarySeriesColumns.length > 0 ? 1 : 0) : 0,\n      confidence: layout ? 0.74 : 0.2\n    },\n    { key: "row_hierarchy_signature", kind: "ratio", value: hierarchyRatio, confidence: 0.8 },\n    { key: "placeholder_column_ratio", kind: "ratio", value: placeholderColumnRatio, confidence: 0.52 },\n    { key: "repeated_header_leakage_risk", kind: "boolean", value: repeatedHeaderRisk, confidence: 0.58 }\n  ];\n};\nconst buildCandidate = (id, kind, score, headerBands, descriptorColumns, detailSeriesColumns, summarySeriesColumns, summarySeriesCandidates, requiredSignalKeys) => ({\n  id,\n  kind,\n  score: roundRatio(score),\n  headerBands,\n  descriptorColumns,\n  detailSeriesColumns,\n  summarySeriesColumns,\n  summarySeriesCandidates,\n  requiredSignalKeys\n});\nconst buildHeaderLayoutCandidates = (rows) => rows.slice(0, Math.min(MAX_HEADER_SCAN_ROWS, rows.length)).map((_, rowIndex) => detectHeaderLayoutCandidate(rows, rowIndex)).filter((candidate) => Boolean(candidate));\nconst buildRowRoles = (data, layout, headerBands, dominantSegment, tabularContext) => {\n  const rows = getRows(data);\n  const repeatedHeaderValues = new Set(\n    layout ? [...layout.descriptorColumns, ...layout.detailSeriesColumns, ...layout.summarySeriesColumns].map((value) => value.trim().toLowerCase()) : []\n  );\n  const protectedHeaderRows = /* @__PURE__ */ new Set([\n    ...layout ? [layout.rowIndex] : [],\n    ...headerBands.filter((candidate) => candidate.role === "series_label_header").flatMap((candidate) => candidate.rowIndexes)\n  ]);\n  const rowRoles = rows.map((row, rowIndex) => {\n    if (protectedHeaderRows.has(rowIndex)) {\n      return { rowIndex, role: "noise", confidence: 0.99 };\n    }\n    if (layout && rowIndex < layout.rowIndex && getNonEmptyValues(row).length > 0) {\n      return {\n        rowIndex,\n        role: "comment",\n        confidence: isReportTitleRow(row) || isMetadataRow(row) ? 0.95 : 0.82\n      };\n    }\n    if (layout) {\n      const rowValues = getNonEmptyValues(row).map((value) => value.trim().toLowerCase());\n      const repeatedHeaderOverlap = rowValues.filter((value) => repeatedHeaderValues.has(value)).length;\n      if (repeatedHeaderOverlap >= Math.max(2, Math.floor(repeatedHeaderValues.size * 0.45))) {\n        return { rowIndex, role: "noise", confidence: 0.9 };\n      }\n    }\n    if (dominantSegment && rowIndex > dominantSegment.endRowIndex && getNonEmptyValues(row).length > 0) {\n      return { rowIndex, role: "comment", confidence: 0.76 };\n    }\n    const role = layout ? detectMatrixRowRole(row, layout) : detectTabularRowRole(row, tabularContext);\n    return {\n      rowIndex,\n      ...role\n    };\n  });\n  return assignHierarchyDepths(rowRoles);\n};\nconst detectReportShape = (data) => {\n  var _a, _b, _c;\n  const rows = getRows(data);\n  if (rows.length === 0) {\n    return {\n      primaryKind: "unknown",\n      confidence: 0,\n      candidates: [],\n      signals: [],\n      headerBands: [],\n      columnRoles: [],\n      rowRoles: []\n    };\n  }\n  const tabularContext = inferTabularShapeContext(data);\n  const explicitHeaderLayout = buildExplicitHeaderLayoutCandidate(data, tabularContext);\n  const schemaColumnNames = getColumns$1(data);\n  const labelStyleColumnCount = schemaColumnNames.filter((col) => /\\s/.test(col) || /[()%]/.test(col)).length;\n  const columnNamesAreLabelStyle = schemaColumnNames.length >= 5 && labelStyleColumnCount / schemaColumnNames.length >= 0.5;\n  const parserResolvedFlatSchema = Boolean(\n    data && data.headerDepth === 1 && (((_a = data.headerLayers) == null ? void 0 : _a.length) ?? 0) === 0 && ((((_b = data.metadataRows) == null ? void 0 : _b.length) ?? 0) > 0 || columnNamesAreLabelStyle)\n  );\n  const headerLayoutCandidates = parserResolvedFlatSchema ? [] : buildHeaderLayoutCandidates(rows);\n  const dominantSegment = explicitHeaderLayout || parserResolvedFlatSchema ? null : findDominantTabularSegment(rows, headerLayoutCandidates);\n  const headerLayout = explicitHeaderLayout ?? (parserResolvedFlatSchema ? null : (dominantSegment == null ? void 0 : dominantSegment.headerLayout) ?? headerLayoutCandidates[0] ?? null);\n  const parserMetadataBands = buildParserMetadataBands(data);\n  const headerBands = explicitHeaderLayout ? buildParserResolvedHeaderBands(data, explicitHeaderLayout) : [\n    ...parserMetadataBands,\n    ...buildHeaderBands(rows, headerLayout).filter(\n      (candidate) => parserMetadataBands.length === 0 || !["report_title", "report_metadata"].includes(candidate.role)\n    )\n  ];\n  const rowRoles = buildRowRoles(data, headerLayout, headerBands, dominantSegment, tabularContext);\n  const signals = buildSignals(data, headerLayout, headerBands, rowRoles, tabularContext);\n  const hierarchySignal = Number(((_c = signals.find((signal) => signal.key === "row_hierarchy_signature")) == null ? void 0 : _c.value) ?? 0);\n  const descriptorColumns = sortDescriptorColumns((headerLayout == null ? void 0 : headerLayout.descriptorColumns) ?? (tabularContext == null ? void 0 : tabularContext.descriptorColumns) ?? []);\n  const detailSeriesColumns = (headerLayout == null ? void 0 : headerLayout.detailSeriesColumns) ?? (tabularContext == null ? void 0 : tabularContext.valueColumns) ?? [];\n  const summarySeriesColumns = (headerLayout == null ? void 0 : headerLayout.summarySeriesColumns) ?? [];\n  const summarySeriesCandidates = (headerLayout == null ? void 0 : headerLayout.summarySeriesCandidates) ?? [];\n  const detailSeriesCount = detailSeriesColumns.length;\n  const seriesLabelBands = headerBands.filter((candidate) => candidate.role === "series_label_header");\n  const hasMatrix = Boolean(headerLayout && seriesLabelBands.length > 0);\n  const hasHeader = Boolean(headerLayout);\n  const hasTabularContext = Boolean(tabularContext);\n  const dominantConfidence = (dominantSegment == null ? void 0 : dominantSegment.confidence) ?? 0;\n  const mixedSignal = Boolean((dominantSegment == null ? void 0 : dominantSegment.mixedSignal) && dominantSegment.businessRowCount >= 6 && dominantConfidence >= 0.62);\n  const candidates = [\n    buildCandidate(\n      "candidate-matrix",\n      "multi_header_matrix",\n      hasMatrix ? 0.66 + Math.min(0.18, detailSeriesCount / 40) + Math.min(0.12, seriesLabelBands.length * 0.06) : 0.1,\n      headerBands,\n      descriptorColumns,\n      detailSeriesColumns,\n      summarySeriesColumns,\n      summarySeriesCandidates,\n      ["top_band_irregularity_ratio", "detail_series_code_like_ratio"]\n    ),\n    buildCandidate(\n      "candidate-wide",\n      "wide_crosstab",\n      hasHeader ? 0.56 + Math.min(0.24, detailSeriesCount / 32) + (hasMatrix ? 0 : 0.1) : 0.1,\n      headerBands,\n      descriptorColumns,\n      detailSeriesColumns,\n      summarySeriesColumns,\n      summarySeriesCandidates,\n      ["detail_series_numeric_density", "summary_series_separability"]\n    ),\n    buildCandidate(\n      "candidate-hierarchical",\n      "hierarchical_statement",\n      hierarchySignal > 0 ? 0.44 + Math.min(0.4, hierarchySignal) + (hasHeader ? 0.05 : 0) + (hasTabularContext ? 0.08 : 0) : 0.05,\n      headerBands,\n      descriptorColumns,\n      detailSeriesColumns,\n      summarySeriesColumns,\n      summarySeriesCandidates,\n      ["row_hierarchy_signature", "descriptor_column_stability_ratio"]\n    ),\n    buildCandidate(\n      "candidate-mixed",\n      "mixed_report",\n      mixedSignal ? 0.56 + Math.min(0.18, dominantConfidence * 0.2) + Math.min(0.14, detailSeriesCount / 40) : 0.08,\n      headerBands,\n      descriptorColumns,\n      detailSeriesColumns,\n      summarySeriesColumns,\n      summarySeriesCandidates,\n      ["top_band_irregularity_ratio", "placeholder_column_ratio"]\n    ),\n    buildCandidate(\n      "candidate-tabular",\n      "already_tabular",\n      hasHeader ? 0.05 : 0.74 - Math.min(0.25, rows.slice(0, 5).filter((row) => isMetadataRow(row) || isReportTitleRow(row)).length / 10) - Math.min(0.2, hierarchySignal * 0.35) + (hasTabularContext ? 0.06 : 0),\n      [],\n      descriptorColumns.length > 0 ? descriptorColumns : (() => {\n        const schemaColumns = getColumns$1(data);\n        const positional = schemaColumns.filter(\n          (column) => !isCodeLike(column) && !isNumericLike(column) && !isSummaryLike(column)\n        );\n        return positional.length > 0 ? positional.slice(0, 3) : schemaColumns.slice(0, 2);\n      })(),\n      detailSeriesColumns,\n      summarySeriesColumns,\n      summarySeriesCandidates,\n      ["descriptor_column_stability_ratio"]\n    )\n  ].sort((left, right) => right.score - left.score).slice(0, 3);\n  const primary = candidates[0];\n  const columnRoles = [\n    ...descriptorColumns.map((columnName) => ({ columnName, role: "descriptor", confidence: hasHeader ? 0.92 : 0.78 })),\n    ...detailSeriesColumns.map((columnName) => ({ columnName, role: "detail_series", confidence: hasHeader ? 0.9 : 0.74 })),\n    ...summarySeriesCandidates.map((candidate) => ({\n      columnName: candidate.columnName,\n      role: "summary_series",\n      confidence: candidate.confidence\n    }))\n  ];\n  return {\n    primaryKind: (primary == null ? void 0 : primary.kind) ?? "unknown",\n    confidence: (primary == null ? void 0 : primary.score) ?? 0,\n    candidates,\n    signals,\n    headerBands,\n    columnRoles,\n    rowRoles\n  };\n};\nconst dataOperationBaseSchema = {\n  id: { type: "string", description: "Stable operation identifier." },\n  reason: { type: "string", description: "Short explanation for why this operation is needed." }\n};\nconst deriveOperandSchema = {\n  type: "object",\n  properties: {\n    kind: { type: "string", enum: ["column", "literal"] },\n    column: { type: "string" },\n    value: {}\n  },\n  required: ["kind"]\n};\nconst deriveMetricComponentSchema = {\n  type: "object",\n  properties: {\n    operator: { type: "string", enum: ["add", "subtract"] },\n    matchAny: {\n      type: "array",\n      minItems: 1,\n      items: { type: "string" }\n    },\n    valueTransform: { type: "string", enum: ["raw", "absolute"] }\n  },\n  required: ["operator", "matchAny"]\n};\nconst deriveMetricByLabelFormulaSchema = {\n  anyOf: [\n    {\n      type: "object",\n      properties: {\n        kind: { type: "string", enum: ["linear_combination"] },\n        components: {\n          type: "array",\n          minItems: 1,\n          items: deriveMetricComponentSchema\n        }\n      },\n      required: ["kind", "components"]\n    },\n    {\n      type: "object",\n      properties: {\n        kind: { type: "string", enum: ["ratio"] },\n        numerator: {\n          type: "array",\n          minItems: 1,\n          items: deriveMetricComponentSchema\n        },\n        denominator: {\n          type: "array",\n          minItems: 1,\n          items: deriveMetricComponentSchema\n        },\n        scale: { type: "number" }\n      },\n      required: ["kind", "numerator", "denominator"]\n    }\n  ]\n};\nconst filterPredicateSchema = {\n  type: "object",\n  properties: {\n    column: { type: "string", minLength: 1 },\n    operator: { type: "string", enum: ["eq", "neq", "gt", "gte", "lt", "lte", "between", "contains", "starts_with", "ends_with", "in", "is_null", "not_null"] },\n    value: {}\n  },\n  required: ["column", "operator"]\n};\nconst filterPredicateGroupSchema = {\n  type: "object",\n  properties: {\n    predicates: {\n      type: "array",\n      items: filterPredicateSchema\n    }\n  },\n  required: ["predicates"]\n};\nconst filterRowsOperationSchema = {\n  type: "object",\n  properties: {\n    ...dataOperationBaseSchema,\n    type: { type: "string", enum: ["filter_rows"] },\n    predicates: {\n      type: "array",\n      items: filterPredicateSchema\n    },\n    groups: {\n      type: "array",\n      description: "Optional OR groups. Each group is AND-only internally; the overall result matches if any group matches.",\n      items: filterPredicateGroupSchema\n    }\n  },\n  required: ["id", "type", "reason"],\n  anyOf: [{ required: ["predicates"] }, { required: ["groups"] }]\n};\nconst dropRowsByConditionOperationSchema = {\n  type: "object",\n  properties: {\n    ...dataOperationBaseSchema,\n    type: { type: "string", enum: ["drop_rows_by_condition"] },\n    predicates: {\n      type: "array",\n      items: filterPredicateSchema\n    },\n    groups: {\n      type: "array",\n      description: "Optional OR groups. Each group is AND-only internally; matching rows will be removed.",\n      items: filterPredicateGroupSchema\n    }\n  },\n  required: ["id", "type", "reason"],\n  anyOf: [{ required: ["predicates"] }, { required: ["groups"] }]\n};\nconst createOperationSchema = (type, extra, requiredFields) => ({\n  type: "object",\n  properties: {\n    ...dataOperationBaseSchema,\n    type: { type: "string", enum: [type] },\n    ...extra\n  },\n  required: ["id", "type", "reason", ...requiredFields]\n});\nconst unpivotLabelMappingSchema = {\n  type: "object",\n  properties: {\n    sourceColumn: { type: "string" },\n    label: {}\n  },\n  required: ["sourceColumn", "label"]\n};\nconst unpivotRowClassMappingSchema = {\n  type: "object",\n  properties: {\n    sourceRowIndex: { type: "integer" },\n    rowClass: { type: "string" }\n  },\n  required: ["sourceRowIndex", "rowClass"]\n};\nconst unpivotLabelColumnSchema = {\n  type: "object",\n  properties: {\n    outputColumn: { type: "string" },\n    mappings: {\n      type: "array",\n      items: unpivotLabelMappingSchema\n    }\n  },\n  required: ["outputColumn", "mappings"]\n};\nconst unpivotHierarchyDepthMappingSchema = {\n  type: "object",\n  properties: {\n    sourceRowIndex: { type: "integer" },\n    depth: { type: "integer" }\n  },\n  required: ["sourceRowIndex", "depth"]\n};\nconst isRecord$2 = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);\nconst OPERATION_WRAPPER_KEYS = ["args", "params", "payload", "config", "operation"];\nconst normalizeString = (value) => typeof value === "string" ? value.trim() : "";\nconst flattenOperationRecord = (value) => {\n  if (!isRecord$2(value)) return null;\n  let flattened = { ...value };\n  for (let depth = 0; depth < 3; depth += 1) {\n    let changed = false;\n    for (const key of OPERATION_WRAPPER_KEYS) {\n      const nested = isRecord$2(flattened[key]) ? flattened[key] : null;\n      if (!nested) {\n        continue;\n      }\n      const { [key]: _ignored, ...rest } = flattened;\n      flattened = { ...nested, ...rest };\n      changed = true;\n    }\n    if (!changed) {\n      break;\n    }\n  }\n  return flattened;\n};\nconst normalizeFilterOperator = (value) => {\n  const normalized = normalizeString(value).toLowerCase();\n  if (!normalized) return "";\n  if (["eq", "=", "==", "===", "equals", "equal", "is", "match"].includes(normalized)) return "eq";\n  if (["neq", "!=", "!==", "not_equals", "not_equal", "is_not"].includes(normalized)) return "neq";\n  if (["gt", ">"].includes(normalized)) return "gt";\n  if (["gte", ">="].includes(normalized)) return "gte";\n  if (["lt", "<"].includes(normalized)) return "lt";\n  if (["lte", "<="].includes(normalized)) return "lte";\n  if (normalized === "between") return "between";\n  if (["contains", "includes"].includes(normalized)) return "contains";\n  if (["starts_with", "startswith", "startswith"].includes(normalized)) return "starts_with";\n  if (["ends_with", "endswith"].includes(normalized)) return "ends_with";\n  if (normalized === "in") return "in";\n  if (["not_in", "notin", "not in"].includes(normalized)) return "not_in";\n  if (["is_null", "null", "empty"].includes(normalized)) return "is_null";\n  if (["not_null", "notnull", "not_empty"].includes(normalized)) return "not_null";\n  return "";\n};\nconst normalizeLooseFilterPredicate = (value) => {\n  if (!isRecord$2(value)) return null;\n  const column = normalizeString(value.column ?? value.columnName ?? value.field ?? value.key ?? value.name);\n  const inferredOperator = normalizeFilterOperator(\n    value.operator ?? value.op ?? value.comparator ?? value.matchType ?? ("equals" in value ? "eq" : void 0) ?? ("is" in value ? "eq" : void 0) ?? ("match" in value ? "eq" : void 0) ?? ("notEquals" in value ? "neq" : void 0) ?? ("not" in value ? "neq" : void 0) ?? ("gt" in value ? "gt" : void 0) ?? ("gte" in value ? "gte" : void 0) ?? ("lt" in value ? "lt" : void 0) ?? ("lte" in value ? "lte" : void 0)\n  );\n  if (!column || !inferredOperator) return null;\n  const next = {\n    column,\n    operator: inferredOperator\n  };\n  const resolvedValue = value.value ?? value.values ?? value.targetValue ?? value.expectedValue ?? value.equals ?? value.is ?? value.match ?? value.notEquals ?? value.not ?? value.gt ?? value.gte ?? value.lt ?? value.lte;\n  if (resolvedValue !== void 0 && inferredOperator !== "is_null" && inferredOperator !== "not_null") {\n    next.value = resolvedValue;\n  }\n  return next;\n};\nconst normalizeFilterPredicate$1 = (value) => {\n  return normalizeLooseFilterPredicate(value);\n};\nconst normalizeFilterPredicateGroup$1 = (value) => {\n  if (!isRecord$2(value)) return null;\n  const sourcePredicates = Array.isArray(value.predicates) ? value.predicates : Array.isArray(value.conditions) ? value.conditions : [];\n  const predicates = sourcePredicates.map(normalizeFilterPredicate$1).filter((predicate) => Boolean(predicate));\n  return predicates.length > 0 ? { predicates } : null;\n};\nconst parseLegacyFilterCondition = (condition) => {\n  const trimmed = condition.trim();\n  const segments = trimmed.split(/\\s*&&\\s*/g);\n  const predicates = segments.map((segment) => segment.trim()).map((segment) => {\n    const rowMatch = segment.match(/^row\\[[\'"](.+?)[\'"]\\]\\s*(===|==|=|!==|!=|>=|<=|>|<)\\s*(.+)$/);\n    const directMatch = segment.match(/^([A-Za-z0-9_ .-]+)\\s*(===|==|=|!==|!=|>=|<=|>|<)\\s*(.+)$/);\n    const match = rowMatch ?? directMatch;\n    if (!match) return null;\n    const [, rawColumn, operator, rawValue] = match;\n    const column = rawColumn.trim();\n    const valueText = rawValue.trim();\n    const quotedValue = valueText.match(/^[\'"](.*)[\'"]$/);\n    const parsedValue = quotedValue ? quotedValue[1] : valueText === "null" ? null : Number.isNaN(Number(valueText)) ? valueText : Number(valueText);\n    switch (operator) {\n      case "===":\n      case "==":\n      case "=":\n        return { column, operator: parsedValue === null ? "is_null" : "eq", value: parsedValue === null ? void 0 : parsedValue };\n      case "!==":\n      case "!=":\n        return { column, operator: parsedValue === null ? "not_null" : "neq", value: parsedValue === null ? void 0 : parsedValue };\n      case ">":\n        return { column, operator: "gt", value: parsedValue };\n      case ">=":\n        return { column, operator: "gte", value: parsedValue };\n      case "<":\n        return { column, operator: "lt", value: parsedValue };\n      case "<=":\n        return { column, operator: "lte", value: parsedValue };\n      default:\n        return null;\n    }\n  }).filter((predicate) => Boolean(predicate)).filter((predicate) => !(predicate.operator === "neq" && predicate.value === ""));\n  return predicates.length > 0 ? predicates : null;\n};\nconst normalizeRenameMappings = (value) => {\n  if (isRecord$2(value)) {\n    return Object.entries(value).map(([from, to]) => ({ from: normalizeString(from), to: normalizeString(to) })).filter((mapping) => Boolean(mapping.from && mapping.to));\n  }\n  if (!Array.isArray(value)) return [];\n  return value.map((item) => isRecord$2(item) ? { from: normalizeString(item.from), to: normalizeString(item.to) } : null).filter((mapping) => Boolean((mapping == null ? void 0 : mapping.from) && mapping.to));\n};\nconst normalizeReplacementEntry = (value) => {\n  if (!isRecord$2(value)) {\n    return null;\n  }\n  const from = normalizeString(\n    value.from ?? value.search ?? value.find ?? value.match ?? value.oldValue ?? value.sourceValue\n  );\n  const hasToValue = ["to", "replaceWith", "replacement", "newValue", "normalizedValue", "targetValue"].some((key) => key in value);\n  const to = value.to ?? value.replaceWith ?? value.replacement ?? value.newValue ?? value.normalizedValue ?? value.targetValue;\n  if (!from || !hasToValue) {\n    return null;\n  }\n  const column = normalizeString(value.column ?? value.columnName ?? value.field ?? value.targetColumn);\n  return column ? { from, to, column } : { from, to };\n};\nconst normalizeReplaceValueReplacements = (value) => {\n  if (isRecord$2(value)) {\n    const directEntry = normalizeReplacementEntry(value);\n    if (directEntry) {\n      return [directEntry];\n    }\n    return Object.entries(value).map(([from, to]) => ({ from: normalizeString(from), to })).filter((entry) => Boolean(entry.from));\n  }\n  if (!Array.isArray(value)) {\n    return [];\n  }\n  return value.map(normalizeReplacementEntry).filter((entry) => Boolean(entry));\n};\nconst inferReplaceValueColumn = (value) => {\n  const columns = Array.from(new Set(\n    normalizeReplaceValueReplacements(value).map((entry) => normalizeString(entry.column)).filter(Boolean)\n  ));\n  return columns.length === 1 ? columns[0] : "";\n};\nconst normalizeCastTargetType = (value) => {\n  const raw = normalizeString(value);\n  const normalized = raw === "numerical" || raw === "numeric" || raw === "float" || raw === "double" || raw === "decimal" || raw === "int" || raw === "integer" ? "number" : raw;\n  return ["number", "currency", "percentage", "date", "boolean", "string"].includes(normalized) ? normalized : null;\n};\nconst isRecordLike = isRecord$2;\nconst isValidLabelMapping = (mapping) => Boolean(mapping == null ? void 0 : mapping.sourceColumn);\nconst isValidLabelColumn = (labelColumn) => Boolean(labelColumn == null ? void 0 : labelColumn.outputColumn) && Array.isArray(labelColumn == null ? void 0 : labelColumn.mappings) && labelColumn.mappings.some(isValidLabelMapping);\nconst normalizeUnpivotLabelColumns = (operation) => {\n  if (Array.isArray(operation.labelColumns) && operation.labelColumns.length > 0) {\n    return operation.labelColumns.map((labelColumn) => ({\n      outputColumn: labelColumn.outputColumn,\n      mappings: (labelColumn.mappings ?? []).filter(isValidLabelMapping)\n    })).filter(isValidLabelColumn);\n  }\n  if (operation.labelColumn && Array.isArray(operation.labelMappings) && operation.labelMappings.length > 0) {\n    return [{\n      outputColumn: operation.labelColumn,\n      mappings: operation.labelMappings.filter(isValidLabelMapping)\n    }].filter(isValidLabelColumn);\n  }\n  return [];\n};\nconst normalizeUnpivotHierarchyDepthMappings = (operation) => Array.isArray(operation.hierarchyDepthMappings) ? operation.hierarchyDepthMappings.filter(\n  (mapping) => Number.isInteger(mapping == null ? void 0 : mapping.sourceRowIndex) && mapping.sourceRowIndex >= 0 && Number.isInteger(mapping == null ? void 0 : mapping.depth) && mapping.depth >= 0\n) : [];\nconst operationManifests = [\n  {\n    type: "drop_rows_by_index",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("drop_rows_by_index", { indices: { type: "array", items: { type: "integer" } } }, ["indices"]),\n    requiredFields: ["id", "type", "reason", "indices"],\n    summarize: () => "drop_rows_by_index requires indices",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const indices = Array.isArray(value.indices) ? value.indices.map(Number).filter((index) => Number.isInteger(index) && index >= 0) : [];\n      return id && reason && indices.length > 0 ? { operation: { id, reason, type: "drop_rows_by_index", indices }, errors: [] } : { operation: null, errors: ["drop_rows_by_index requires id, reason, and at least one valid index."] };\n    }\n  },\n  {\n    type: "drop_blank_rows",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("drop_blank_rows", {}, []),\n    requiredFields: ["id", "type", "reason"],\n    summarize: () => "drop_blank_rows removes empty rows",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      return id && reason ? { operation: { id, reason, type: "drop_blank_rows" }, errors: [] } : { operation: null, errors: ["drop_blank_rows requires id and reason."] };\n    }\n  },\n  {\n    type: "drop_rows_by_condition",\n    stages: ["cleaning", "analysis"],\n    schema: dropRowsByConditionOperationSchema,\n    requiredFields: ["id", "type", "reason", "predicates/groups"],\n    summarize: () => "drop_rows_by_condition requires predicates[] or groups[]",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const predicates = Array.isArray(value.predicates) ? value.predicates.map(normalizeFilterPredicate$1).filter((predicate) => Boolean(predicate)) : typeof value.condition === "string" ? parseLegacyFilterCondition(value.condition) ?? void 0 : void 0;\n      const groups = Array.isArray(value.groups) ? value.groups.map(normalizeFilterPredicateGroup$1).filter((group) => Boolean(group)) : void 0;\n      return id && reason && (((predicates == null ? void 0 : predicates.length) ?? 0) > 0 || ((groups == null ? void 0 : groups.length) ?? 0) > 0) ? { operation: { id, reason, type: "drop_rows_by_condition", ...(predicates == null ? void 0 : predicates.length) ? { predicates } : {}, ...(groups == null ? void 0 : groups.length) ? { groups } : {} }, errors: [] } : { operation: null, errors: ["drop_rows_by_condition requires id, reason, and predicates[] or groups[]."] };\n    }\n  },\n  {\n    type: "promote_header_row",\n    stages: ["cleaning"],\n    schema: createOperationSchema("promote_header_row", { rowIndex: { type: "integer" } }, ["rowIndex"]),\n    requiredFields: ["id", "type", "reason", "rowIndex"],\n    summarize: () => "promote_header_row requires rowIndex",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const rowIndex = Number(value.rowIndex);\n      return id && reason && Number.isInteger(rowIndex) && rowIndex >= 0 ? { operation: { id, reason, type: "promote_header_row", rowIndex }, errors: [] } : { operation: null, errors: ["promote_header_row requires id, reason, and a non-negative rowIndex."] };\n    }\n  },\n  {\n    type: "rename_columns",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("rename_columns", { mappings: { type: "array", items: { type: "object", properties: { from: { type: "string" }, to: { type: "string" } }, required: ["from", "to"] } } }, ["mappings"]),\n    requiredFields: ["id", "type", "reason", "mappings"],\n    summarize: () => "rename_columns requires mappings[]",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const mappings = normalizeRenameMappings(value.mappings ?? value.columns);\n      return id && reason && mappings.length > 0 ? { operation: { id, reason, type: "rename_columns", mappings }, errors: [] } : { operation: null, errors: ["rename_columns requires id, reason, and mappings[]."] };\n    }\n  },\n  {\n    type: "drop_columns",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("drop_columns", { columns: { type: "array", items: { type: "string" } } }, ["columns"]),\n    requiredFields: ["id", "type", "reason", "columns"],\n    summarize: () => "drop_columns requires columns[]",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const columns = Array.isArray(value.columns) ? value.columns.map(normalizeString).filter(Boolean) : [];\n      return id && reason && columns.length > 0 ? { operation: { id, reason, type: "drop_columns", columns }, errors: [] } : { operation: null, errors: ["drop_columns requires id, reason, and columns[]."] };\n    }\n  },\n  {\n    type: "trim_whitespace",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("trim_whitespace", { columns: { anyOf: [{ type: "string", enum: ["*"] }, { type: "array", items: { type: "string" } }] } }, ["columns"]),\n    requiredFields: ["id", "type", "reason", "columns"],\n    summarize: () => \'trim_whitespace requires columns or "*"\',\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const columns = value.columns === "*" || Array.isArray(value.columns) ? value.columns : "*";\n      return id && reason ? { operation: { ...value, id, reason, type: "trim_whitespace", columns }, errors: [] } : { operation: null, errors: ["trim_whitespace requires id and reason."] };\n    }\n  },\n  {\n    type: "normalize_empty_values",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("normalize_empty_values", { columns: { anyOf: [{ type: "string", enum: ["*"] }, { type: "array", items: { type: "string" } }] }, emptyMarkers: { type: "array", items: { type: "string" } } }, ["columns"]),\n    requiredFields: ["id", "type", "reason", "columns"],\n    summarize: () => \'normalize_empty_values requires columns or "*"\',\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const columns = value.columns === "*" || Array.isArray(value.columns) ? value.columns : "*";\n      return id && reason ? { operation: { ...value, id, reason, type: "normalize_empty_values", columns }, errors: [] } : { operation: null, errors: ["normalize_empty_values requires id and reason."] };\n    }\n  },\n  {\n    type: "replace_values",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("replace_values", { column: { type: "string" }, caseSensitive: { type: "boolean" }, replacements: { type: "array", items: { type: "object", properties: { from: { type: "string" }, to: {} }, required: ["from", "to"] } } }, ["column", "replacements"]),\n    requiredFields: ["id", "type", "reason", "column", "replacements"],\n    summarize: () => "replace_values requires column and replacements[]",\n    normalize: (value) => {\n      const candidate = flattenOperationRecord(value);\n      if (!candidate) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(candidate.id);\n      const reason = normalizeString(candidate.reason);\n      const replacements = normalizeReplaceValueReplacements(\n        candidate.replacements ?? candidate.replacement ?? candidate.replacementMap ?? candidate.mapping ?? candidate.mappings\n      );\n      const column = normalizeString(candidate.column ?? candidate.columnName ?? candidate.field) || inferReplaceValueColumn(candidate.replacements ?? candidate.replacement);\n      return id && reason && column && replacements.length > 0 ? { operation: { ...candidate, id, reason, type: "replace_values", column, replacements }, errors: [] } : { operation: null, errors: ["replace_values requires id, reason, column, and replacements[]."] };\n    }\n  },\n  {\n    type: "cast_column",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("cast_column", { column: { type: "string" }, targetType: { type: "string", enum: ["number", "currency", "percentage", "date", "boolean", "string"] } }, ["column", "targetType"]),\n    requiredFields: ["id", "type", "reason", "column", "targetType"],\n    summarize: () => "cast_column requires column and targetType",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const column = normalizeString(value.column);\n      const targetType = normalizeCastTargetType(value.targetType);\n      return id && reason && column && targetType ? { operation: { ...value, id, reason, type: "cast_column", column, targetType }, errors: [] } : { operation: null, errors: ["cast_column requires id, reason, column, and targetType."] };\n    }\n  },\n  {\n    type: "fill_missing",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("fill_missing", { column: { type: "string" }, strategy: { type: "string", enum: ["constant", "forward_fill", "zero"] }, value: {} }, ["column", "strategy"]),\n    requiredFields: ["id", "type", "reason", "column", "strategy"],\n    summarize: () => "fill_missing requires column and strategy",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const column = normalizeString(value.column);\n      const strategy = normalizeString(value.strategy);\n      return id && reason && column && ["constant", "forward_fill", "zero"].includes(strategy) ? { operation: { ...value, id, reason, type: "fill_missing", column, strategy }, errors: [] } : { operation: null, errors: ["fill_missing requires id, reason, column, and strategy."] };\n    }\n  },\n  {\n    type: "dedupe_rows",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("dedupe_rows", { keyColumns: { type: "array", items: { type: "string" } }, keep: { type: "string", enum: ["first"] } }, ["keyColumns", "keep"]),\n    requiredFields: ["id", "type", "reason", "keyColumns", "keep"],\n    summarize: () => "dedupe_rows requires keyColumns and keep",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const keyColumns = Array.isArray(value.keyColumns) ? value.keyColumns.map(normalizeString).filter(Boolean) : [];\n      const keep = normalizeString(value.keep);\n      return id && reason && keyColumns.length > 0 && keep === "first" ? { operation: { id, reason, type: "dedupe_rows", keyColumns, keep: "first" }, errors: [] } : { operation: null, errors: [\'dedupe_rows requires id, reason, keyColumns, and keep="first".\'] };\n    }\n  },\n  {\n    type: "filter_rows",\n    stages: ["cleaning", "analysis"],\n    schema: filterRowsOperationSchema,\n    requiredFields: ["id", "type", "reason", "predicates/groups"],\n    summarize: () => "filter_rows requires predicates[] or groups[]",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const predicates = Array.isArray(value.predicates) ? value.predicates.map(normalizeFilterPredicate$1).filter((predicate) => Boolean(predicate)) : typeof value.condition === "string" ? parseLegacyFilterCondition(value.condition) ?? void 0 : void 0;\n      const groups = Array.isArray(value.groups) ? value.groups.map(normalizeFilterPredicateGroup$1).filter((group) => Boolean(group)) : void 0;\n      return id && reason && (((predicates == null ? void 0 : predicates.length) ?? 0) > 0 || ((groups == null ? void 0 : groups.length) ?? 0) > 0) ? { operation: { id, reason, type: "filter_rows", ...(predicates == null ? void 0 : predicates.length) ? { predicates } : {}, ...(groups == null ? void 0 : groups.length) ? { groups } : {} }, errors: [] } : { operation: null, errors: ["filter_rows requires id, reason, and predicates[] or groups[]."] };\n    }\n  },\n  {\n    type: "derive_column",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("derive_column", { newColumn: { type: "string" }, expression: { type: "object", properties: { kind: { type: "string", enum: ["copy", "math_binary", "ratio", "concat"] }, source: deriveOperandSchema, left: deriveOperandSchema, right: deriveOperandSchema, numerator: deriveOperandSchema, denominator: deriveOperandSchema, parts: { type: "array", items: deriveOperandSchema }, separator: { type: "string" }, operator: { type: "string", enum: ["add", "subtract", "multiply", "divide"] } }, required: ["kind"] } }, ["newColumn", "expression"]),\n    requiredFields: ["id", "type", "reason", "newColumn", "expression"],\n    summarize: () => "derive_column requires newColumn and expression",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const newColumn = normalizeString(value.newColumn);\n      const expression = isRecordLike(value.expression) ? value.expression : null;\n      return id && reason && newColumn && expression ? { operation: { ...value, id, reason, type: "derive_column", newColumn, expression }, errors: [] } : { operation: null, errors: ["derive_column requires id, reason, newColumn, and expression."] };\n    }\n  },\n  {\n    type: "derive_metric_by_label",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("derive_metric_by_label", {\n      groupByColumns: { type: "array", items: { type: "string" } },\n      labelColumn: { type: "string" },\n      valueColumn: { type: "string" },\n      outputMetricLabel: { type: "string" },\n      carryForwardColumns: { type: "array", items: { type: "string" } },\n      formula: deriveMetricByLabelFormulaSchema\n    }, ["groupByColumns", "labelColumn", "valueColumn", "outputMetricLabel", "formula"]),\n    requiredFields: ["id", "type", "reason", "groupByColumns", "labelColumn", "valueColumn", "outputMetricLabel", "formula"],\n    summarize: () => "derive_metric_by_label requires groupByColumns, labelColumn, valueColumn, outputMetricLabel, and a linear_combination or ratio formula",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const groupByColumns = Array.isArray(value.groupByColumns) ? value.groupByColumns.map(normalizeString).filter(Boolean) : [];\n      const labelColumn = normalizeString(value.labelColumn);\n      const valueColumn = normalizeString(value.valueColumn);\n      const outputMetricLabel = normalizeString(value.outputMetricLabel);\n      const carryForwardColumns = Array.isArray(value.carryForwardColumns) ? value.carryForwardColumns.map(normalizeString).filter(Boolean) : void 0;\n      const rawFormula = isRecordLike(value.formula) ? value.formula : null;\n      if (!id || !reason || groupByColumns.length === 0 || !labelColumn || !valueColumn || !outputMetricLabel || !rawFormula) {\n        return { operation: null, errors: ["derive_metric_by_label requires id, reason, groupByColumns, labelColumn, valueColumn, outputMetricLabel, and formula."] };\n      }\n      if (labelColumn.toLowerCase() === valueColumn.toLowerCase()) {\n        return { operation: null, errors: ["derive_metric_by_label must use different labelColumn and valueColumn fields."] };\n      }\n      if (groupByColumns.some((column) => column.toLowerCase() === labelColumn.toLowerCase())) {\n        return { operation: null, errors: ["derive_metric_by_label groupByColumns must not include labelColumn."] };\n      }\n      const normalizeComponents = (components) => Array.isArray(components) ? components.filter(isRecordLike).map((component) => ({\n        operator: normalizeString(component.operator) === "subtract" ? "subtract" : "add",\n        matchAny: Array.isArray(component.matchAny) ? component.matchAny.map(normalizeString).filter(Boolean) : [],\n        valueTransform: normalizeString(component.valueTransform) === "absolute" ? "absolute" : "raw"\n      })).filter((component) => component.matchAny.length > 0) : [];\n      let formula = null;\n      if (normalizeString(rawFormula.kind) === "linear_combination") {\n        const components = normalizeComponents(rawFormula.components);\n        if (components.length === 0) {\n          return { operation: null, errors: ["derive_metric_by_label linear_combination requires at least one formula component with matchAny labels."] };\n        }\n        formula = { kind: "linear_combination", components };\n      } else if (normalizeString(rawFormula.kind) === "ratio") {\n        const numerator = normalizeComponents(rawFormula.numerator);\n        const denominator = normalizeComponents(rawFormula.denominator);\n        if (numerator.length === 0 || denominator.length === 0) {\n          return { operation: null, errors: ["derive_metric_by_label ratio requires numerator and denominator components with matchAny labels."] };\n        }\n        const scale = Number(rawFormula.scale);\n        formula = {\n          kind: "ratio",\n          numerator,\n          denominator,\n          ...Number.isFinite(scale) ? { scale } : {}\n        };\n      }\n      if (!formula) {\n        return { operation: null, errors: [\'derive_metric_by_label formula.kind must be "linear_combination" or "ratio".\'] };\n      }\n      return {\n        operation: {\n          id,\n          reason,\n          type: "derive_metric_by_label",\n          groupByColumns,\n          labelColumn,\n          valueColumn,\n          outputMetricLabel,\n          ...(carryForwardColumns == null ? void 0 : carryForwardColumns.length) ? { carryForwardColumns } : {},\n          formula\n        },\n        errors: []\n      };\n    }\n  },\n  {\n    type: "annotate_hierarchy",\n    stages: ["cleaning"],\n    schema: createOperationSchema("annotate_hierarchy", {\n      rowClassColumn: { type: "string" },\n      hierarchyDepthColumn: { type: "string" },\n      sourceRowIndexColumn: { type: "string" }\n    }, []),\n    requiredFields: ["id", "type", "reason"],\n    summarize: () => "annotate_hierarchy adds row class, hierarchy depth, and source row index columns for hierarchical statements",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const rowClassColumn = normalizeString(value.rowClassColumn);\n      const hierarchyDepthColumn = normalizeString(value.hierarchyDepthColumn);\n      const sourceRowIndexColumn = normalizeString(value.sourceRowIndexColumn);\n      return id && reason ? {\n        operation: {\n          id,\n          reason,\n          type: "annotate_hierarchy",\n          ...rowClassColumn ? { rowClassColumn } : {},\n          ...hierarchyDepthColumn ? { hierarchyDepthColumn } : {},\n          ...sourceRowIndexColumn ? { sourceRowIndexColumn } : {}\n        },\n        errors: []\n      } : { operation: null, errors: ["annotate_hierarchy requires id and reason."] };\n    }\n  },\n  {\n    type: "split_column",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("split_column", { column: { type: "string" }, delimiter: { type: "string" }, targetColumns: { type: "array", items: { type: "string" } } }, ["column", "delimiter", "targetColumns"]),\n    requiredFields: ["id", "type", "reason", "column", "delimiter", "targetColumns"],\n    summarize: () => "split_column requires column, delimiter, and targetColumns",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const column = normalizeString(value.column);\n      const delimiter = typeof value.delimiter === "string" ? value.delimiter : "";\n      const targetColumns = Array.isArray(value.targetColumns) ? value.targetColumns.map(normalizeString).filter(Boolean) : [];\n      return id && reason && column && delimiter && targetColumns.length > 0 ? { operation: { id, reason, type: "split_column", column, delimiter, targetColumns }, errors: [] } : { operation: null, errors: ["split_column requires id, reason, column, delimiter, and targetColumns."] };\n    }\n  },\n  {\n    type: "unpivot_columns",\n    stages: ["cleaning", "analysis"],\n    schema: createOperationSchema("unpivot_columns", {\n      sourceColumns: { type: "array", items: { type: "string" } },\n      keyColumn: { type: "string" },\n      valueColumn: { type: "string" },\n      keepColumns: { type: "array", items: { type: "string" } },\n      labelColumn: { type: "string" },\n      labelMappings: { type: "array", items: unpivotLabelMappingSchema },\n      labelColumns: { type: "array", items: unpivotLabelColumnSchema },\n      sourceColumnNameColumn: { type: "string" },\n      sourceRowIndexColumn: { type: "string" },\n      rowClassColumn: { type: "string" },\n      rowClassMappings: { type: "array", items: unpivotRowClassMappingSchema },\n      hierarchyDepthColumn: { type: "string" },\n      hierarchyDepthMappings: { type: "array", items: unpivotHierarchyDepthMappingSchema }\n    }, ["sourceColumns", "keyColumn", "valueColumn"]),\n    requiredFields: ["id", "type", "reason", "sourceColumns", "keyColumn", "valueColumn"],\n    summarize: () => "unpivot_columns requires sourceColumns, keyColumn, and valueColumn; optional multi-label, source coordinate, row class, and hierarchy depth fields preserve report semantics",\n    normalize: (value) => {\n      if (!isRecordLike(value)) return { operation: null, errors: ["Operation must be an object."] };\n      const id = normalizeString(value.id);\n      const reason = normalizeString(value.reason);\n      const sourceColumns = Array.isArray(value.sourceColumns) ? value.sourceColumns.map(normalizeString).filter(Boolean) : [];\n      const keyColumn = normalizeString(value.keyColumn);\n      const valueColumn = normalizeString(value.valueColumn);\n      const keepColumns = Array.isArray(value.keepColumns) ? value.keepColumns.map(normalizeString).filter(Boolean) : void 0;\n      const labelColumn = normalizeString(value.labelColumn);\n      const labelMappings = Array.isArray(value.labelMappings) ? value.labelMappings.filter((item) => isRecordLike(item)).map((item) => ({\n        sourceColumn: normalizeString(item.sourceColumn),\n        label: item.label ?? null\n      })).filter((item) => item.sourceColumn) : void 0;\n      const labelColumns = normalizeUnpivotLabelColumns({\n        labelColumn,\n        labelMappings,\n        labelColumns: Array.isArray(value.labelColumns) ? value.labelColumns.filter((item) => isRecordLike(item)).map((item) => ({\n          outputColumn: normalizeString(item.outputColumn),\n          mappings: Array.isArray(item.mappings) ? item.mappings.filter((entry) => isRecordLike(entry)).map((entry) => ({\n            sourceColumn: normalizeString(entry.sourceColumn),\n            label: entry.label ?? null\n          })).filter((entry) => entry.sourceColumn) : []\n        })) : void 0\n      });\n      const sourceColumnNameColumn = normalizeString(value.sourceColumnNameColumn);\n      const sourceRowIndexColumn = normalizeString(value.sourceRowIndexColumn);\n      const rowClassColumn = normalizeString(value.rowClassColumn);\n      const rowClassMappings = Array.isArray(value.rowClassMappings) ? value.rowClassMappings.filter((item) => isRecordLike(item)).map((item) => ({\n        sourceRowIndex: Number(item.sourceRowIndex),\n        rowClass: normalizeString(item.rowClass)\n      })).filter((item) => Number.isInteger(item.sourceRowIndex) && item.sourceRowIndex >= 0 && item.rowClass) : void 0;\n      const hierarchyDepthColumn = normalizeString(value.hierarchyDepthColumn);\n      const hierarchyDepthMappings = normalizeUnpivotHierarchyDepthMappings({\n        hierarchyDepthMappings: Array.isArray(value.hierarchyDepthMappings) ? value.hierarchyDepthMappings.filter((item) => isRecordLike(item)).map((item) => ({\n          sourceRowIndex: Number(item.sourceRowIndex),\n          depth: Number(item.depth)\n        })) : void 0\n      });\n      return id && reason && sourceColumns.length > 0 && keyColumn && valueColumn ? {\n        operation: {\n          id,\n          reason,\n          type: "unpivot_columns",\n          sourceColumns,\n          keyColumn,\n          valueColumn,\n          ...(keepColumns == null ? void 0 : keepColumns.length) ? { keepColumns } : {},\n          ...labelColumn ? { labelColumn } : {},\n          ...(labelMappings == null ? void 0 : labelMappings.length) ? { labelMappings } : {},\n          ...labelColumns.length > 0 ? { labelColumns } : {},\n          ...sourceColumnNameColumn ? { sourceColumnNameColumn } : {},\n          ...sourceRowIndexColumn ? { sourceRowIndexColumn } : {},\n          ...rowClassColumn ? { rowClassColumn } : {},\n          ...(rowClassMappings == null ? void 0 : rowClassMappings.length) ? { rowClassMappings } : {},\n          ...hierarchyDepthColumn ? { hierarchyDepthColumn } : {},\n          ...hierarchyDepthMappings.length > 0 ? { hierarchyDepthMappings } : {}\n        },\n        errors: []\n      } : { operation: null, errors: ["unpivot_columns requires id, reason, sourceColumns, keyColumn, and valueColumn."] };\n    }\n  }\n];\nnew Map(\n  operationManifests.map((manifest) => [manifest.type, manifest])\n);\nconst DEFAULT_EMPTY_MARKERS = ["", "n/a", "na", "null", "none", "-", "--"];\nconst FILTER_OPERATORS = /* @__PURE__ */ new Set([\n  "eq",\n  "neq",\n  "gt",\n  "gte",\n  "lt",\n  "lte",\n  "between",\n  "contains",\n  "starts_with",\n  "ends_with",\n  "in",\n  "is_null",\n  "not_null"\n]);\nconst DEFAULT_ROW_CLASS_COLUMN = "RowClass";\nconst DEFAULT_HIERARCHY_DEPTH_COLUMN = "HierarchyDepth";\nconst DEFAULT_SOURCE_ROW_INDEX_COLUMN = "SourceRowIndex";\nconst cloneRows = (rows) => rows.map((row) => ({ ...row }));\nconst isRecord$1 = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);\nconst getColumns = (rows) => {\n  const columns = /* @__PURE__ */ new Set();\n  rows.forEach((row) => {\n    Object.keys(row).forEach((key) => columns.add(key));\n  });\n  return [...columns];\n};\nconst colKey = (name) => name.trim().replace(/\\s+/g, " ").toLowerCase();\nconst buildColumnLookup = (columns) => {\n  const lookup = /* @__PURE__ */ new Map();\n  columns.forEach((column) => {\n    lookup.set(colKey(column), column);\n  });\n  return lookup;\n};\nconst normalizeColumnName = (column, lookup, context) => {\n  if (typeof column !== "string" || !column.trim()) {\n    throw new Error(`${context} requires a non-empty column name.`);\n  }\n  const normalized = lookup.get(colKey(column));\n  if (!normalized) {\n    throw new Error(`${context} references missing column: ${column}`);\n  }\n  return normalized;\n};\nconst isMissingValue$1 = (value) => {\n  if (value === null || value === void 0) return true;\n  return typeof value === "string" && value.trim() === "";\n};\nconst isBlankRow = (row) => Object.values(row).every((value) => isMissingValue$1(value));\nconst sanitizeHeaderName = (value, fallback, index) => {\n  const normalized = String(value ?? "").trim();\n  if (!normalized) {\n    return fallback.trim() || `_unnamed_column_${index + 1}`;\n  }\n  return normalized;\n};\nconst uniquifyHeaders = (headers) => {\n  const seen = /* @__PURE__ */ new Map();\n  return headers.map((header) => {\n    const normalized = header.trim() || "_unnamed_column";\n    const key = normalized.toLowerCase();\n    const count = seen.get(key) ?? 0;\n    seen.set(key, count + 1);\n    return count === 0 ? normalized : `${normalized}_${count + 1}`;\n  });\n};\nconst buildDistinctKeyCount = (rows, columns) => {\n  if (columns.length === 0) return 0;\n  return new Set(rows.map((row) => columns.map((column) => String(row[column] ?? "")).join("||"))).size;\n};\nconst normalizeMarker = (value) => value.trim().toLowerCase();\nconst getOperationColumns = (rows, columns) => columns === "*" ? getColumns(rows) : columns;\nconst assertColumnsExist = (rows, columns, operation) => {\n  const existing = new Set(getColumns(rows).map((column) => column.toLowerCase()));\n  const missing = columns.filter((column) => !existing.has(column.toLowerCase()));\n  if (missing.length > 0) {\n    throw new Error(`Operation "${operation.id}" references missing columns: ${missing.join(", ")}`);\n  }\n};\nconst formatDate = (value) => {\n  if (isMissingValue$1(value)) return null;\n  const parsed = new Date(String(value));\n  if (Number.isNaN(parsed.getTime())) return null;\n  return parsed.toISOString().slice(0, 10);\n};\nconst formatBoolean = (value) => {\n  if (isMissingValue$1(value)) return null;\n  const normalized = String(value).trim().toLowerCase();\n  if (["true", "yes", "y", "1"].includes(normalized)) return true;\n  if (["false", "no", "n", "0"].includes(normalized)) return false;\n  return null;\n};\nconst castValue = (value, operation) => {\n  if (operation.targetType === "string") {\n    return isMissingValue$1(value) ? null : String(value).trim();\n  }\n  if (operation.targetType === "date") {\n    return formatDate(value);\n  }\n  if (operation.targetType === "boolean") {\n    return formatBoolean(value);\n  }\n  const numeric = robustParseFloat(value);\n  return numeric;\n};\nconst resolveOperand = (row, operand) => operand.kind === "literal" ? operand.value : row[operand.column] ?? null;\nconst deriveValue = (row, expression) => {\n  switch (expression.kind) {\n    case "copy":\n      return resolveOperand(row, expression.source);\n    case "math_binary": {\n      const left = robustParseFloat(resolveOperand(row, expression.left));\n      const right = robustParseFloat(resolveOperand(row, expression.right));\n      if (left === null || right === null) return null;\n      switch (expression.operator) {\n        case "add":\n          return left + right;\n        case "subtract":\n          return left - right;\n        case "multiply":\n          return left * right;\n        case "divide":\n          return right === 0 ? null : left / right;\n      }\n      break;\n    }\n    case "ratio": {\n      const numerator = robustParseFloat(resolveOperand(row, expression.numerator));\n      const denominator = robustParseFloat(resolveOperand(row, expression.denominator));\n      if (numerator === null || denominator === null || denominator === 0) return null;\n      return numerator / denominator;\n    }\n    case "concat":\n      return expression.parts.map((part) => resolveOperand(row, part)).filter((value) => value !== null && value !== void 0 && String(value).length > 0).map((value) => String(value)).join(expression.separator ?? "");\n  }\n  return null;\n};\nconst comparePredicate = (row, predicate) => {\n  const value = row[predicate.column] ?? null;\n  switch (predicate.operator) {\n    case "is_null":\n      return isMissingValue$1(value);\n    case "not_null":\n      return !isMissingValue$1(value);\n    case "contains":\n      return String(value ?? "").toLowerCase().includes(String(predicate.value ?? "").toLowerCase());\n    case "starts_with":\n      return String(value ?? "").toLowerCase().startsWith(String(predicate.value ?? "").toLowerCase());\n    case "ends_with":\n      return String(value ?? "").toLowerCase().endsWith(String(predicate.value ?? "").toLowerCase());\n    case "in": {\n      const values = Array.isArray(predicate.value) ? predicate.value : [predicate.value];\n      const normalized = String(value ?? "").toLowerCase();\n      return values.some((candidate) => String(candidate ?? "").toLowerCase() === normalized);\n    }\n    case "eq":\n      return String(value ?? "").toLowerCase() === String(predicate.value ?? "").toLowerCase();\n    case "neq":\n      return String(value ?? "").toLowerCase() !== String(predicate.value ?? "").toLowerCase();\n    case "gt":\n    case "gte":\n    case "lt":\n    case "lte":\n    case "between": {\n      const left = robustParseFloat(value);\n      if (predicate.operator === "between") {\n        const values = Array.isArray(predicate.value) ? predicate.value : [];\n        const lower = robustParseFloat(values[0]);\n        const upper = robustParseFloat(values[1]);\n        if (left === null || lower === null || upper === null) return false;\n        return left >= lower && left <= upper;\n      }\n      const right = robustParseFloat(predicate.value);\n      if (left === null || right === null) return false;\n      if (predicate.operator === "gt") return left > right;\n      if (predicate.operator === "gte") return left >= right;\n      if (predicate.operator === "lt") return left < right;\n      return left <= right;\n    }\n  }\n};\nconst buildRowTemplate = (row) => Object.fromEntries(Object.keys(row).map((column) => [column, null]));\nconst getMetricComponentTotal = (rows, labelColumn, valueColumn, component) => {\n  const matchTerms = component.matchAny.map((term) => term.toLowerCase());\n  const matchedRows = rows.filter((row) => {\n    const labelValue = String(row[labelColumn] ?? "").trim().toLowerCase();\n    return matchTerms.some((term) => labelValue.includes(term));\n  });\n  if (matchedRows.length === 0) {\n    return null;\n  }\n  return matchedRows.reduce((total, row) => {\n    const parsed = robustParseFloat(row[valueColumn] ?? null);\n    if (parsed === null) {\n      return total;\n    }\n    const value = component.valueTransform === "absolute" ? Math.abs(parsed) : parsed;\n    return component.operator === "subtract" ? total - value : total + value;\n  }, 0);\n};\nconst evaluateDerivedMetricFormula = (rows, labelColumn, valueColumn, formula) => {\n  if (formula.kind === "linear_combination") {\n    const totals = formula.components.map((component) => getMetricComponentTotal(rows, labelColumn, valueColumn, component));\n    return totals.some((total) => total === null) ? null : totals.reduce((sum, total) => sum + (total ?? 0), 0);\n  }\n  const numeratorTotals = formula.numerator.map((component) => getMetricComponentTotal(rows, labelColumn, valueColumn, component));\n  const denominatorTotals = formula.denominator.map((component) => getMetricComponentTotal(rows, labelColumn, valueColumn, component));\n  if (numeratorTotals.some((total) => total === null) || denominatorTotals.some((total) => total === null)) {\n    return null;\n  }\n  const numerator = numeratorTotals.reduce((sum, total) => sum + (total ?? 0), 0);\n  const denominator = denominatorTotals.reduce((sum, total) => sum + (total ?? 0), 0);\n  if (denominator === 0) {\n    return null;\n  }\n  return numerator / denominator * (Number.isFinite(formula.scale) ? formula.scale : 1);\n};\nconst appendDerivedMetricRows = (rows, operation) => {\n  assertColumnsExist(rows, [\n    ...operation.groupByColumns,\n    operation.labelColumn,\n    operation.valueColumn,\n    ...operation.carryForwardColumns ?? []\n  ], operation);\n  const groups = /* @__PURE__ */ new Map();\n  rows.forEach((row) => {\n    const key = JSON.stringify(operation.groupByColumns.map((column) => row[column] ?? null));\n    const existing = groups.get(key);\n    if (existing) {\n      existing.push(row);\n      return;\n    }\n    groups.set(key, [row]);\n  });\n  const derivedRows = [...groups.values()].flatMap((groupRows) => {\n    const computedValue = evaluateDerivedMetricFormula(\n      groupRows,\n      operation.labelColumn,\n      operation.valueColumn,\n      operation.formula\n    );\n    if (computedValue === null) {\n      return [];\n    }\n    const seedRow = groupRows[0] ?? {};\n    const derivedRow = buildRowTemplate(seedRow);\n    operation.groupByColumns.forEach((column) => {\n      derivedRow[column] = seedRow[column] ?? null;\n    });\n    (operation.carryForwardColumns ?? []).forEach((column) => {\n      derivedRow[column] = seedRow[column] ?? null;\n    });\n    if (Object.prototype.hasOwnProperty.call(derivedRow, "RowClass")) {\n      derivedRow.RowClass = "derived_metric";\n    }\n    derivedRow[operation.labelColumn] = operation.outputMetricLabel;\n    derivedRow[operation.valueColumn] = computedValue;\n    return [derivedRow];\n  });\n  return [...rows, ...derivedRows];\n};\nconst comparePredicateGroup = (row, group) => Array.isArray(group.predicates) && group.predicates.every((predicate) => comparePredicate(row, predicate));\nconst normalizeFilterPredicate = (value) => {\n  if (!isRecord$1(value)) return null;\n  const column = typeof value.column === "string" ? value.column.trim() : "";\n  const operator = typeof value.operator === "string" ? value.operator : "";\n  if (!column || !FILTER_OPERATORS.has(operator)) {\n    return null;\n  }\n  const predicate = {\n    column,\n    operator\n  };\n  if ("value" in value) {\n    predicate.value = value.value;\n  }\n  return predicate;\n};\nconst normalizeFilterPredicateGroup = (value) => {\n  if (!isRecord$1(value) || !Array.isArray(value.predicates)) return null;\n  const predicates = value.predicates.map(normalizeFilterPredicate).filter((predicate) => Boolean(predicate));\n  if (predicates.length === 0) {\n    return null;\n  }\n  return { predicates };\n};\nconst applyFillMissing = (rows, operation) => {\n  let lastSeen = null;\n  return rows.map((row) => {\n    const nextRow = { ...row };\n    const current = nextRow[operation.column] ?? null;\n    if (!isMissingValue$1(current)) {\n      lastSeen = current;\n      return nextRow;\n    }\n    if (operation.strategy === "zero") {\n      nextRow[operation.column] = 0;\n    } else if (operation.strategy === "constant") {\n      nextRow[operation.column] = operation.value ?? null;\n    } else if (operation.strategy === "forward_fill") {\n      nextRow[operation.column] = lastSeen;\n    }\n    return nextRow;\n  });\n};\nconst resolveFilterOperationClauses = (rows, operation) => {\n  const predicates = Array.isArray(operation.predicates) ? operation.predicates.filter((predicate) => predicate && typeof predicate.column === "string" && typeof predicate.operator === "string") : [];\n  const groups = Array.isArray(operation.groups) ? operation.groups.filter((group) => group && Array.isArray(group.predicates)).map((group) => ({\n    predicates: group.predicates.filter((predicate) => predicate && typeof predicate.column === "string" && typeof predicate.operator === "string")\n  })).filter((group) => group.predicates.length > 0) : [];\n  assertColumnsExist(rows, [\n    ...predicates.map((predicate) => predicate.column),\n    ...groups.flatMap((group) => group.predicates.map((predicate) => predicate.column))\n  ], operation);\n  if (predicates.length === 0 && groups.length === 0) {\n    throw new Error(`Operation "${operation.id}" must include valid predicates or groups.`);\n  }\n  return { predicates, groups };\n};\nconst matchesFilterOperation = (row, clauses) => {\n  const predicateMatch = clauses.predicates.length > 0 ? clauses.predicates.every((predicate) => comparePredicate(row, predicate)) : false;\n  const groupMatch = clauses.groups.length > 0 ? clauses.groups.some((group) => comparePredicateGroup(row, group)) : false;\n  return predicateMatch || groupMatch;\n};\nconst applyOperation = (rows, operation) => {\n  const draft = cloneRows(rows);\n  switch (operation.type) {\n    case "drop_rows_by_index": {\n      const outOfBounds = operation.indices.filter((i) => i < 0 || i >= draft.length);\n      if (outOfBounds.length > 0) {\n        console.warn(\n          `[DataOperationMutator] drop_rows_by_index: ${outOfBounds.length} of ${operation.indices.length} indices are out of bounds (dataset has ${draft.length} rows). Out-of-bounds: [${outOfBounds.join(", ")}].`\n        );\n      }\n      const toDrop = new Set(operation.indices);\n      return draft.filter((_, index) => !toDrop.has(index));\n    }\n    case "drop_rows_by_condition": {\n      const clauses = resolveFilterOperationClauses(draft, operation);\n      return draft.filter((row) => !matchesFilterOperation(row, clauses));\n    }\n    case "drop_blank_rows":\n      return draft.filter((row) => !isBlankRow(row));\n    case "promote_header_row": {\n      if (operation.rowIndex >= draft.length) {\n        throw new Error(`Operation "${operation.id}" references missing row index ${operation.rowIndex}.`);\n      }\n      const currentColumns = getColumns(draft);\n      if (currentColumns.length === 0) {\n        throw new Error(`Operation "${operation.id}" requires at least one existing column.`);\n      }\n      const headerRow = draft[operation.rowIndex];\n      const promotedHeaders = uniquifyHeaders(\n        currentColumns.map((column, index) => sanitizeHeaderName(headerRow[column] ?? null, column, index))\n      );\n      return draft.filter((_, index) => index !== operation.rowIndex).map((row) => {\n        const nextRow = {};\n        currentColumns.forEach((column, index) => {\n          nextRow[promotedHeaders[index]] = row[column] ?? null;\n        });\n        return nextRow;\n      });\n    }\n    case "rename_columns":\n      assertColumnsExist(draft, operation.mappings.map((mapping) => mapping.from), operation);\n      return draft.map((row) => {\n        const nextRow = {};\n        Object.entries(row).forEach(([key, value]) => {\n          const mapping = operation.mappings.find((entry) => entry.from.toLowerCase() === key.toLowerCase());\n          nextRow[(mapping == null ? void 0 : mapping.to) ?? key] = value;\n        });\n        return nextRow;\n      });\n    case "drop_columns":\n      assertColumnsExist(draft, operation.columns, operation);\n      return draft.map((row) => {\n        const nextRow = { ...row };\n        operation.columns.forEach((column) => {\n          delete nextRow[column];\n        });\n        return nextRow;\n      });\n    case "trim_whitespace": {\n      const columns = getOperationColumns(draft, operation.columns);\n      assertColumnsExist(draft, columns, operation);\n      return draft.map((row) => {\n        const nextRow = { ...row };\n        columns.forEach((column) => {\n          if (typeof nextRow[column] === "string") {\n            nextRow[column] = nextRow[column].trim();\n          }\n        });\n        return nextRow;\n      });\n    }\n    case "normalize_empty_values": {\n      const columns = getOperationColumns(draft, operation.columns);\n      assertColumnsExist(draft, columns, operation);\n      const markers = new Set((operation.emptyMarkers ?? DEFAULT_EMPTY_MARKERS).map(normalizeMarker));\n      return draft.map((row) => {\n        const nextRow = { ...row };\n        columns.forEach((column) => {\n          if (typeof nextRow[column] === "string" && markers.has(normalizeMarker(nextRow[column]))) {\n            nextRow[column] = null;\n          }\n        });\n        return nextRow;\n      });\n    }\n    case "replace_values":\n      assertColumnsExist(draft, [operation.column], operation);\n      return draft.map((row) => {\n        const nextRow = { ...row };\n        const current = nextRow[operation.column];\n        const replacement = operation.replacements.find((entry) => {\n          if (current === null || current === void 0) return false;\n          if (operation.caseSensitive) {\n            return String(current) === entry.from;\n          }\n          return String(current).toLowerCase() === entry.from.toLowerCase();\n        });\n        if (replacement) {\n          nextRow[operation.column] = replacement.to;\n        }\n        return nextRow;\n      });\n    case "cast_column":\n      assertColumnsExist(draft, [operation.column], operation);\n      return draft.map((row) => ({\n        ...row,\n        [operation.column]: castValue(row[operation.column] ?? null, operation)\n      }));\n    case "fill_missing":\n      assertColumnsExist(draft, [operation.column], operation);\n      return applyFillMissing(draft, operation);\n    case "dedupe_rows":\n      assertColumnsExist(draft, operation.keyColumns, operation);\n      return draft.filter((row, index, allRows) => {\n        const key = operation.keyColumns.map((column) => String(row[column] ?? "")).join("||");\n        return allRows.findIndex(\n          (candidate) => operation.keyColumns.every((column) => String(candidate[column] ?? "") === String(row[column] ?? ""))\n        ) === index && key.length >= 0;\n      });\n    case "filter_rows": {\n      const clauses = resolveFilterOperationClauses(draft, operation);\n      return draft.filter((row) => matchesFilterOperation(row, clauses));\n    }\n    case "derive_column":\n      return draft.map((row) => ({\n        ...row,\n        [operation.newColumn]: deriveValue(row, operation.expression)\n      }));\n    case "derive_metric_by_label":\n      return appendDerivedMetricRows(draft, operation);\n    case "annotate_hierarchy": {\n      const profile = detectReportShape({\n        fileName: "annotate-hierarchy.csv",\n        data: draft,\n        metadataRows: [],\n        headerLayers: [],\n        summaryRows: [],\n        headerDepth: 1\n      });\n      const rowRoleMap = new Map(profile.rowRoles.map((candidate) => [candidate.rowIndex, candidate]));\n      const hasHierarchySignals = profile.primaryKind === "hierarchical_statement" || profile.rowRoles.some(\n        (candidate) => ["group_header", "subtotal", "total"].includes(candidate.role)\n      );\n      if (!hasHierarchySignals) {\n        throw new Error(`Operation "${operation.id}" requires a hierarchical statement shape.`);\n      }\n      const rowClassColumn = operation.rowClassColumn ?? DEFAULT_ROW_CLASS_COLUMN;\n      const hierarchyDepthColumn = operation.hierarchyDepthColumn ?? DEFAULT_HIERARCHY_DEPTH_COLUMN;\n      const sourceRowIndexColumn = operation.sourceRowIndexColumn ?? DEFAULT_SOURCE_ROW_INDEX_COLUMN;\n      return draft.map((row, index) => {\n        const role = rowRoleMap.get(index);\n        return {\n          ...row,\n          [rowClassColumn]: (role == null ? void 0 : role.role) ?? "fact",\n          [hierarchyDepthColumn]: (role == null ? void 0 : role.depth) ?? 0,\n          [sourceRowIndexColumn]: index\n        };\n      });\n    }\n    case "split_column":\n      assertColumnsExist(draft, [operation.column], operation);\n      return draft.map((row) => {\n        const nextRow = { ...row };\n        const parts = String(row[operation.column] ?? "").split(operation.delimiter);\n        operation.targetColumns.forEach((column, index) => {\n          var _a;\n          nextRow[column] = ((_a = parts[index]) == null ? void 0 : _a.trim()) ?? null;\n        });\n        return nextRow;\n      });\n    case "unpivot_columns":\n      assertColumnsExist(draft, operation.sourceColumns, operation);\n      if (operation.keepColumns && operation.keepColumns.length > 0) {\n        assertColumnsExist(draft, operation.keepColumns, operation);\n      }\n      if (operation.sourceColumns.some((column) => SUMMARY_LABEL_PATTERN.test(column.trim()))) {\n        throw new Error(`Operation "${operation.id}" cannot unpivot summary columns such as Total or Subtotal.`);\n      }\n      return draft.flatMap((row, rowIndex) => {\n        const keepColumns = operation.keepColumns && operation.keepColumns.length > 0 ? operation.keepColumns : Object.keys(row).filter((column) => !operation.sourceColumns.includes(column));\n        const labelColumns = normalizeUnpivotLabelColumns(operation);\n        const labelMaps = labelColumns.map((labelColumn) => ({\n          outputColumn: labelColumn.outputColumn,\n          map: new Map(labelColumn.mappings.map((mapping) => [mapping.sourceColumn, mapping.label]))\n        }));\n        const rowClassMap = new Map((operation.rowClassMappings ?? []).map((mapping) => [mapping.sourceRowIndex, mapping.rowClass]));\n        const hierarchyDepthMap = new Map(\n          normalizeUnpivotHierarchyDepthMappings(operation).map((mapping) => [mapping.sourceRowIndex, mapping.depth])\n        );\n        return operation.sourceColumns.map((column) => {\n          const nextRow = {};\n          keepColumns.forEach((keepColumn) => {\n            nextRow[keepColumn] = row[keepColumn] ?? null;\n          });\n          nextRow[operation.keyColumn] = column;\n          nextRow[operation.valueColumn] = row[column] ?? null;\n          labelMaps.forEach((labelColumn) => {\n            nextRow[labelColumn.outputColumn] = labelColumn.map.get(column) ?? null;\n          });\n          if (operation.sourceColumnNameColumn) {\n            nextRow[operation.sourceColumnNameColumn] = column;\n          }\n          if (operation.sourceRowIndexColumn) {\n            nextRow[operation.sourceRowIndexColumn] = rowIndex;\n          }\n          if (operation.rowClassColumn) {\n            nextRow[operation.rowClassColumn] = rowClassMap.get(rowIndex) ?? null;\n          }\n          if (operation.hierarchyDepthColumn) {\n            nextRow[operation.hierarchyDepthColumn] = hierarchyDepthMap.get(rowIndex) ?? null;\n          }\n          return nextRow;\n        });\n      });\n  }\n};\nconst verifyOperationOutput = (before, after, operation) => {\n  if (!Array.isArray(after) || after.some((row) => row === null || typeof row !== "object" || Array.isArray(row))) {\n    throw new Error(`Operation "${operation.id}" produced an invalid dataset shape.`);\n  }\n  const columns = getColumns(after);\n  const seen = /* @__PURE__ */ new Set();\n  columns.forEach((column) => {\n    const key = column.toLowerCase();\n    if (seen.has(key)) {\n      throw new Error(`Operation "${operation.id}" produced duplicate columns.`);\n    }\n    seen.add(key);\n  });\n  if (before.length < 0 || after.length < 0) {\n    throw new Error(`Operation "${operation.id}" produced an invalid row count.`);\n  }\n  if (operation.type === "unpivot_columns") {\n    const keepColumns = operation.keepColumns && operation.keepColumns.length > 0 ? operation.keepColumns : getColumns(before).filter((column) => !operation.sourceColumns.includes(column));\n    const beforeKeyCount = buildDistinctKeyCount(before, keepColumns);\n    const afterKeyCount = buildDistinctKeyCount(after, keepColumns);\n    if (afterKeyCount < beforeKeyCount) {\n      throw new Error(`Operation "${operation.id}" reduced distinct keep-column combinations after unpivot.`);\n    }\n  }\n};\nconst applyDataOperations = (inputRows, operations, options) => {\n  let currentRows = cloneRows(inputRows);\n  const logs = [];\n  operations.forEach((operation) => {\n    const beforeRows = cloneRows(currentRows);\n    const beforeColumns = getColumns(beforeRows);\n    try {\n      const nextRows = applyOperation(beforeRows, operation);\n      verifyOperationOutput(beforeRows, nextRows, operation);\n      if (!(options == null ? void 0 : options.allowEmptyResult) && nextRows.length === 0) {\n        throw new Error(`Operation "${operation.id}" produced an empty dataset.`);\n      }\n      currentRows = nextRows;\n      logs.push({\n        operationId: operation.id,\n        operationType: operation.type,\n        reason: operation.reason,\n        status: "done",\n        rowCountBefore: beforeRows.length,\n        rowCountAfter: nextRows.length,\n        columnCountBefore: beforeColumns.length,\n        columnCountAfter: getColumns(nextRows).length\n      });\n    } catch (error) {\n      logs.push({\n        operationId: operation.id,\n        operationType: operation.type,\n        reason: operation.reason,\n        status: "error",\n        rowCountBefore: beforeRows.length,\n        rowCountAfter: beforeRows.length,\n        columnCountBefore: beforeColumns.length,\n        columnCountAfter: beforeColumns.length,\n        detail: {\n          error: error instanceof Error ? error.message : String(error)\n        }\n      });\n      throw error;\n    }\n  });\n  return {\n    data: currentRows,\n    logs\n  };\n};\nconst applySpreadsheetFilterOperation = (inputRows, operation) => applyDataOperations(inputRows, [operation], { allowEmptyResult: true });\nconst QUERY_AGGREGATE_FUNCTIONS = /* @__PURE__ */ new Set(["count", "count_distinct", "sum", "avg", "min", "max", "median", "percentile"]);\nconst normalizeQueryOrderDirection = (direction) => typeof direction === "string" && direction.trim().toLowerCase() === "desc" ? "desc" : "asc";\nconst normalizeQueryAggregateFunction = (value) => {\n  const normalized = normalizeString(value).toLowerCase();\n  return QUERY_AGGREGATE_FUNCTIONS.has(normalized) ? normalized : null;\n};\nconst DEFAULT_QUERY_MAX_ROWS = 500;\nconst DEFAULT_QUERY_MAX_COLUMNS = 50;\nconst DEFAULT_QUERY_MAX_ORDER_BY = 3;\nconst isRecord = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);\nconst isMissingValue = (value) => {\n  if (value === null || value === void 0) return true;\n  return typeof value === "string" && value.trim() === "";\n};\nconst tryNormalizeColumnName = (column, lookup) => {\n  const trimmed = column.trim();\n  if (!trimmed) return null;\n  return lookup.get(trimmed.toLowerCase()) ?? null;\n};\nconst normalizeWhereClause = (where, lookup) => {\n  if (!where) return void 0;\n  let inputPredicateCount = 0;\n  let droppedColumns = [];\n  const predicates = Array.isArray(where.predicates) ? where.predicates.map((predicate) => {\n    const normalizedPredicate = normalizeFilterPredicate(predicate);\n    if (!normalizedPredicate) return null;\n    inputPredicateCount++;\n    const resolved = tryNormalizeColumnName(normalizedPredicate.column, lookup);\n    if (!resolved) {\n      droppedColumns.push(normalizedPredicate.column);\n      console.warn(`[dataQueryExecutor] Skipping where predicate for missing column: ${normalizedPredicate.column}`);\n      return null;\n    }\n    return { ...normalizedPredicate, column: resolved };\n  }).filter((predicate) => predicate !== null) : void 0;\n  const groups = Array.isArray(where.groups) ? where.groups.map((group) => {\n    const normalizedGroup = normalizeFilterPredicateGroup(group);\n    if (!normalizedGroup) return null;\n    const resolvedPredicates = normalizedGroup.predicates.map((predicate) => {\n      const normalizedPredicate = normalizeFilterPredicate(predicate);\n      if (!normalizedPredicate) return null;\n      inputPredicateCount++;\n      const resolved = tryNormalizeColumnName(normalizedPredicate.column, lookup);\n      if (!resolved) {\n        droppedColumns.push(normalizedPredicate.column);\n        console.warn(`[dataQueryExecutor] Skipping where group predicate for missing column: ${normalizedPredicate.column}`);\n        return null;\n      }\n      return { ...normalizedPredicate, column: resolved };\n    }).filter((predicate) => predicate !== null);\n    return resolvedPredicates.length > 0 ? { predicates: resolvedPredicates } : null;\n  }).filter((group) => group !== null) : void 0;\n  const survivingCount = ((predicates == null ? void 0 : predicates.length) ?? 0) + ((groups == null ? void 0 : groups.reduce((sum, g) => sum + g.predicates.length, 0)) ?? 0);\n  if (inputPredicateCount > 0 && survivingCount === 0) {\n    throw new Error(\n      `All where filter columns are missing from the dataset: ${droppedColumns.join(", ")}. Query cannot proceed without valid filter conditions.`\n    );\n  }\n  if ((!predicates || predicates.length === 0) && (!groups || groups.length === 0)) {\n    return void 0;\n  }\n  return {\n    ...predicates && predicates.length > 0 ? { predicates } : {},\n    ...groups && groups.length > 0 ? { groups } : {}\n  };\n};\nconst sortQueryRows = (rows, orderBy) => {\n  if (orderBy.length === 0) return rows;\n  return [...rows].sort((leftRow, rightRow) => {\n    for (const clause of orderBy) {\n      const leftValue = leftRow[clause.column];\n      const rightValue = rightRow[clause.column];\n      if (leftValue === null || leftValue === void 0) return 1;\n      if (rightValue === null || rightValue === void 0) return -1;\n      const leftNumber = robustParseFloat(leftValue);\n      const rightNumber = robustParseFloat(rightValue);\n      if (leftNumber !== null && rightNumber !== null) {\n        if (leftNumber !== rightNumber) {\n          return clause.direction === "asc" ? leftNumber - rightNumber : rightNumber - leftNumber;\n        }\n        continue;\n      }\n      const leftString = String(leftValue).toLowerCase();\n      const rightString = String(rightValue).toLowerCase();\n      if (leftString !== rightString) {\n        if (leftString < rightString) return clause.direction === "asc" ? -1 : 1;\n        return clause.direction === "asc" ? 1 : -1;\n      }\n    }\n    return 0;\n  });\n};\nconst POST_AGGREGATE_OPERATORS = /* @__PURE__ */ new Set([\n  "eq",\n  "neq",\n  "gt",\n  "gte",\n  "lt",\n  "lte",\n  "between",\n  "is_null",\n  "not_null"\n]);\nconst normalizeAggregateAlias = (value, context) => {\n  if (typeof value !== "string") {\n    throw new Error(`${context} requires a non-empty alias.`);\n  }\n  const normalized = value.trim();\n  if (!normalized) {\n    throw new Error(`${context} requires a non-empty alias.`);\n  }\n  return normalized;\n};\nconst normalizeAggregateClauses = (aggregates, lookup, groupByColumns) => {\n  const seenOutputs = new Set(groupByColumns.map((column) => column.toLowerCase()));\n  return (Array.isArray(aggregates) ? aggregates : []).map((aggregate, index) => {\n    if (!aggregate || typeof aggregate !== "object" || Array.isArray(aggregate)) {\n      throw new Error(`Query aggregate ${index + 1} must be an object.`);\n    }\n    const alias = normalizeAggregateAlias(aggregate.as, `Query aggregate ${index + 1}`);\n    const aliasKey = alias.toLowerCase();\n    if (seenOutputs.has(aliasKey)) {\n      throw new Error(`Query aggregate alias "${alias}" must be unique and must not overlap with groupBy columns.`);\n    }\n    seenOutputs.add(aliasKey);\n    const functionName = normalizeQueryAggregateFunction(aggregate.function);\n    if (!functionName) {\n      throw new Error(`Query aggregate "${alias}" must use one of: count, count_distinct, sum, avg, min, max, median, percentile.`);\n    }\n    if (functionName === "count") {\n      return {\n        function: "count",\n        as: alias,\n        ...aggregate.column ? { column: normalizeColumnName(aggregate.column, lookup, `Query aggregate "${alias}"`) } : {},\n        ...aggregate.where ? { where: normalizeWhereClause(aggregate.where, lookup) } : {}\n      };\n    }\n    if (!aggregate.column) {\n      throw new Error(`Query aggregate "${alias}" requires a source column for ${functionName}.`);\n    }\n    return {\n      function: functionName,\n      column: normalizeColumnName(aggregate.column, lookup, `Query aggregate "${alias}"`),\n      as: alias,\n      ...functionName === "percentile" ? { percentile: aggregate.percentile } : {},\n      ...aggregate.where ? { where: normalizeWhereClause(aggregate.where, lookup) } : {}\n    };\n  });\n};\nconst calculateMedian = (values) => {\n  if (values.length === 0) {\n    return null;\n  }\n  const sorted = [...values].sort((left, right) => left - right);\n  const middle = Math.floor(sorted.length / 2);\n  if (sorted.length % 2 === 0) {\n    return (sorted[middle - 1] + sorted[middle]) / 2;\n  }\n  return sorted[middle];\n};\nconst calculatePercentile = (values, percentile) => {\n  if (values.length === 0) {\n    return null;\n  }\n  const safePercentile = Number.isFinite(percentile) ? Math.min(1, Math.max(0, percentile)) : 0.5;\n  const sorted = [...values].sort((left, right) => left - right);\n  const index = Math.min(sorted.length - 1, Math.max(0, Math.round((sorted.length - 1) * safePercentile)));\n  return sorted[index] ?? null;\n};\nconst normalizePostAggregatePredicate = (predicate) => {\n  if (!isRecord(predicate)) {\n    return null;\n  }\n  const column = normalizeString(predicate.column);\n  const operator = normalizeString(predicate.operator).toLowerCase();\n  if (!column || !POST_AGGREGATE_OPERATORS.has(operator)) {\n    return null;\n  }\n  return {\n    column,\n    operator,\n    ...predicate.value !== void 0 ? { value: predicate.value } : {}\n  };\n};\nconst normalizePostAggregateClause = (value) => {\n  if (!isRecord(value)) {\n    return void 0;\n  }\n  const predicates = Array.isArray(value.predicates) ? value.predicates.map(normalizePostAggregatePredicate).filter((predicate) => Boolean(predicate)) : void 0;\n  const groups = Array.isArray(value.groups) ? value.groups.map((group) => {\n    if (!isRecord(group) || !Array.isArray(group.predicates)) {\n      return null;\n    }\n    const normalizedPredicates = group.predicates.map(normalizePostAggregatePredicate).filter((predicate) => Boolean(predicate));\n    return normalizedPredicates.length > 0 ? { predicates: normalizedPredicates } : null;\n  }).filter((group) => Boolean(group)) : void 0;\n  if (((predicates == null ? void 0 : predicates.length) ?? 0) === 0 && ((groups == null ? void 0 : groups.length) ?? 0) === 0) {\n    return void 0;\n  }\n  return {\n    ...predicates && predicates.length > 0 ? { predicates } : {},\n    ...groups && groups.length > 0 ? { groups } : {}\n  };\n};\nconst aggregateRowsForQuery = (rows, groupByColumns, aggregates) => {\n  const groups = /* @__PURE__ */ new Map();\n  rows.forEach((row) => {\n    const groupValues = groupByColumns.reduce((acc, column) => {\n      acc[column] = row[column] ?? null;\n      return acc;\n    }, {});\n    const key = groupByColumns.length === 0 ? "__all__" : JSON.stringify(groupByColumns.map((column) => row[column] ?? null));\n    const existing = groups.get(key);\n    if (existing) {\n      existing.rows.push(row);\n      return;\n    }\n    groups.set(key, { groupValues, rows: [row] });\n  });\n  if (groups.size === 0 && groupByColumns.length === 0) {\n    groups.set("__all__", { groupValues: {}, rows: [] });\n  }\n  return [...groups.values()].map((group) => {\n    const nextRow = { ...group.groupValues };\n    aggregates.forEach((aggregate) => {\n      const aggregateRows = aggregate.where ? applySpreadsheetFilterOperation(group.rows, {\n        id: `query_aggregate_filter_${aggregate.as}`,\n        type: "filter_rows",\n        reason: `Read-only aggregate filter for ${aggregate.as}`,\n        ...aggregate.where.predicates ? { predicates: aggregate.where.predicates } : {},\n        ...aggregate.where.groups ? { groups: aggregate.where.groups } : {}\n      }).data : group.rows;\n      if (aggregate.function === "count") {\n        if (!aggregate.column) {\n          nextRow[aggregate.as] = aggregateRows.length;\n          return;\n        }\n        nextRow[aggregate.as] = aggregateRows.filter((row) => !isMissingValue(row[aggregate.column] ?? null)).length;\n        return;\n      }\n      if (aggregate.function === "count_distinct") {\n        nextRow[aggregate.as] = aggregate.column ? new Set(aggregateRows.map((row) => row[aggregate.column] ?? null).filter((value) => !isMissingValue(value))).size : aggregateRows.length;\n        return;\n      }\n      const numericValues = aggregateRows.map((row) => robustParseFloat(row[aggregate.column] ?? null)).filter((value) => value !== null);\n      if (aggregate.function === "sum") {\n        nextRow[aggregate.as] = numericValues.length > 0 ? numericValues.reduce((total, value) => total + value, 0) : null;\n        return;\n      }\n      if (aggregate.function === "avg") {\n        nextRow[aggregate.as] = numericValues.length > 0 ? numericValues.reduce((total, value) => total + value, 0) / numericValues.length : null;\n        return;\n      }\n      if (aggregate.function === "min") {\n        nextRow[aggregate.as] = numericValues.length > 0 ? Math.min(...numericValues) : null;\n        return;\n      }\n      if (aggregate.function === "max") {\n        nextRow[aggregate.as] = numericValues.length > 0 ? Math.max(...numericValues) : null;\n        return;\n      }\n      if (aggregate.function === "median") {\n        nextRow[aggregate.as] = calculateMedian(numericValues);\n        return;\n      }\n      nextRow[aggregate.as] = calculatePercentile(numericValues, aggregate.percentile);\n    });\n    return nextRow;\n  });\n};\nconst executeDataQuery = (inputRows, plan, options) => {\n  const startedAt = Date.now();\n  const maxRows = (options == null ? void 0 : options.maxRows) ?? DEFAULT_QUERY_MAX_ROWS;\n  const maxColumns = (options == null ? void 0 : options.maxColumns) ?? DEFAULT_QUERY_MAX_COLUMNS;\n  const maxOrderBy = (options == null ? void 0 : options.maxOrderBy) ?? DEFAULT_QUERY_MAX_ORDER_BY;\n  const availableColumns = (options == null ? void 0 : options.allowedColumns) && options.allowedColumns.length > 0 ? options.allowedColumns : getColumns(inputRows);\n  const lookup = buildColumnLookup(availableColumns);\n  const normalizedGroupBy = Array.isArray(plan.groupBy) && plan.groupBy.length > 0 ? [...new Set(plan.groupBy.map((column) => normalizeColumnName(column, lookup, "Query groupBy")))] : [];\n  const normalizedAggregates = normalizeAggregateClauses(plan.aggregates, lookup, normalizedGroupBy);\n  const isAggregateQuery = normalizedGroupBy.length > 0 || normalizedAggregates.length > 0;\n  if (normalizedGroupBy.length > 0 && normalizedAggregates.length === 0) {\n    throw new Error("Query aggregate mode requires at least one aggregate when groupBy is provided.");\n  }\n  const outputColumns = isAggregateQuery ? [...normalizedGroupBy, ...normalizedAggregates.map((aggregate) => aggregate.as)] : availableColumns;\n  const outputLookup = buildColumnLookup(outputColumns);\n  const selectedColumns = Array.isArray(plan.select) && plan.select.length > 0 ? plan.select.map((column) => normalizeColumnName(column, outputLookup, "Query select")) : outputColumns.slice(0, maxColumns);\n  const dedupedSelectedColumns = [...new Set(selectedColumns)];\n  if (dedupedSelectedColumns.length > maxColumns) {\n    throw new Error(`Query select exceeds the maximum allowed column count (${maxColumns}).`);\n  }\n  const normalizedWhere = normalizeWhereClause(plan.where, lookup);\n  const normalizedPostAggregateFilter = normalizePostAggregateClause(plan.postAggregateFilter);\n  const orderBy = Array.isArray(plan.orderBy) ? plan.orderBy : [];\n  if (orderBy.length > maxOrderBy) {\n    throw new Error(`Query orderBy exceeds the maximum allowed clause count (${maxOrderBy}).`);\n  }\n  const normalizedOrderBy = orderBy.map((clause, index) => {\n    if (!clause || typeof clause !== "object" || Array.isArray(clause)) {\n      throw new Error(`Query orderBy ${index + 1} must be an object.`);\n    }\n    return {\n      column: normalizeColumnName(clause.column, outputLookup, "Query orderBy"),\n      direction: normalizeQueryOrderDirection(clause.direction)\n    };\n  });\n  if (Array.isArray(plan.select) && plan.select.length > 0) {\n    normalizedOrderBy.forEach((clause) => {\n      if (!dedupedSelectedColumns.some((column) => column.toLowerCase() === clause.column.toLowerCase())) {\n        throw new Error(`Query orderBy column "${clause.column}" must also appear in select for read-only query execution.`);\n      }\n    });\n  }\n  const appliedLimit = Math.min(\n    Math.max(0, Number.isInteger(plan.limit) ? plan.limit : maxRows),\n    maxRows\n  );\n  const filteredRows = normalizedWhere ? applySpreadsheetFilterOperation(inputRows, {\n    id: "query_where_bridge",\n    type: "filter_rows",\n    reason: "Read-only query where clause",\n    ...normalizedWhere.predicates ? { predicates: normalizedWhere.predicates } : {},\n    ...normalizedWhere.groups ? { groups: normalizedWhere.groups } : {}\n  }).data : cloneRows(inputRows);\n  const rowsBeforeProjection = isAggregateQuery ? aggregateRowsForQuery(filteredRows, normalizedGroupBy, normalizedAggregates) : filteredRows;\n  const rowsAfterPostAggregateFilter = normalizedPostAggregateFilter ? applySpreadsheetFilterOperation(rowsBeforeProjection, {\n    id: "query_post_aggregate_bridge",\n    type: "filter_rows",\n    reason: "Read-only query post-aggregate filter",\n    ...normalizedPostAggregateFilter.predicates ? { predicates: normalizedPostAggregateFilter.predicates } : {},\n    ...normalizedPostAggregateFilter.groups ? { groups: normalizedPostAggregateFilter.groups } : {}\n  }).data : rowsBeforeProjection;\n  const projectedRows = rowsAfterPostAggregateFilter.map((row) => {\n    const nextRow = {};\n    dedupedSelectedColumns.forEach((column) => {\n      nextRow[column] = row[column] ?? null;\n    });\n    return nextRow;\n  });\n  const sortedRows = sortQueryRows(projectedRows, normalizedOrderBy);\n  const rows = sortedRows.slice(0, appliedLimit);\n  return {\n    rows,\n    totalMatchedRows: rowsAfterPostAggregateFilter.length,\n    returnedRows: rows.length,\n    truncated: rowsAfterPostAggregateFilter.length > rows.length,\n    selectedColumns: dedupedSelectedColumns,\n    appliedOrderBy: normalizedOrderBy,\n    appliedLimit,\n    durationMs: Date.now() - startedAt\n  };\n};\nconst MONTH_ORDINAL = {\n  jan: 1,\n  january: 1,\n  feb: 2,\n  february: 2,\n  mar: 3,\n  march: 3,\n  apr: 4,\n  april: 4,\n  may: 5,\n  jun: 6,\n  june: 6,\n  jul: 7,\n  july: 7,\n  aug: 8,\n  august: 8,\n  sep: 9,\n  september: 9,\n  oct: 10,\n  october: 10,\n  nov: 11,\n  november: 11,\n  dec: 12,\n  december: 12\n};\nconst PERIOD_VALUE_PATTERN = /^([a-z]+)\\s+(\\d{4})$/i;\nconst parsePeriodValue = (value) => {\n  const match = PERIOD_VALUE_PATTERN.exec(value.trim());\n  if (!match) return null;\n  const monthKey = match[1].toLowerCase();\n  const month = MONTH_ORDINAL[monthKey];\n  if (month === void 0) return null;\n  return { month, year: parseInt(match[2], 10) };\n};\nconst QUARTER_ORDINAL = { q1: 1, q2: 2, q3: 3, q4: 4 };\nconst WEEKDAY_ORDINAL = {\n  mon: 1,\n  monday: 1,\n  tue: 2,\n  tuesday: 2,\n  wed: 3,\n  wednesday: 3,\n  thu: 4,\n  thursday: 4,\n  fri: 5,\n  friday: 5,\n  sat: 6,\n  saturday: 6,\n  sun: 7,\n  sunday: 7\n};\nconst getOrdinalSortKey = (value) => {\n  const lower = value.toLowerCase().trim();\n  const bare = MONTH_ORDINAL[lower] ?? QUARTER_ORDINAL[lower] ?? WEEKDAY_ORDINAL[lower] ?? null;\n  if (bare !== null) return bare;\n  const period = parsePeriodValue(lower);\n  if (period) return period.year * 12 + period.month;\n  return null;\n};\nconst looksLikeDate = (value) => {\n  if (typeof value !== "string" || !value) return false;\n  return !isNaN(new Date(value).getTime()) && /[0-9]{1,4}[-/][0-9]{1,2}[-/][0-9]{1,4}/.test(value);\n};\nconst QUARTER_REGEX = /^Q([1-4])(?:\\s*\\/?\\s*(\'?\\d{2,4}))?$/i;\nconst MONTHS = {\n  "january": 1,\n  "jan": 1,\n  "february": 2,\n  "feb": 2,\n  "march": 3,\n  "mar": 3,\n  "april": 4,\n  "apr": 4,\n  "may": 5,\n  "june": 6,\n  "jun": 6,\n  "july": 7,\n  "jul": 7,\n  "august": 8,\n  "aug": 8,\n  "september": 9,\n  "sep": 9,\n  "october": 10,\n  "oct": 10,\n  "november": 11,\n  "nov": 11,\n  "december": 12,\n  "dec": 12\n};\nconst DAYS = {\n  "monday": 1,\n  "mon": 1,\n  "tuesday": 2,\n  "tue": 2,\n  "wednesday": 3,\n  "wed": 3,\n  "thursday": 4,\n  "thu": 4,\n  "friday": 5,\n  "fri": 5,\n  "saturday": 6,\n  "sat": 6,\n  "sunday": 7,\n  "sun": 7\n};\nconst getChronologicalSortValue = (value, sorter) => {\n  const lowerValue = String(value).toLowerCase().trim();\n  switch (sorter) {\n    case "quarter":\n      const match = lowerValue.match(QUARTER_REGEX);\n      if (match) {\n        const quarter = parseInt(match[1], 10);\n        let year = 0;\n        if (match[2]) {\n          const yearStr = match[2].replace("\'", "");\n          year = parseInt(yearStr, 10);\n          if (yearStr.length === 2) {\n            year += year > 50 ? 1900 : 2e3;\n          }\n        }\n        return year * 10 + quarter;\n      }\n      return Infinity;\n    case "month":\n      return MONTHS[lowerValue] || Infinity;\n    case "day":\n      return DAYS[lowerValue] || Infinity;\n  }\n  return Infinity;\n};\nconst tryChronologicalSort = (data, key) => {\n  if (data.length < 2) return data;\n  const sampleValues = data.slice(0, 10).map((r) => String(r[key]).toLowerCase().trim());\n  let sorter = null;\n  const quarterMatches = sampleValues.filter((v) => QUARTER_REGEX.test(v)).length;\n  const monthMatches = sampleValues.filter((v) => MONTHS[v] !== void 0).length;\n  const dayMatches = sampleValues.filter((v) => DAYS[v] !== void 0).length;\n  const dateMatches = sampleValues.filter(looksLikeDate).length;\n  if (quarterMatches / sampleValues.length >= 0.5) sorter = "quarter";\n  else if (monthMatches / sampleValues.length >= 0.5) sorter = "month";\n  else if (dayMatches / sampleValues.length >= 0.5) sorter = "day";\n  else if (dateMatches / sampleValues.length >= 0.5) {\n    return [...data].sort((a, b) => new Date(String(a[key])).getTime() - new Date(String(b[key])).getTime());\n  }\n  const ordinalMatches = sampleValues.filter((v) => getOrdinalSortKey(v) !== null).length;\n  if (!sorter && ordinalMatches / sampleValues.length >= 0.5) {\n    return [...data].sort((a, b) => {\n      const keyA = getOrdinalSortKey(String(a[key])) ?? Infinity;\n      const keyB = getOrdinalSortKey(String(b[key])) ?? Infinity;\n      return keyA - keyB;\n    });\n  }\n  const numericMatches = sampleValues.filter((v) => v !== "" && isFinite(Number(v))).length;\n  if (numericMatches / sampleValues.length >= 0.5) {\n    return [...data].sort((a, b) => Number(a[key]) - Number(b[key]));\n  }\n  if (sorter) {\n    return [...data].sort((a, b) => {\n      const valA = getChronologicalSortValue(String(a[key]), sorter);\n      const valB = getChronologicalSortValue(String(b[key]), sorter);\n      return valA - valB;\n    });\n  }\n  return null;\n};\nconst getValueCaseInsensitive = (obj, key) => {\n  if (!key || !obj) return void 0;\n  const keyLower = key.toLowerCase();\n  const foundKey = Object.keys(obj).find((k) => k.toLowerCase() === keyLower);\n  if (!foundKey) return void 0;\n  const value = obj[foundKey];\n  return typeof value === "string" || typeof value === "number" ? value : void 0;\n};\nconst calculateAggregation = (values, aggregation) => {\n  if (values.length === 0) return 0;\n  switch (aggregation) {\n    case "sum":\n      return values.reduce((acc, val) => acc + val, 0);\n    case "count":\n      return values.length;\n    case "avg": {\n      const sum = values.reduce((acc, val) => acc + val, 0);\n      return sum / values.length;\n    }\n    case "min":\n      return Math.min(...values);\n    case "max":\n      return Math.max(...values);\n    case "median":\n    case "percentile": {\n      const sorted = [...values].sort((a, b) => a - b);\n      const mid = Math.floor(sorted.length / 2);\n      return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;\n    }\n    case "count_distinct":\n      return new Set(values).size;\n  }\n};\nconst PRE_FILTER_OPERATORS = [\n  "eq",\n  "neq",\n  "gt",\n  "gte",\n  "lt",\n  "lte",\n  "between",\n  "contains",\n  "starts_with",\n  "ends_with",\n  "in",\n  "not_in"\n];\nnew Set(PRE_FILTER_OPERATORS);\nconst toLowerText = (value) => String(value ?? "").trim().toLowerCase();\nconst compareNumeric = (rowValue, value, comparator) => {\n  const actual = robustParseFloat(rowValue);\n  const expected = robustParseFloat(value);\n  if (actual === null || expected === null) {\n    return false;\n  }\n  return comparator(actual, expected);\n};\nconst applyPreFilter = (rowValue, operator, value) => {\n  const actual = toLowerText(rowValue);\n  const expected = Array.isArray(value) ? value.map(toLowerText) : [toLowerText(value)];\n  switch (operator) {\n    case "in":\n      return expected.includes(actual);\n    case "not_in":\n      return !expected.includes(actual);\n    case "contains":\n      return actual.includes(expected[0] ?? "");\n    case "starts_with":\n      return actual.startsWith(expected[0] ?? "");\n    case "ends_with":\n      return actual.endsWith(expected[0] ?? "");\n    case "neq":\n      return actual !== (expected[0] ?? "");\n    case "gt":\n      return compareNumeric(rowValue, Array.isArray(value) ? value[0] : value, (left, right) => left > right);\n    case "gte":\n      return compareNumeric(rowValue, Array.isArray(value) ? value[0] : value, (left, right) => left >= right);\n    case "lt":\n      return compareNumeric(rowValue, Array.isArray(value) ? value[0] : value, (left, right) => left < right);\n    case "lte":\n      return compareNumeric(rowValue, Array.isArray(value) ? value[0] : value, (left, right) => left <= right);\n    case "between": {\n      const [lower, upper] = Array.isArray(value) ? value : [];\n      const actualNumber = robustParseFloat(rowValue);\n      const lowerNumber = robustParseFloat(lower);\n      const upperNumber = robustParseFloat(upper);\n      if (actualNumber === null || lowerNumber === null || upperNumber === null) {\n        return false;\n      }\n      return actualNumber >= lowerNumber && actualNumber <= upperNumber;\n    }\n    case "eq":\n    default:\n      return actual === (expected[0] ?? "");\n  }\n};\nconst executeAggregationCore = (data, spec) => {\n  let dataToProcess = data.data;\n  if (spec.preFilter) {\n    spec.preFilter.forEach((filter) => {\n      if (filter && typeof filter === "object" && filter.column && filter.value !== void 0) {\n        dataToProcess = dataToProcess.filter((row) => {\n          const rowValue = getValueCaseInsensitive(row, filter.column);\n          return applyPreFilter(rowValue, filter.operator || "eq", filter.value);\n        });\n      }\n    });\n  }\n  if (spec._internal_groupByColumns && spec.groupByColumn) {\n    const originalGroupColumns = spec._internal_groupByColumns;\n    const compositeKey = spec.groupByColumn;\n    dataToProcess = dataToProcess.map((row) => ({\n      ...row,\n      [compositeKey]: originalGroupColumns.map((col) => getValueCaseInsensitive(row, col)).join(" - ")\n    }));\n  }\n  if (spec.chartType === "combo" && spec.secondaryValueColumn && spec.secondaryAggregation) {\n    const { groupByColumn: groupByColumn2, valueColumn: valueColumn2, aggregation: aggregation2, secondaryValueColumn, secondaryAggregation } = spec;\n    const groups2 = {};\n    dataToProcess.forEach((row) => {\n      const groupKey = String(getValueCaseInsensitive(row, groupByColumn2));\n      if (groupKey === "undefined" || groupKey === "null") return;\n      if (!groups2[groupKey]) {\n        groups2[groupKey] = { primaryValues: [], secondaryValues: [] };\n      }\n      const primaryValue = robustParseFloat(getValueCaseInsensitive(row, valueColumn2));\n      if (primaryValue !== null) {\n        groups2[groupKey].primaryValues.push(primaryValue);\n      }\n      const secondaryValue = robustParseFloat(getValueCaseInsensitive(row, secondaryValueColumn));\n      if (secondaryValue !== null) {\n        groups2[groupKey].secondaryValues.push(secondaryValue);\n      }\n    });\n    const aggregatedResult2 = Object.keys(groups2).filter((key) => groups2[key].primaryValues.length > 0 || groups2[key].secondaryValues.length > 0).map((key) => ({\n      [groupByColumn2]: key,\n      [valueColumn2]: calculateAggregation(groups2[key].primaryValues, aggregation2),\n      [secondaryValueColumn]: calculateAggregation(groups2[key].secondaryValues, secondaryAggregation)\n    }));\n    const chronologicallySorted2 = tryChronologicalSort(aggregatedResult2, groupByColumn2);\n    return chronologicallySorted2 || aggregatedResult2.sort(\n      (a, b) => (Number(getValueCaseInsensitive(b, valueColumn2)) || 0) - (Number(getValueCaseInsensitive(a, valueColumn2)) || 0)\n    );\n  }\n  const { groupByColumn, aggregation } = spec;\n  const { valueColumn } = spec;\n  const groups = {};\n  dataToProcess.forEach((row) => {\n    const groupKey = String(getValueCaseInsensitive(row, groupByColumn));\n    if (groupKey === "undefined" || groupKey === "null") return;\n    if (!groups[groupKey]) groups[groupKey] = [];\n    if (valueColumn) {\n      const value = robustParseFloat(getValueCaseInsensitive(row, valueColumn));\n      if (value !== null) groups[groupKey].push(value);\n    } else if (aggregation === "count") {\n      groups[groupKey].push(1);\n    }\n  });\n  const finalValueColumn = valueColumn || "count";\n  const aggregatedResult = Object.keys(groups).filter((key) => groups[key].length > 0).map((key) => ({\n    [groupByColumn]: key,\n    [finalValueColumn]: calculateAggregation(groups[key], aggregation)\n  }));\n  const chronologicallySorted = tryChronologicalSort(aggregatedResult, groupByColumn);\n  return chronologicallySorted || aggregatedResult.sort(\n    (a, b) => (Number(getValueCaseInsensitive(b, finalValueColumn)) || 0) - (Number(getValueCaseInsensitive(a, finalValueColumn)) || 0)\n  );\n};\nconst NUMERIC_PROFILE_TYPES = /* @__PURE__ */ new Set(["numerical", "currency", "percentage"]);\nconst FINGERPRINT_PRECISION = 12;\nconst UNNAMED_COLUMN_PATTERN = /^_unnamed_column_/i;\nconst DESCRIPTOR_HIGH_CONFIDENCE_PATTERN = /\\b(description|name|label|category|brand|customer|vendor|supplier|item|stock[ _-]?code|document)\\b/i;\nconst DESCRIPTOR_WEAK_PATTERN = /\\b(code|number|account|acct)\\b/i;\nconst UNIT_MIXED_COLUMN_PATTERN = /\\b(uom|unit|pcs|ea|nos|kg|ltr|litre|pair|pack|box|roll)\\b/i;\nconst roundNumeric = (value) => Number(value.toFixed(FINGERPRINT_PRECISION));\nconst fingerprintEquals = (expected, actual) => expected.parsedCount === actual.parsedCount && expected.zeroCount === actual.zeroCount && expected.negativeCount === actual.negativeCount && roundNumeric(expected.sum) === roundNumeric(actual.sum) && roundNumeric(expected.absoluteSum) === roundNumeric(actual.absoluteSum) && roundNumeric(expected.min ?? 0) === roundNumeric(actual.min ?? 0) && roundNumeric(expected.max ?? 0) === roundNumeric(actual.max ?? 0);\nconst buildFingerprint = (column, rows) => {\n  let parsedCount = 0;\n  let nullCount = 0;\n  let blankCount = 0;\n  let zeroCount = 0;\n  let negativeCount = 0;\n  let sum = 0;\n  let absoluteSum = 0;\n  let min = null;\n  let max = null;\n  const distinct = /* @__PURE__ */ new Set();\n  for (const row of rows) {\n    const rawValue = row[column];\n    if (rawValue === null || rawValue === void 0) {\n      nullCount += 1;\n      continue;\n    }\n    if (typeof rawValue === "string" && rawValue.trim() === "") {\n      blankCount += 1;\n      continue;\n    }\n    const parsed = robustParseFloat(rawValue);\n    if (parsed === null) {\n      continue;\n    }\n    parsedCount += 1;\n    sum += parsed;\n    absoluteSum += Math.abs(parsed);\n    if (parsed === 0) zeroCount += 1;\n    if (parsed < 0) negativeCount += 1;\n    min = min === null ? parsed : Math.min(min, parsed);\n    max = max === null ? parsed : Math.max(max, parsed);\n    distinct.add(String(roundNumeric(parsed)));\n  }\n  const nonBlankCount = rows.length - nullCount - blankCount;\n  return {\n    column,\n    parsedCount,\n    parseRate: nonBlankCount > 0 ? roundNumeric(parsedCount / nonBlankCount) : 0,\n    nullCount,\n    blankCount,\n    zeroCount,\n    negativeCount,\n    min: min === null ? null : roundNumeric(min),\n    max: max === null ? null : roundNumeric(max),\n    sum: roundNumeric(sum),\n    absoluteSum: roundNumeric(absoluteSum),\n    distinctCount: distinct.size\n  };\n};\nconst buildFingerprintMap = (fingerprints) => new Map(fingerprints.map((fingerprint) => [fingerprint.column.toLowerCase(), fingerprint]));\nconst collectRowsForToken = (rows, column, token) => rows.filter((row) => String(row[column] ?? "") === token);\nconst buildDestructiveImpact = (step, beforeRows, afterRows, beforeFingerprints, afterFingerprints) => {\n  const afterMap = buildFingerprintMap(afterFingerprints);\n  return {\n    stepId: step.id,\n    rowsRemoved: Math.max(0, beforeRows.length - afterRows.length),\n    affectedColumns: beforeFingerprints.map((fingerprint) => {\n      const after = afterMap.get(fingerprint.column.toLowerCase());\n      return {\n        column: fingerprint.column,\n        sumDelta: roundNumeric(((after == null ? void 0 : after.sum) ?? 0) - fingerprint.sum),\n        absoluteSumDelta: roundNumeric(((after == null ? void 0 : after.absoluteSum) ?? 0) - fingerprint.absoluteSum),\n        parsedCountDelta: ((after == null ? void 0 : after.parsedCount) ?? 0) - fingerprint.parsedCount\n      };\n    }).filter((entry) => entry.sumDelta !== 0 || entry.absoluteSumDelta !== 0 || entry.parsedCountDelta !== 0)\n  };\n};\nconst getRenameMappings = (step) => {\n  const mappings = /* @__PURE__ */ new Map();\n  step.operations.forEach((operation) => {\n    if (operation.type !== "rename_columns") return;\n    operation.mappings.forEach((mapping) => {\n      if (mapping.from.trim() && mapping.to.trim()) {\n        mappings.set(mapping.from.toLowerCase(), mapping.to);\n      }\n    });\n  });\n  return mappings;\n};\nconst resolveUnpivotToken = (sourceColumn, operation) => {\n  var _a;\n  if (operation.sourceColumnNameColumn) {\n    return sourceColumn;\n  }\n  const directMapping = (_a = operation.labelMappings) == null ? void 0 : _a.find((mapping) => mapping.sourceColumn === sourceColumn);\n  if (directMapping) {\n    return String(directMapping.label ?? "");\n  }\n  for (const labelColumn of operation.labelColumns ?? []) {\n    const labelMapping = labelColumn.mappings.find((mapping) => mapping.sourceColumn === sourceColumn);\n    if (labelMapping) {\n      return String(labelMapping.label ?? "");\n    }\n  }\n  return sourceColumn;\n};\nconst DATE_COMPONENT_PATTERN = /\\b(date|day|month|year|time|period|week|quarter|yr|mo|dt)\\b/i;\nconst isLikelyDateComponent = (column, fingerprint) => {\n  if (!DATE_COMPONENT_PATTERN.test(column)) return false;\n  if (fingerprint.min !== null && fingerprint.max !== null) {\n    const isDay = fingerprint.min >= 1 && fingerprint.max <= 31;\n    const isMonth = fingerprint.min >= 1 && fingerprint.max <= 12;\n    const isYear = fingerprint.min >= 1900 && fingerprint.max <= 2100;\n    if (isDay || isMonth || isYear) return true;\n  }\n  return false;\n};\nconst isAmbiguousNumericColumn = (column, declaredType) => {\n  if (UNNAMED_COLUMN_PATTERN.test(column)) return true;\n  if (DESCRIPTOR_HIGH_CONFIDENCE_PATTERN.test(column)) return true;\n  if (UNIT_MIXED_COLUMN_PATTERN.test(column)) return true;\n  if (DESCRIPTOR_WEAK_PATTERN.test(column) && (!declaredType || !NUMERIC_PROFILE_TYPES.has(declaredType))) {\n    return true;\n  }\n  return false;\n};\nconst collectNumericFingerprints = (rows, profiles) => {\n  if (!Array.isArray(rows) || rows.length === 0) return [];\n  const columns = /* @__PURE__ */ new Set();\n  rows.forEach((row) => Object.keys(row ?? {}).forEach((column) => columns.add(column)));\n  const profileMap = new Map((profiles ?? []).map((profile) => [profile.name.toLowerCase(), profile.type]));\n  return [...columns].map((column) => buildFingerprint(column, rows)).filter((fingerprint) => {\n    if (isStructuralMetadataColumn(fingerprint.column)) {\n      return false;\n    }\n    if (isLikelyDateComponent(fingerprint.column, fingerprint)) {\n      return false;\n    }\n    const declaredType = profileMap.get(fingerprint.column.toLowerCase());\n    if (isAmbiguousNumericColumn(fingerprint.column, declaredType ?? void 0)) {\n      return false;\n    }\n    if (declaredType && NUMERIC_PROFILE_TYPES.has(declaredType)) {\n      return fingerprint.parsedCount > 0 && fingerprint.parseRate >= 0.75;\n    }\n    if (UNNAMED_COLUMN_PATTERN.test(fingerprint.column)) {\n      return false;\n    }\n    if (declaredType && !NUMERIC_PROFILE_TYPES.has(declaredType)) {\n      return false;\n    }\n    return false;\n  });\n};\nconst reconcileAiCleaningStep = (step, beforeRows, afterRows, profiles) => {\n  const beforeFingerprints = collectNumericFingerprints(beforeRows, profiles);\n  const afterFingerprints = collectNumericFingerprints(afterRows, profiles);\n  const failures = [];\n  if (step.mode === "reshape") {\n    const unpivotOperation = step.operations.find((operation) => operation.type === "unpivot_columns");\n    if (!unpivotOperation) {\n      failures.push({\n        stepId: step.id,\n        column: "*",\n        reason: "unsupported_reshape",\n        detail: "Only unpivot-based reshape steps are currently supported for deterministic numeric reconciliation."\n      });\n    } else {\n      const metricColumn = unpivotOperation.valueColumn;\n      for (const sourceColumn of unpivotOperation.sourceColumns) {\n        const expected = beforeFingerprints.find((fingerprint) => fingerprint.column === sourceColumn);\n        if (!expected) continue;\n        const discriminatorColumn = unpivotOperation.sourceColumnNameColumn ?? unpivotOperation.keyColumn;\n        const token = resolveUnpivotToken(sourceColumn, unpivotOperation);\n        if (!token) {\n          failures.push({\n            stepId: step.id,\n            column: sourceColumn,\n            reason: "unsupported_reshape",\n            detail: `Unable to resolve a source token for "${sourceColumn}".`\n          });\n          continue;\n        }\n        const bucketRows = collectRowsForToken(afterRows, discriminatorColumn, token).map((row) => ({ [metricColumn]: row[metricColumn] }));\n        const actual = buildFingerprint(metricColumn, bucketRows);\n        if (!fingerprintEquals(expected, { ...actual })) {\n          failures.push({\n            stepId: step.id,\n            column: sourceColumn,\n            reason: "numeric_mismatch",\n            expected,\n            actual: {\n              ...actual,\n              column: sourceColumn\n            },\n            detail: `Reshape step changed the numeric total for source column "${sourceColumn}".`\n          });\n        }\n      }\n    }\n    return {\n      stepId: step.id,\n      mode: step.mode,\n      passed: failures.length === 0,\n      failures\n    };\n  }\n  if (step.mode === "destructive") {\n    const destructiveImpact = buildDestructiveImpact(step, beforeRows, afterRows, beforeFingerprints, afterFingerprints);\n    return {\n      stepId: step.id,\n      mode: step.mode,\n      passed: true,\n      failures,\n      destructiveImpact\n    };\n  }\n  const renameMappings = getRenameMappings(step);\n  const afterMap = buildFingerprintMap(afterFingerprints);\n  for (const expected of beforeFingerprints) {\n    const targetColumn = renameMappings.get(expected.column.toLowerCase()) ?? expected.column;\n    const actual = afterMap.get(targetColumn.toLowerCase());\n    if (!actual) {\n      failures.push({\n        stepId: step.id,\n        column: expected.column,\n        reason: "missing_after_lossless",\n        expected,\n        detail: `Lossless step removed numeric column "${expected.column}".`\n      });\n      continue;\n    }\n    if (!fingerprintEquals(expected, actual)) {\n      failures.push({\n        stepId: step.id,\n        column: expected.column,\n        reason: "numeric_mismatch",\n        expected,\n        actual,\n        detail: `Lossless step changed numeric values for "${expected.column}".`\n      });\n    }\n  }\n  return {\n    stepId: step.id,\n    mode: step.mode,\n    passed: failures.length === 0,\n    failures\n  };\n};\nconst buildNumericReconciliationReport = (baselineRows, finalRows, stepReports, profiles) => {\n  const failures = stepReports.flatMap((report) => report.failures);\n  const destructiveImpacts = stepReports.map((report) => report.destructiveImpact).filter((impact) => Boolean(impact));\n  return {\n    passed: failures.length === 0,\n    baselineFingerprints: collectNumericFingerprints(baselineRows, profiles),\n    finalFingerprints: collectNumericFingerprints(finalRows, profiles),\n    steps: stepReports,\n    failures,\n    destructiveImpacts\n  };\n};\nconst normalizeNumericProfiles = (profiles) => profiles == null ? void 0 : profiles.map((profile) => ({\n  name: profile.name,\n  type: profile.type,\n  uniqueValues: profile.uniqueValues ?? 0,\n  missingPercentage: profile.missingPercentage ?? 0,\n  valueRange: profile.valueRange ?? [0, 0]\n}));\nconst executeAiCleaningProgram = (inputRows, program, profiles) => {\n  let currentRows = inputRows.map((row) => ({ ...row }));\n  const allLogs = [];\n  const stepReports = [];\n  const normalizedProfiles = normalizeNumericProfiles(profiles);\n  for (const step of program.steps) {\n    const beforeRows = currentRows.map((row) => ({ ...row }));\n    const execution = applyDataOperations(beforeRows, step.operations, { allowEmptyResult: false });\n    const stepReport = reconcileAiCleaningStep(step, beforeRows, execution.data, normalizedProfiles);\n    stepReports.push(stepReport);\n    currentRows = execution.data.map((row) => ({ ...row }));\n    allLogs.push(...execution.logs);\n  }\n  const numericReconciliation = buildNumericReconciliationReport(\n    inputRows,\n    currentRows,\n    stepReports,\n    normalizedProfiles\n  );\n  const beforeProfiles = buildSchemaSnapshot(profileData(inputRows).profiles);\n  const afterProfiles = buildSchemaSnapshot(profileData(currentRows).profiles);\n  return {\n    data: currentRows,\n    logs: allLogs,\n    program,\n    numericReconciliation,\n    schemaDiff: diffSchemas(beforeProfiles, afterProfiles)\n  };\n};\nconst ctx = self;\nctx.onmessage = (event) => {\n  const { id, task, payload } = event.data;\n  const taskStart = Date.now();\n  try {\n    let result;\n    if (task === "profileData") {\n      result = profileData(payload.rows);\n    } else if (task === "executeAggregation") {\n      result = executeAggregationCore(payload.data, payload.spec);\n    } else if (task === "executeDataQuery") {\n      result = executeDataQuery(payload.rows, payload.plan, payload.options);\n    } else if (task === "executeAiCleaningProgram") {\n      result = executeAiCleaningProgram(\n        payload.rows,\n        payload.program,\n        payload.profiles\n      );\n    } else if (task === "ping") {\n      result = { pong: true };\n    } else {\n      throw new Error(`Unknown task: ${task}`);\n    }\n    const taskMs = Date.now() - taskStart;\n    if (taskMs > 50) {\n      console.warn(\n        `[DataWorker] ⚠ Slow task \'${task}\': ${taskMs}ms (id=${id})`\n      );\n    }\n    const response = { id, success: true, result };\n    ctx.postMessage(response);\n  } catch (error) {\n    const taskMs = Date.now() - taskStart;\n    console.warn(`[DataWorker] ⚠ Failed task \'${task}\': ${taskMs}ms (id=${id})`, error);\n    const response = {\n      id,\n      success: false,\n      error: error instanceof Error ? error.message : String(error)\n    };\n    ctx.postMessage(response);\n  }\n};\n';
 const blob = typeof self !== "undefined" && self.Blob && new Blob(["URL.revokeObjectURL(import.meta.url);", jsContent], { type: "text/javascript;charset=utf-8" });
 function WorkerWrapper(options) {
   let objURL;
@@ -14176,6 +14668,22 @@ const executeAiCleaningProgramWithWorker = async (rows, program, profiles, repor
     }
   }
   return executeAiCleaningProgram(rows, program, profiles);
+};
+const CARD_MENTION_RE = /@\[([^\]]+)\]\(([^)]+)\)/g;
+const extractMentionedCardIds = (text) => {
+  const ids = [];
+  for (const match of text.matchAll(CARD_MENTION_RE)) {
+    ids.push(match[2]);
+  }
+  return ids;
+};
+const parseCardMentions = (text) => {
+  const cardIds = [];
+  const displayText = text.replace(CARD_MENTION_RE, (_match, title, id) => {
+    cardIds.push(id);
+    return `@${title}`;
+  });
+  return { cardIds, displayText };
 };
 const buildEmittedColumns = (descriptorColumns, seriesLabelColumns, includeRowClass, includeHierarchyDepth) => [
   ...descriptorColumns.map((name) => ({ name, type: "string", required: true })),
@@ -16350,7 +16858,7 @@ const buildIssueMappings = (inspection, intakeGuard) => {
   return mappings;
 };
 const buildDataPreparationWorkflowBundle = (state) => {
-  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
+  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m;
   const inspection = buildCleaningInspectionBundle(state);
   const intakeGuard = evaluateIntakeDiagnostics(inspection.intakeDiagnostics);
   const pipelineOutcome = state.pipelineOutcome;
@@ -16410,7 +16918,7 @@ const buildDataPreparationWorkflowBundle = (state) => {
   return {
     summary: {
       fileName: inspection.importFacts.fileName,
-      reportTitle: inspection.reportContext.effective.reportTitle,
+      reportTitle: ((_i = (_h = inspection.reportContext) == null ? void 0 : _h.effective) == null ? void 0 : _i.reportTitle) ?? null,
       rawRowCount: inspection.importFacts.rawRowCount,
       preparedRowCount: inspection.importFacts.cleanedRowCount,
       metadataRowCount: inspection.importFacts.metadataRowCount,
@@ -16433,7 +16941,7 @@ const buildDataPreparationWorkflowBundle = (state) => {
       analysisState,
       pipelineOutcomeStatus: (pipelineOutcome == null ? void 0 : pipelineOutcome.status) ?? null,
       canonicalizationStatus: state.canonicalizationStatus,
-      canonicalRowCount: ((_h = state.canonicalCsvData) == null ? void 0 : _h.data.length) ?? 0,
+      canonicalRowCount: ((_j = state.canonicalCsvData) == null ? void 0 : _j.data.length) ?? 0,
       cardsCount: state.analysisCards.length,
       hasFinalSummary: Boolean(state.finalSummary)
     },
@@ -16486,9 +16994,9 @@ const buildDataPreparationWorkflowBundle = (state) => {
     verification: inspection.verification,
     diff: inspection.execution,
     operationalSignals: {
-      latestPipelineTrace: ((_i = inspection.logs.pipeline.at(-1)) == null ? void 0 : _i.traceContract) ?? null,
-      latestToolTrace: ((_j = inspection.logs.toolLogs.at(0)) == null ? void 0 : _j.traceContract) ?? null,
-      latestTelemetryTrace: ((_k = inspection.logs.telemetry.at(0)) == null ? void 0 : _k.traceContract) ?? null,
+      latestPipelineTrace: ((_k = inspection.logs.pipeline.at(-1)) == null ? void 0 : _k.traceContract) ?? null,
+      latestToolTrace: ((_l = inspection.logs.toolLogs.at(0)) == null ? void 0 : _l.traceContract) ?? null,
+      latestTelemetryTrace: ((_m = inspection.logs.telemetry.at(0)) == null ? void 0 : _m.traceContract) ?? null,
       latestFallbackPath: dedupeStrings$2([
         inspection.cleaning.planStatus === "schema_only" ? "schema_only_baseline" : null,
         inspection.cleaning.planStatus === "inconsistent" ? "baseline_recovery" : null,
@@ -16569,6 +17077,11 @@ const buildDatasetContext = (data, columns, reportContextResolution, datasetSema
   const avoidMetricColumns = Array.from(new Set(
     structuralColumns.filter((column) => !dimensionColumns.includes(column))
   ));
+  const NON_ADDITIVE_NAME_PATTERN2 = /(^|[\s_\-.])(avg|average|mean|rate|ratio|margin|yield|pct|percent|index|score)([\s_\-.]|$)/i;
+  const nonAdditiveMetrics = metricColumns.filter((name) => {
+    const profile = columns.find((c) => c.name === name);
+    return (profile == null ? void 0 : profile.type) === "percentage" || NON_ADDITIVE_NAME_PATTERN2.test(name);
+  });
   return {
     title: (reportContext == null ? void 0 : reportContext.reportTitle) ?? data.fileName,
     reportTitle: (reportContext == null ? void 0 : reportContext.reportTitle) ?? void 0,
@@ -16602,6 +17115,7 @@ ${reportContext.footerLines.join("\n")}` : "",
     unsafeForBusinessNarrative: semanticUnderstanding.unsafeForBusinessNarrative,
     headerSemantics: semanticUnderstanding.headerSemantics ? `${semanticUnderstanding.headerSemantics.reportType} | ${semanticUnderstanding.headerSemantics.reportTitle ?? "unknown"} | terms: ${semanticUnderstanding.headerSemantics.businessTerminology.join(", ") || "none"}` : void 0,
     diagnosticModeRecommended: semanticUnderstanding.diagnosticModeRecommended,
+    nonAdditiveMetrics: nonAdditiveMetrics.length > 0 ? nonAdditiveMetrics : void 0,
     analysisSteering: null
   };
 };
@@ -17144,6 +17658,405 @@ const attachAutoAnalysisEvaluationToCards = (cards, options) => {
     };
   });
 };
+const NESTED_VALUE_PRESERVE_LIMIT = 500;
+const clampObservationDetail = (detail) => {
+  let serialized;
+  try {
+    serialized = JSON.stringify(detail);
+  } catch {
+    return { _clampError: "unserializable" };
+  }
+  if (serialized.length <= OBSERVATION_DETAIL_MAX_CHARS) {
+    return detail;
+  }
+  const clamped = {
+    _clamped: true,
+    _originalSize: serialized.length
+  };
+  for (const [key, value] of Object.entries(detail)) {
+    if (value === null || typeof value !== "object") {
+      clamped[key] = value;
+    } else {
+      try {
+        const nested = JSON.stringify(value);
+        clamped[key] = nested.length <= NESTED_VALUE_PRESERVE_LIMIT ? value : `[clamped: ${nested.length} chars]`;
+      } catch {
+        clamped[key] = "[clamped: unserializable]";
+      }
+    }
+  }
+  return clamped;
+};
+const buildObservationFromResult = (action, result) => {
+  if (result.observation) {
+    return result.observation;
+  }
+  const firstDiagnostic = Array.isArray(result.diagnostics) ? result.diagnostics[0] : null;
+  const inferredCode = result.status === "blocked" ? (firstDiagnostic == null ? void 0 : firstDiagnostic.code) === "blocked_tool" ? "blocked_tool" : (firstDiagnostic == null ? void 0 : firstDiagnostic.code) === "tool_unavailable" ? "tool_unavailable" : (firstDiagnostic == null ? void 0 : firstDiagnostic.code) === "malformed_tool_payload" || (firstDiagnostic == null ? void 0 : firstDiagnostic.code) === "invalid_args" || (firstDiagnostic == null ? void 0 : firstDiagnostic.code) === "invalid_action" ? "validation_failed" : void 0 : void 0;
+  return {
+    type: action.type === "assistant_message" ? "assistant_message" : "tool_result",
+    status: result.status,
+    summary: result.message,
+    toolName: result.toolName,
+    code: inferredCode,
+    retryHint: result.retryHint ?? null,
+    detail: clampObservationDetail({
+      ...result.payload ?? {},
+      ...result.artifactMetadata ? { artifactMetadata: result.artifactMetadata } : {},
+      ...result.policyDecision ? { policyDecision: result.policyDecision } : {},
+      ...firstDiagnostic ? { error: firstDiagnostic } : {}
+    })
+  };
+};
+const buildObservationFromError = (action, message, options) => ({
+  type: "runtime_error",
+  status: (options == null ? void 0 : options.status) ?? "error",
+  summary: message,
+  toolName: (action == null ? void 0 : action.type) === "tool_call" ? action.toolName : (action == null ? void 0 : action.type) === "assistant_message" ? "assistant_message" : void 0,
+  code: options == null ? void 0 : options.code,
+  retryHint: (options == null ? void 0 : options.retryHint) ?? message,
+  detail: options == null ? void 0 : options.detail
+});
+const buildSemanticRecoveryObservation = (action, options) => ({
+  type: "runtime_error",
+  status: "blocked",
+  summary: options.summary,
+  toolName: action.type === "tool_call" ? action.toolName : "assistant_message",
+  code: options.code,
+  retryHint: options.retryHint,
+  detail: options.detail
+});
+const buildRetryFeedback = (action, observation) => {
+  const actionLabel = (action == null ? void 0 : action.type) === "tool_call" ? action.toolName : (action == null ? void 0 : action.type) === "assistant_message" ? "assistant_message" : "decision";
+  if (observation.code === "clarification_needed") {
+    return `Your last step (${actionLabel}) produced this observation: "${observation.summary}". ${observation.retryHint ?? "Your next action MUST be conversation.request_clarification."} Do not repeat the same tool call before the user clarifies the target.`;
+  }
+  if (observation.code === "semantic_miss") {
+    return `Your last step (${actionLabel}) produced this observation: "${observation.summary}". ${observation.retryHint ?? "Choose a better next action."} Do not repeat the same tool call with the same assumptions, columns, or filters.`;
+  }
+  if (observation.code === "validation_failed") {
+    return `Your last step (${actionLabel}) violated the tool contract: "${observation.summary}". ${observation.retryHint ?? "Return a payload that matches the required tool schema exactly."} Fix the payload instead of repeating the same malformed tool call.`;
+  }
+  if (observation.code === "tool_contract") {
+    return `Your last step (${actionLabel}) violated a runtime tool contract: "${observation.summary}". ${observation.retryHint ?? "Choose the required validation or derivation path before retrying."} Do not repeat the same tool call until the prerequisite workflow is complete.`;
+  }
+  return `Your last step (${actionLabel}) produced this observation: "${observation.summary}". ${observation.retryHint ?? "Choose a better next action and do not repeat the same failure."}`;
+};
+const emitAgentEvent = (store, payload) => {
+  const recorder = store.getState().recordAgentEvent;
+  if (!recorder) return;
+  recorder(payload);
+};
+const updateAgentTaskStatus = (store, status) => {
+  const setter = store.getState().setAiTaskStatus;
+  if (!setter) return;
+  setter(status);
+};
+const agentMonitor = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  emitAgentEvent,
+  updateAgentTaskStatus
+}, Symbol.toStringTag, { value: "Module" }));
+const LOG_PREFIX$s = "[MonitorAgent]";
+const recordMonitorEvent = (store, payload) => {
+  const { stage, action, detail, isError, phase } = payload;
+  const actionLabel = action.type === "assistant_message" ? "assistant_message" : typeof action.toolName === "string" && action.toolName.trim() ? action.toolName : "unknown_tool";
+  const message = `${stage.toUpperCase()} | ${actionLabel}${detail ? ` | ${detail}` : ""}`;
+  const state = store.getState();
+  const correlation = buildCorrelationFields(state, payload);
+  if (state.logTelemetryEvent) {
+    state.logTelemetryEvent({
+      stage,
+      responseType: actionLabel,
+      detail,
+      chunkSize: payload.chunkSize,
+      sessionId: correlation.sessionId,
+      datasetId: correlation.datasetId,
+      turnId: correlation.turnId,
+      stepId: correlation.stepId,
+      cleaningRunId: correlation.cleaningRunId,
+      requestId: correlation.requestId
+    });
+  }
+  if (isError) {
+    console.error(`${LOG_PREFIX$s} ${message}`);
+    state.addProgress(`Agent error: ${detail || "Unknown issue"}`, "error");
+  } else {
+    console.log(`${LOG_PREFIX$s} ${message}`);
+  }
+  emitAgentEvent(store, {
+    phase: phase ?? "chat",
+    step: stage,
+    status: isError ? "error" : stage.endsWith("start") ? "in_progress" : "done",
+    message,
+    detail: { action: actionLabel },
+    sessionId: correlation.sessionId,
+    datasetId: correlation.datasetId,
+    turnId: correlation.turnId,
+    stepId: correlation.stepId,
+    cleaningRunId: correlation.cleaningRunId,
+    requestId: correlation.requestId
+  });
+};
+const recordRuntimeEvent = (store, payload) => {
+  const recorder = store.getState().recordRuntimeEvent;
+  if (typeof recorder !== "function") {
+    return null;
+  }
+  return recorder(normalizeRuntimeEventPayload(payload));
+};
+const normalizeRequestText = (message) => message.trim().toLowerCase().replace(/\s+/g, " ");
+const buildRuntimeRequestFingerprint = (message, context) => {
+  const normalizedMessage = normalizeRequestText(message);
+  const sessionId = String((context == null ? void 0 : context.sessionId) ?? "").trim() || "no-session";
+  const datasetId = String((context == null ? void 0 : context.datasetId) ?? "").trim() || "no-dataset";
+  return [sessionId, datasetId, normalizedMessage].join("::");
+};
+const mapActionPhase = (action) => {
+  if (action.type === "assistant_message") return "chat";
+  if (action.toolName.startsWith("analysis.")) return "planning";
+  if (action.toolName.startsWith("data.") || action.toolName.startsWith("workspace.") || action.toolName.startsWith("card.")) {
+    return "execution";
+  }
+  return "chat";
+};
+const recordAcceptedMonitorOutcome = (store, action) => {
+  recordMonitorEvent(store, { stage: "executor_success", action, phase: mapActionPhase(action) });
+};
+const recordBlockedMonitorOutcome = (store, action, observation) => {
+  recordMonitorEvent(store, {
+    stage: "executor_blocked",
+    action,
+    detail: observation.summary,
+    phase: mapActionPhase(action)
+  });
+};
+const MAX_QUEUED_AGENT_RUNS_PER_SESSION = AGENT_MAX_QUEUED_RUNS_PER_SESSION;
+const createQueueId = () => createId("queued-agent-run");
+const getSessionQueue = (store) => {
+  const state = store.getState();
+  return (state.queuedAgentRuns ?? []).filter((run) => run.sessionId === state.sessionId).sort((left, right) => left.enqueuedAt.getTime() - right.enqueuedAt.getTime());
+};
+const enqueueAgentRun = (store, message) => {
+  const state = store.getState();
+  const sessionQueue = getSessionQueue(store);
+  const activeTurn = state.activeTurn;
+  if (sessionQueue.length >= MAX_QUEUED_AGENT_RUNS_PER_SESSION) {
+    const runId = createQueueId();
+    const reason = "queue_overflow";
+    const visibleMessage = "Another agent run is already active and the runtime queue is full. Please wait for queued work to finish before sending more requests.";
+    store.setState((prev) => ({
+      chatHistory: [
+        ...prev.chatHistory,
+        createChatMessage({
+          sender: "ai",
+          text: visibleMessage,
+          timestamp: /* @__PURE__ */ new Date(),
+          type: "ai_message",
+          isError: true
+        })
+      ]
+    }));
+    const logTelemetryEvent = state.logTelemetryEvent;
+    if (typeof logTelemetryEvent === "function") {
+      logTelemetryEvent({
+        stage: "chat",
+        responseType: "runtime_queue_overflow",
+        detail: visibleMessage,
+        meta: {
+          sessionQueueLength: sessionQueue.length,
+          activeTurnId: (activeTurn == null ? void 0 : activeTurn.turnId) ?? null
+        }
+      });
+    }
+    return {
+      queued: false,
+      overflowOutcome: {
+        runId,
+        turnId: (activeTurn == null ? void 0 : activeTurn.turnId) ?? null,
+        sessionId: state.sessionId,
+        outcomeKind: "blocked",
+        lifecycleState: "failed",
+        stage: "queued",
+        reason,
+        retryable: false,
+        eventType: "turn_blocked",
+        eventMessage: visibleMessage,
+        eventDetail: {
+          queueOverflow: true,
+          sessionQueueLength: sessionQueue.length,
+          activeTurnId: (activeTurn == null ? void 0 : activeTurn.turnId) ?? null
+        }
+      },
+      overflowRecord: {
+        runId,
+        turnId: null,
+        sessionId: state.sessionId,
+        userMessage: message,
+        lifecycleState: "failed",
+        outcomeKind: "blocked",
+        reason,
+        retryCount: 0,
+        toolSequence: [],
+        finalObservationSummary: visibleMessage,
+        createdAt: /* @__PURE__ */ new Date()
+      }
+    };
+  }
+  const queueEntry = {
+    queueId: createQueueId(),
+    sessionId: state.sessionId,
+    message,
+    enqueuedAt: /* @__PURE__ */ new Date(),
+    source: "chat"
+  };
+  state.enqueueAgentRun(queueEntry);
+  recordRuntimeEvent(store, {
+    runId: queueEntry.queueId,
+    turnId: activeTurn == null ? void 0 : activeTurn.turnId,
+    type: "turn_queued",
+    stage: "queued",
+    reason: "active_turn_running",
+    retryable: true,
+    message: "Queued agent run because another run is already executing.",
+    detail: {
+      queueId: queueEntry.queueId,
+      source: queueEntry.source,
+      activeTurnId: (activeTurn == null ? void 0 : activeTurn.turnId) ?? null,
+      sessionQueueLength: sessionQueue.length + 1
+    }
+  });
+  return { queued: true, queueEntry };
+};
+const takeNextQueuedAgentRun = (store) => {
+  const nextQueuedRun = getSessionQueue(store)[0] ?? null;
+  if (!nextQueuedRun) {
+    return null;
+  }
+  return store.getState().dequeueQueuedAgentRun(nextQueuedRun.queueId);
+};
+const complexTaskKeywords = ["analyze", "chart", "clean", "group", "aggregate", "plan", "分析", "图表", "清洗", "分组", "聚合", "计划"];
+const getModelForTask = (prompt, settings) => {
+  const lowerPrompt = prompt.toLowerCase();
+  const isComplex = complexTaskKeywords.some((keyword) => lowerPrompt.includes(keyword));
+  return isComplex ? settings.complexModel : settings.simpleModel;
+};
+const buildCancellationObservation = () => buildObservationFromError(
+  null,
+  RUNTIME_TURN_ABORT_MESSAGE,
+  {
+    code: "cancelled",
+    retryHint: "Start a new request when you are ready to continue.",
+    status: "blocked"
+  }
+);
+const isCancellationRequested = (store, turnId) => store.getState().cancelRequestedTurnId === turnId;
+const getRemainingStepSlots = (turn) => Math.max(0, turn.budgetStatus.maxSteps - turn.budgetStatus.stepsUsed);
+const getRequiredStepSlots = (action, runtimeStepContract) => {
+  if (action.type === "assistant_message") {
+    return 1;
+  }
+  if (action.toolName === "conversation.request_clarification") {
+    return 1;
+  }
+  if (runtimeStepContract.completionMode === "direct_completion") {
+    return 1;
+  }
+  if (runtimeStepContract.taskMode === "derive_metric" && !runtimeStepContract.allowAssistantResponse) {
+    return 1;
+  }
+  return 2;
+};
+const buildForbiddenActionObservation = (action, runtimeStepContract) => {
+  var _a, _b;
+  const toolName = action.type === "tool_call" ? action.toolName : "assistant_message";
+  const allowedToolNames = runtimeStepContract.allowedToolNames ?? [];
+  const forbiddenToolNames = ((_a = runtimeStepContract.recoveryDirective) == null ? void 0 : _a.forbiddenToolNames) ?? [];
+  const preferredToolNames = ((_b = runtimeStepContract.recoveryDirective) == null ? void 0 : _b.preferredToolNames) ?? [];
+  const forbiddenByRecovery = action.type === "tool_call" && forbiddenToolNames.includes(action.toolName);
+  const preferredHint = preferredToolNames.length > 0 ? ` Prefer ${preferredToolNames.join(", ")} next.` : "";
+  return buildObservationFromError(action, forbiddenByRecovery ? `Tool "${toolName}" is forbidden by the current recovery directive.` : `Tool "${toolName}" is not allowed for this runtime step.`, {
+    code: "blocked_tool",
+    retryHint: `Do not choose that tool again. Allowed tool calls this step: ${allowedToolNames.join(", ") || "none"}.${preferredHint}`.trim(),
+    status: "blocked",
+    detail: {
+      source: forbiddenByRecovery ? "recovery_directive" : "runtime_step_contract",
+      allowedToolNames,
+      forbiddenToolNames,
+      preferredToolNames,
+      recoveryDirective: runtimeStepContract.recoveryDirective ?? null
+    }
+  });
+};
+const PROVIDER_MODEL_CALL_TIMEOUT_MS = 6e4;
+class ProviderTimeoutError extends Error {
+  constructor(ms) {
+    super(`Provider model call timed out after ${ms}ms`);
+    this.timeoutReason = "model_call_timeout";
+    this.name = "ProviderTimeoutError";
+    this.timeoutMs = ms;
+  }
+}
+const isProviderTimeoutError = (error) => error instanceof ProviderTimeoutError;
+const raceWithActivityTimeout = (task, timeoutMs) => {
+  let timeoutHandle;
+  let settled = false;
+  const resetTimer = (reject) => {
+    clearTimeout(timeoutHandle);
+    if (!settled) {
+      timeoutHandle = setTimeout(
+        () => reject(new ProviderTimeoutError(timeoutMs)),
+        timeoutMs
+      );
+    }
+  };
+  let rejectFn;
+  const timeoutPromise = new Promise((_, reject) => {
+    rejectFn = reject;
+    resetTimer(reject);
+  });
+  const signalActivity = () => resetTimer(rejectFn);
+  const promise = Promise.race([task, timeoutPromise]).finally(() => {
+    settled = true;
+    clearTimeout(timeoutHandle);
+  });
+  return { promise, signalActivity };
+};
+const scheduleQueuedRunDrain = (store, runAgentTurnFn) => {
+  const activeTurn = store.getState().activeTurn;
+  if ((activeTurn == null ? void 0 : activeTurn.status) === "running") {
+    return;
+  }
+  const nextQueuedRun = takeNextQueuedAgentRun(store);
+  if (!nextQueuedRun) {
+    return;
+  }
+  void Promise.resolve().then(() => runAgentTurnFn(nextQueuedRun.message, store));
+};
+const runHarnessGuarded = (name, defaultValue, fn, store, budgetMs = 500) => {
+  const t0 = performance.now();
+  try {
+    const result = fn();
+    const elapsed = performance.now() - t0;
+    if (elapsed > budgetMs) {
+      console.warn(`[OODAE] ${name} took ${Math.round(elapsed)}ms (budget: ${budgetMs}ms)`);
+      recordRuntimeEvent(store, {
+        type: "silent_failure",
+        message: `${name} exceeded time budget (${Math.round(elapsed)}ms > ${budgetMs}ms)`,
+        detail: { component: "OODAEHarness", harness: name, elapsedMs: Math.round(elapsed), budgetMs }
+      });
+    }
+    return result;
+  } catch (error) {
+    console.error(`[OODAE] ${name} crashed:`, error);
+    recordRuntimeEvent(store, {
+      type: "silent_failure",
+      message: `${name} crashed — returning safe default`,
+      detail: { component: "OODAEHarness", harness: name, error: error instanceof Error ? error.message : String(error) }
+    });
+    return defaultValue;
+  }
+};
 const robustlyParseJsonObject = (responseText) => {
   let content = responseText.trim();
   const markdownMatch = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
@@ -17156,589 +18069,6 @@ const robustlyParseJsonObject = (responseText) => {
     console.error("Failed to parse AI response as JSON:", e, "Content:", content);
     throw new Error(`AI response could not be parsed as JSON. Content starts with: "${content.substring(0, 150)}..."`);
   }
-};
-const PRE_FILTER_OPERATORS = [
-  "eq",
-  "neq",
-  "gt",
-  "gte",
-  "lt",
-  "lte",
-  "between",
-  "contains",
-  "starts_with",
-  "ends_with",
-  "in",
-  "not_in"
-];
-const createAnalysisTopicsSchema = (minTopics = 4, maxTopics = 8) => ({
-  type: "object",
-  properties: {
-    topics: {
-      type: "array",
-      description: `An array of ${minTopics} to ${maxTopics} distinct, high-level analysis topics or questions.`,
-      items: { type: "string" }
-    }
-  },
-  required: ["topics"]
-});
-const createPlanSchema = (columnNames) => ({
-  type: "object",
-  properties: {
-    chartType: { type: "string", enum: ["bar", "line", "multi_line", "pie", "doughnut", "scatter", "combo", "radar", "bubble"], description: "Type of chart to generate. Use multi_line when comparing multiple numeric columns (e.g., monthly values as separate series)." },
-    title: { type: "string", description: "A concise title for the analysis." },
-    description: { type: "string", description: "A brief explanation of what the analysis shows." },
-    aggregation: { type: "string", enum: ["sum", "count", "avg"], description: "The aggregation function to apply. Omit for scatter charts." },
-    groupByColumn: { type: "string", enum: columnNames, description: "The column to group data by (categorical). Omit for scatter charts." },
-    valueColumn: { type: "string", enum: columnNames, description: 'The column for aggregation (numerical). Not needed for "count" or multi_line.' },
-    valueColumns: { type: "array", items: { type: "string", enum: columnNames }, description: "Multiple value columns for multi-series charts. Use instead of valueColumn when comparing 3+ numeric columns (e.g., monthly period columns)." },
-    xValueColumn: { type: "string", enum: columnNames, description: "The column for the X-axis of a scatter plot (numerical). Required for scatter plots." },
-    yValueColumn: { type: "string", enum: columnNames, description: "The column for the Y-axis of a scatter plot (numerical). Required for scatter plots." },
-    secondaryValueColumn: { type: "string", enum: columnNames, description: "For combo charts, the secondary column for aggregation (numerical)." },
-    secondaryAggregation: { type: "string", enum: ["sum", "count", "avg"], description: "For combo charts, the aggregation for the secondary value column." },
-    defaultTopN: { type: "integer", description: "Optional. If the analysis has many categories, this suggests a default Top N view (e.g., 8)." },
-    defaultHideOthers: { type: "boolean", description: 'Optional. If using defaultTopN, suggests whether to hide the "Others" category by default.' },
-    preFilter: {
-      type: "array",
-      description: "Optional. An array of filters to apply to the data *before* aggregation. Use this to scope an analysis, e.g., to a specific Category or Region.",
-      items: {
-        type: "object",
-        properties: {
-          column: { type: "string", enum: columnNames, description: "The column to filter on." },
-          value: {
-            anyOf: [
-              { type: "string" },
-              { type: "number" },
-              { type: "array", items: { anyOf: [{ type: "string" }, { type: "number" }] } }
-            ],
-            description: "The value to filter for."
-          },
-          operator: {
-            type: "string",
-            enum: [...PRE_FILTER_OPERATORS],
-            description: "Optional filter operator. Defaults to exact match when omitted."
-          }
-        },
-        required: ["column", "value"]
-      }
-    }
-  },
-  required: ["chartType", "title", "description"],
-  additionalProperties: false
-});
-const analysisPlanObjectSchema = createPlanSchema([]);
-const createSqlAnalysisPlanSchema = (columnNames) => ({
-  type: "object",
-  properties: {
-    chartType: { type: "string", enum: ["bar", "line", "multi_line", "pie", "doughnut", "scatter", "combo", "radar", "bubble"] },
-    title: { type: "string" },
-    description: { type: "string" },
-    queryMode: { type: "string", enum: ["aggregate", "rowset"] },
-    aggregation: { type: "string", enum: ["sum", "count", "avg"] },
-    secondaryAggregation: { type: "string", enum: ["sum", "count", "avg"] },
-    defaultTopN: { type: "integer" },
-    defaultHideOthers: { type: "boolean" },
-    bindings: {
-      type: "object",
-      properties: {
-        groupByColumn: { type: "string", enum: columnNames },
-        valueColumn: { type: "string" },
-        valueColumns: { type: "array", items: { type: "string" }, description: "Multiple value columns for multi-series rendering." },
-        secondaryValueColumn: { type: "string" },
-        xValueColumn: { type: "string", enum: columnNames },
-        yValueColumn: { type: "string", enum: columnNames }
-      },
-      required: []
-    },
-    query: {
-      type: "object",
-      properties: {
-        select: { type: "array", items: { type: "string" } },
-        groupBy: { type: "array", items: { type: "string", enum: columnNames } },
-        aggregates: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              function: { type: "string", enum: ["sum", "count", "avg", "count_distinct", "min", "max", "median", "percentile"] },
-              column: { type: "string", enum: columnNames },
-              as: { type: "string" },
-              percentile: { type: "number", minimum: 0, maximum: 1 },
-              where: {
-                type: "object",
-                properties: {
-                  predicates: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      properties: {
-                        column: { type: "string", enum: columnNames },
-                        operator: { type: "string", enum: ["eq", "neq", "gt", "gte", "lt", "lte", "between", "contains", "starts_with", "ends_with", "in", "is_null", "not_null"] },
-                        value: {}
-                      },
-                      required: ["column", "operator"]
-                    }
-                  },
-                  groups: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      properties: {
-                        predicates: {
-                          type: "array",
-                          items: {
-                            type: "object",
-                            properties: {
-                              column: { type: "string", enum: columnNames },
-                              operator: { type: "string", enum: ["eq", "neq", "gt", "gte", "lt", "lte", "between", "contains", "starts_with", "ends_with", "in", "is_null", "not_null"] },
-                              value: {}
-                            },
-                            required: ["column", "operator"]
-                          }
-                        }
-                      },
-                      required: ["predicates"]
-                    }
-                  }
-                }
-              }
-            },
-            required: ["function", "as"]
-          }
-        },
-        where: {
-          type: "object",
-          properties: {
-            predicates: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  column: { type: "string", enum: columnNames },
-                  operator: { type: "string", enum: ["eq", "neq", "gt", "gte", "lt", "lte", "between", "contains", "starts_with", "ends_with", "in", "is_null", "not_null"] },
-                  value: {}
-                },
-                required: ["column", "operator"]
-              }
-            },
-            groups: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  predicates: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      properties: {
-                        column: { type: "string", enum: columnNames },
-                        operator: { type: "string", enum: ["eq", "neq", "gt", "gte", "lt", "lte", "between", "contains", "starts_with", "ends_with", "in", "is_null", "not_null"] },
-                        value: {}
-                      },
-                      required: ["column", "operator"]
-                    }
-                  }
-                },
-                required: ["predicates"]
-              }
-            }
-          }
-        },
-        orderBy: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              column: { type: "string" },
-              direction: { type: "string", enum: ["asc", "desc"] }
-            },
-            required: ["column", "direction"]
-          }
-        },
-        limit: { type: "integer" }
-      },
-      required: []
-    }
-  },
-  required: ["chartType", "title", "description", "queryMode", "query", "bindings"],
-  additionalProperties: false
-});
-const createSqlEvidenceQueryPlanSchema = (columnNames) => ({
-  type: "object",
-  properties: {
-    title: { type: "string" },
-    queryMode: { type: "string", enum: ["aggregate", "rowset"] },
-    intentSummary: { type: "string" },
-    preferredResultShape: {
-      type: "string",
-      enum: ["ranked_aggregate", "time_series", "rowset_scatter_candidate", "detail_table"]
-    },
-    preFilter: {
-      type: "array",
-      description: "Optional canonical pre-aggregation filter contract that must also be reflected in the final SQL WHERE clause.",
-      items: {
-        type: "object",
-        properties: {
-          column: { type: "string", enum: columnNames },
-          value: {},
-          operator: {
-            type: "string",
-            enum: [...PRE_FILTER_OPERATORS]
-          }
-        },
-        required: ["column", "value"],
-        additionalProperties: false
-      }
-    },
-    query: {
-      type: "object",
-      properties: {
-        select: { type: "array", items: { type: "string" } },
-        groupBy: { type: "array", items: { type: "string", enum: columnNames } },
-        aggregates: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              function: { type: "string", enum: ["sum", "count", "avg", "count_distinct", "min", "max", "median", "percentile"] },
-              column: { type: "string", enum: columnNames },
-              as: { type: "string" },
-              percentile: { type: "number", minimum: 0, maximum: 1 },
-              where: {
-                type: "object",
-                properties: {
-                  predicates: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      properties: {
-                        column: { type: "string", enum: columnNames },
-                        operator: { type: "string", enum: ["eq", "neq", "gt", "gte", "lt", "lte", "between", "contains", "starts_with", "ends_with", "in", "is_null", "not_null"] },
-                        value: {}
-                      },
-                      required: ["column", "operator"]
-                    }
-                  }
-                }
-              }
-            },
-            required: ["function", "as"]
-          }
-        },
-        where: {
-          type: "object",
-          properties: {
-            predicates: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  column: { type: "string", enum: columnNames },
-                  operator: { type: "string", enum: ["eq", "neq", "gt", "gte", "lt", "lte", "between", "contains", "starts_with", "ends_with", "in", "is_null", "not_null"] },
-                  value: {}
-                },
-                required: ["column", "operator"]
-              }
-            }
-          }
-        },
-        orderBy: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              column: { type: "string" },
-              direction: { type: "string", enum: ["asc", "desc"] }
-            },
-            required: ["column", "direction"]
-          }
-        },
-        limit: { type: "integer" }
-      },
-      required: ["select"],
-      additionalProperties: false
-    }
-  },
-  required: ["title", "queryMode", "query", "intentSummary"],
-  additionalProperties: false
-});
-const createSqlPresentationPlanSchema = (columnNames) => ({
-  type: "object",
-  properties: {
-    title: { type: "string" },
-    description: { type: "string" },
-    presentationMode: { type: "string", enum: ["table", "chart", "table_then_chart"] },
-    chartType: { type: "string", enum: ["bar", "line", "scatter", "combo"] },
-    defaultTopN: { type: "integer" },
-    defaultHideOthers: { type: "boolean" },
-    bindings: {
-      type: "object",
-      properties: {
-        // No enum constraints here — validated post-response in sqlPresentationPlanner.ts.
-        // Removing enum: columnNames reduces schema payload by ~2000 tokens for large datasets.
-        groupByColumn: { type: "string" },
-        valueColumn: { type: "string" },
-        secondaryValueColumn: { type: "string" },
-        xValueColumn: { type: "string" },
-        yValueColumn: { type: "string" }
-      },
-      required: [],
-      additionalProperties: false
-    }
-  },
-  required: ["title", "description", "presentationMode"],
-  additionalProperties: false
-});
-const createEvidenceEvaluationSchema = () => ({
-  type: "object",
-  properties: {
-    decision: { type: "string", enum: ["pass", "table_only", "reject"] },
-    reasoning: { type: "string", description: "One sentence explaining the decision." },
-    chartWorthy: { type: "boolean", description: "Whether a chart would add value beyond a data table." }
-  },
-  required: ["decision", "reasoning", "chartWorthy"],
-  additionalProperties: false
-});
-const createToolCreatePlanSchema = (columnNames) => ({
-  oneOf: [
-    createSqlAnalysisPlanSchema(columnNames),
-    createPlanSchema(columnNames)
-  ],
-  description: "Return either a SQL-first plan with queryMode/query/bindings or a classic executable plan with groupByColumn/valueColumn bindings. Do not return visualization-only fields without executable bindings."
-});
-const proactiveInsightSchema = {
-  type: "object",
-  properties: {
-    insight: { type: "string", description: "A concise, user-facing message describing the single most important finding." },
-    cardId: { type: "string", description: "The ID of the card where this insight was observed." }
-  },
-  required: ["insight", "cardId"]
-};
-({
-  properties: {
-    nextAction: {
-      properties: {
-        plan: {
-          ...analysisPlanObjectSchema
-        }
-      }
-    }
-  }
-});
-const analysisGoalCandidateSchema = {
-  type: "object",
-  properties: {
-    goals: {
-      type: "array",
-      description: "An array of 2-3 distinct analysis goal candidates.",
-      items: {
-        type: "object",
-        properties: {
-          title: { type: "string", description: "A short, clear title for the goal (e.g., 'Analyze Regional Sales Performance')." },
-          description: { type: "string", description: "A one-sentence explanation of what this goal entails." },
-          confidence: { type: "number", description: "A score from 0.0 to 1.0 indicating your confidence that this is the user's primary goal." }
-        },
-        required: ["title", "description", "confidence"]
-      }
-    }
-  },
-  required: ["goals"]
-};
-const cardEnhancementSuggestionsSchema = {
-  type: "object",
-  properties: {
-    suggestions: {
-      type: "array",
-      description: "Up to three suggested improvements for the existing analysis cards.",
-      items: {
-        type: "object",
-        properties: {
-          id: { type: "string", description: "Optional unique id for the suggestion." },
-          cardId: { type: "string", description: "The target card ID that should be enhanced." },
-          cardTitle: { type: "string", description: "Optional. Human-readable title of the card." },
-          rationale: { type: "string", description: "Why this enhancement matters." },
-          priority: { type: "string", enum: ["high", "medium", "low"], description: "How important this enhancement is." },
-          action: { type: "string", enum: ["add_calculated_column", "none"], description: 'Which tool to apply. Start with calculated columns; use "none" for informational suggestions.' },
-          proposedColumnName: { type: "string", description: "If action is add_calculated_column, name of the new column." },
-          formula: { type: "string", description: `Formula referencing existing columns with single quotes, e.g., "('Revenue' - 'Cost') / 'Revenue'".` },
-          updateChart: {
-            type: "object",
-            description: "Optional chart update instructions when adding a new column.",
-            properties: {
-              useAs: { type: "string", enum: ["primaryY", "secondaryY"] },
-              newChartType: { type: "string", enum: ["bar", "line", "pie", "doughnut", "scatter", "combo", "radar", "bubble"] }
-            },
-            required: ["useAs"]
-          }
-        },
-        required: ["cardId", "rationale", "priority", "action"]
-      }
-    }
-  },
-  required: ["suggestions"]
-};
-const analystMemoSchema = {
-  type: "object",
-  properties: {
-    role: {
-      type: "string",
-      enum: ["data_quality", "business", "risk"],
-      description: "The fixed analyst role that produced this memo."
-    },
-    headline: {
-      type: "string",
-      description: "A short headline that captures the role-specific conclusion."
-    },
-    summary: {
-      type: "string",
-      description: "A concise summary of the analyst view."
-    },
-    findings: {
-      type: "array",
-      description: "Role-specific findings grounded in the evidence bundle.",
-      items: {
-        type: "object",
-        properties: {
-          id: {
-            type: "string",
-            description: "A stable identifier for this finding."
-          },
-          claim: {
-            type: "string",
-            description: "The actual finding claim."
-          },
-          importance: {
-            type: "string",
-            enum: ["low", "medium", "high"],
-            description: "How important the finding is."
-          },
-          evidenceRefs: {
-            type: "array",
-            description: "Evidence ids from the provided evidence catalog.",
-            items: { type: "string" }
-          },
-          metricRefs: {
-            type: "array",
-            description: "Metric or column labels referenced by the finding.",
-            items: { type: "string" }
-          },
-          caveat: {
-            type: "string",
-            description: "Optional caveat that tempers the claim."
-          }
-        },
-        required: ["id", "claim", "importance", "evidenceRefs", "metricRefs"]
-      }
-    },
-    blockers: {
-      type: "array",
-      description: "Material blockers that prevent stronger conclusions.",
-      items: { type: "string" }
-    },
-    caveats: {
-      type: "array",
-      description: "Non-blocking caveats that limit confidence.",
-      items: { type: "string" }
-    },
-    confidence: {
-      type: "string",
-      enum: ["low", "medium", "high"],
-      description: "Overall confidence for this memo."
-    },
-    recommendedNextChecks: {
-      type: "array",
-      description: "Concrete next checks for the user or a later bounded report step.",
-      items: { type: "string" }
-    }
-  },
-  required: ["role", "headline", "summary", "findings", "blockers", "caveats", "confidence", "recommendedNextChecks"]
-};
-const forumSummarySchema = {
-  type: "object",
-  properties: {
-    consensusFindings: {
-      type: "array",
-      description: "Merged findings that can be carried into the report as consensus or near-consensus statements.",
-      items: {
-        type: "object",
-        properties: {
-          id: { type: "string", description: "Stable identifier for the merged finding." },
-          claim: { type: "string", description: "Merged claim text suitable for the report." },
-          supportedByRoles: {
-            type: "array",
-            description: "The analyst roles that support this claim.",
-            items: {
-              type: "string",
-              enum: ["data_quality", "business", "risk"]
-            }
-          },
-          evidenceRefs: {
-            type: "array",
-            description: "Evidence ids from the evidence catalog.",
-            items: { type: "string" }
-          },
-          caveats: {
-            type: "array",
-            description: "Caveats that should stay attached to the finding.",
-            items: { type: "string" }
-          }
-        },
-        required: ["id", "claim", "supportedByRoles", "evidenceRefs", "caveats"]
-      }
-    },
-    disagreements: {
-      type: "array",
-      description: "Explicit unresolved or partially resolved disagreements across analysts.",
-      items: {
-        type: "object",
-        properties: {
-          id: { type: "string", description: "Stable identifier for the disagreement." },
-          topic: { type: "string", description: "Short topic for the disagreement." },
-          positions: {
-            type: "array",
-            description: "Role-specific positions on the topic.",
-            items: {
-              type: "object",
-              properties: {
-                role: {
-                  type: "string",
-                  enum: ["data_quality", "business", "risk"]
-                },
-                stance: { type: "string", description: "How the role characterizes the issue." },
-                evidenceRefs: {
-                  type: "array",
-                  description: "Evidence ids backing that stance.",
-                  items: { type: "string" }
-                }
-              },
-              required: ["role", "stance", "evidenceRefs"]
-            }
-          },
-          resolution: {
-            type: "string",
-            enum: ["unresolved", "partially_resolved", "resolved"],
-            description: "Whether the disagreement is still open after aggregation."
-          }
-        },
-        required: ["id", "topic", "positions", "resolution"]
-      }
-    },
-    overallConfidence: {
-      type: "string",
-      enum: ["low", "medium", "high"],
-      description: "Overall confidence for the merged forum summary."
-    },
-    executiveSummary: {
-      type: "string",
-      description: "An executive summary that explains the final merged take."
-    },
-    recommendedActions: {
-      type: "array",
-      description: "Concrete actions to reduce risk or improve report readiness.",
-      items: { type: "string" }
-    }
-  },
-  required: ["consensusFindings", "disagreements", "overallConfidence", "executiveSummary", "recommendedActions"]
 };
 const EPOCH_SECONDS_MIN = 1e9;
 const EPOCH_SECONDS_MAX = 99999999999;
@@ -18236,7 +18566,7 @@ const selectReadableLongTermMemory = (vectorMatches, projectionMap, limit, curre
   var _a;
   return ((_a = projectionMap.get(entry.id)) == null ? void 0 : _a.retrievalSnippet) ?? entry.text;
 });
-const LOG_PREFIX$t = "[VectorMemorySync]";
+const LOG_PREFIX$r = "[VectorMemorySync]";
 const buildCardMemoryDocuments = (cards, columnProfiles) => buildCardMemoryProjectionList(cards, columnProfiles).map((projection) => ({
   id: projection.cardId,
   text: projection.memoryText,
@@ -18271,10 +18601,6 @@ const upsertCardMemoryDocument = async (store, cardId) => {
   if (state.vectorMemoryState === "ready") {
     await vectorStore.addDocument(doc);
     vectorStore.schedulePersist();
-    try {
-      store.setState({ vectorStoreDocuments: await vectorStore.getDocuments() });
-    } catch {
-    }
     return;
   }
   store.setState((prev) => ({
@@ -18290,14 +18616,14 @@ const FLUSH_BATCH_SIZE = 10;
 const flushPendingVectorMemoryDocs = async (store) => {
   const { pendingVectorMemoryDocs } = store.getState();
   if (pendingVectorMemoryDocs.length === 0) return;
-  console.log(`${LOG_PREFIX$t} Flushing ${pendingVectorMemoryDocs.length} pending vector memory docs.`);
+  console.log(`${LOG_PREFIX$r} Flushing ${pendingVectorMemoryDocs.length} pending vector memory docs.`);
   store.setState({ pendingVectorMemoryDocs: [] });
   for (let i = 0; i < pendingVectorMemoryDocs.length; i += FLUSH_BATCH_SIZE) {
     const batch = pendingVectorMemoryDocs.slice(i, i + FLUSH_BATCH_SIZE);
     try {
       await vectorStore.addDocumentBatch(batch);
     } catch (error) {
-      console.warn(`${LOG_PREFIX$t} Batch flush failed (non-blocking):`, error);
+      console.warn(`${LOG_PREFIX$r} Batch flush failed (non-blocking):`, error);
     }
   }
   vectorStore.schedulePersist();
@@ -18352,7 +18678,7 @@ const removeCardMemoryDocument = async (store, cardId) => {
       store.setState({ vectorStoreDocuments: await vectorStore.getDocuments() });
     }
   } catch (error) {
-    console.warn(`${LOG_PREFIX$t} removeCardMemoryDocument failed (non-blocking):`, error);
+    console.warn(`${LOG_PREFIX$r} removeCardMemoryDocument failed (non-blocking):`, error);
   }
 };
 const upsertChatInsightDocs = async (store, insights) => {
@@ -18364,7 +18690,7 @@ const upsertChatInsightDocs = async (store, insights) => {
       vectorStore.schedulePersist();
       store.setState({ vectorStoreDocuments: await vectorStore.getDocuments() });
     } catch (error) {
-      console.warn(`${LOG_PREFIX$t} upsertChatInsightDocs failed (non-blocking):`, error);
+      console.warn(`${LOG_PREFIX$r} upsertChatInsightDocs failed (non-blocking):`, error);
     }
     return;
   }
@@ -18397,7 +18723,7 @@ const upsertColumnAnnotationDoc = async (store, annotation) => {
       await vectorStore.addDocument(doc);
       vectorStore.schedulePersist();
     } catch (error) {
-      console.warn(`${LOG_PREFIX$t} upsertColumnAnnotationDoc failed (non-blocking):`, error);
+      console.warn(`${LOG_PREFIX$r} upsertColumnAnnotationDoc failed (non-blocking):`, error);
     }
     return;
   }
@@ -18423,7 +18749,7 @@ const removeColumnAnnotationDoc = async (store, columnName) => {
     const deleted = await vectorStore.deleteDocument(docId);
     if (deleted) vectorStore.schedulePersist();
   } catch (error) {
-    console.warn(`${LOG_PREFIX$t} removeColumnAnnotationDoc failed (non-blocking):`, error);
+    console.warn(`${LOG_PREFIX$r} removeColumnAnnotationDoc failed (non-blocking):`, error);
   }
 };
 const upsertAnalysisPatternDoc = async (store, pattern) => {
@@ -18433,7 +18759,7 @@ const upsertAnalysisPatternDoc = async (store, pattern) => {
       await vectorStore.addDocument(pattern);
       vectorStore.schedulePersist();
     } catch (error) {
-      console.warn(`${LOG_PREFIX$t} upsertAnalysisPatternDoc failed (non-blocking):`, error);
+      console.warn(`${LOG_PREFIX$r} upsertAnalysisPatternDoc failed (non-blocking):`, error);
     }
     return;
   }
@@ -19001,6 +19327,7 @@ const buildReportIntakeIr = (fileName, rawRows, baseDetection) => {
     };
   }
   const summaryStartIndex = findSummaryStartIndex(normalizedRows, selection.bodyStartIndex);
+  preScanSignals.deterministicSummaryStartIndex = summaryStartIndex;
   const headerLayerIndexSet = new Set(selection.headerLayerIndexes);
   const parameterRowIndexSet = new Set(selection.parameterRowIndexes);
   const repeatedHeaderRowIndexSet = new Set(selection.repeatedHeaderRowIndexes);
@@ -19329,6 +19656,7 @@ const DEFAULT_TOOL_POLICY = {
     "analysis.validate_metric_mapping",
     "analysis.presentation_upgrade",
     // Card
+    "card.refine",
     "card.aggregate_table",
     "card.add_calculated_column",
     "card.delete",
@@ -19686,7 +20014,7 @@ const aggregateTableSchema = (columnNames) => ({
     chartType: { type: "string", enum: ["bar", "line", "pie", "doughnut", "scatter", "combo", "radar", "bubble"] },
     groupByColumn: { type: "string", enum: columnNames },
     valueColumn: { type: "string", enum: columnNames },
-    aggregation: { type: "string", enum: ["sum", "count", "avg"] },
+    aggregation: { type: "string", enum: ["sum", "count", "avg", "count_distinct", "min", "max", "median", "percentile"] },
     preFilter: {
       type: "array",
       items: {
@@ -19702,7 +20030,7 @@ const aggregateTableSchema = (columnNames) => ({
           },
           operator: {
             type: "string",
-            enum: [...PRE_FILTER_OPERATORS$1]
+            enum: [...PRE_FILTER_OPERATORS]
           }
         },
         required: ["column", "value"]
@@ -19916,7 +20244,8 @@ const cardRefineSchema = {
           },
           required: ["column", "values"]
         },
-        isDataVisible: { type: "boolean" }
+        isDataVisible: { type: "boolean" },
+        summary: { type: "string", description: "Replace the card AI summary text." }
       }
     }
   },
@@ -20109,9 +20438,9 @@ const validateCardRefine = (args, context) => {
   const errors = validateCardId(args.cardId, context, "cardId");
   if (errors.length > 0) return errors;
   if (!args.changes || typeof args.changes !== "object" || Array.isArray(args.changes)) {
-    return ['"changes" must be an object with at least one of: topN, chartType, filter, isDataVisible.'];
+    return ['"changes" must be an object with at least one of: topN, chartType, filter, isDataVisible, summary.'];
   }
-  const { topN, chartType, filter } = args.changes;
+  const { topN, chartType, filter, summary } = args.changes;
   if (topN !== void 0 && (typeof topN !== "number" || !Number.isInteger(topN) || topN < 1)) {
     errors.push('"changes.topN" must be a positive integer.');
   }
@@ -20126,6 +20455,9 @@ const validateCardRefine = (args, context) => {
     if (!Array.isArray(filter.values)) {
       errors.push('"changes.filter.values" must be an array.');
     }
+  }
+  if (summary !== void 0 && (typeof summary !== "string" || summary.trim().length === 0)) {
+    errors.push('"changes.summary" must be a non-empty string.');
   }
   return errors;
 };
@@ -20613,731 +20945,6 @@ const createAnalysisToolManifests = (columnNames) => [
     validate: (args) => (args == null ? void 0 : args.query) ? [] : ['"query" is required.']
   }
 ];
-const filterPredicateSchema = {
-  type: "object",
-  properties: {
-    column: { type: "string", minLength: 1 },
-    operator: { type: "string", enum: ["eq", "neq", "gt", "gte", "lt", "lte", "between", "contains", "starts_with", "ends_with", "in", "is_null", "not_null"] },
-    value: {}
-  },
-  required: ["column", "operator"]
-};
-const filterPredicateGroupSchema = {
-  type: "object",
-  properties: {
-    predicates: {
-      type: "array",
-      items: filterPredicateSchema
-    }
-  },
-  required: ["predicates"]
-};
-const filterRowsOperationSchema = {
-  type: "object",
-  properties: {
-    id: { type: "string", description: "Unique operation identifier." },
-    type: { type: "string", enum: ["filter_rows"] },
-    reason: { type: "string", description: "Reason for applying this filter." },
-    predicates: {
-      type: "array",
-      items: filterPredicateSchema
-    },
-    groups: {
-      type: "array",
-      description: "Optional OR groups. Each group is AND-only internally; the overall result matches if any group matches.",
-      items: filterPredicateGroupSchema
-    }
-  },
-  required: ["id", "type", "reason"],
-  anyOf: [{ required: ["predicates"] }, { required: ["groups"] }]
-};
-const columnProfileSchema = {
-  type: "object",
-  properties: {
-    name: { type: "string", description: "The column name." },
-    type: { type: "string", enum: ["numerical", "categorical", "date", "time", "currency", "percentage"], description: "The data type of the column. Identify specific types like 'date', 'currency', etc., where possible." }
-  },
-  required: ["name", "type"]
-};
-const queryWhereSchema = {
-  type: "object",
-  properties: {
-    predicates: {
-      type: "array",
-      minItems: 1,
-      items: filterPredicateSchema
-    },
-    groups: {
-      type: "array",
-      minItems: 1,
-      items: {
-        type: "object",
-        properties: {
-          predicates: {
-            type: "array",
-            minItems: 1,
-            items: filterPredicateSchema
-          }
-        },
-        required: ["predicates"]
-      }
-    }
-  },
-  anyOf: [
-    { required: ["predicates"] },
-    { required: ["groups"] }
-  ]
-};
-const queryOrderBySchema = {
-  type: "object",
-  properties: {
-    column: { type: "string", minLength: 1 },
-    direction: { type: "string", enum: ["asc", "desc"] }
-  },
-  required: ["column", "direction"]
-};
-const postAggregatePredicateSchema = {
-  type: "object",
-  properties: {
-    column: { type: "string", minLength: 1 },
-    operator: { type: "string", enum: ["eq", "neq", "gt", "gte", "lt", "lte", "between", "is_null", "not_null"] },
-    value: {}
-  },
-  required: ["column", "operator"]
-};
-const queryAggregateSchema = {
-  anyOf: [
-    {
-      type: "object",
-      properties: {
-        function: { type: "string", enum: ["count"] },
-        column: { type: "string", minLength: 1, description: "Optional source column. Omit for row-count aggregation." },
-        as: { type: "string", minLength: 1, description: "Required output alias for this aggregate column." },
-        where: { ...queryWhereSchema, description: "Optional aggregate-scoped filter. Use this when each aggregate must summarize a different subset of source rows." }
-      },
-      required: ["function", "as"]
-    },
-    {
-      type: "object",
-      properties: {
-        function: { type: "string", enum: ["count_distinct", "sum", "avg", "min", "max", "median"] },
-        column: { type: "string", minLength: 1, description: "Required source column for numeric aggregates." },
-        as: { type: "string", minLength: 1, description: "Required output alias for this aggregate column." },
-        where: { ...queryWhereSchema, description: "Optional aggregate-scoped filter. Use this when each aggregate must summarize a different subset of source rows." }
-      },
-      required: ["function", "column", "as"]
-    },
-    {
-      type: "object",
-      properties: {
-        function: { type: "string", enum: ["percentile"] },
-        column: { type: "string", minLength: 1, description: "Required source column for percentile aggregation." },
-        as: { type: "string", minLength: 1, description: "Required output alias for this aggregate column." },
-        percentile: { type: "number", minimum: 0, maximum: 1 },
-        where: { ...queryWhereSchema, description: "Optional aggregate-scoped filter. Use this when each aggregate must summarize a different subset of source rows." }
-      },
-      required: ["function", "column", "as", "percentile"]
-    }
-  ]
-};
-const queryPlanSchema = {
-  type: "object",
-  properties: {
-    select: {
-      type: "array",
-      description: "Optional whitelist of columns to return.",
-      minItems: 1,
-      items: { type: "string", minLength: 1 }
-    },
-    where: queryWhereSchema,
-    groupBy: {
-      type: "array",
-      description: "Optional grouping columns for read-only summary queries. If present, pair them with aggregates.",
-      minItems: 1,
-      items: { type: "string", minLength: 1 }
-    },
-    aggregates: {
-      type: "array",
-      description: "Optional aggregate definitions for grouped or grand-total queries. Use bounded aggregate functions and give every aggregate a stable alias.",
-      minItems: 1,
-      items: queryAggregateSchema
-    },
-    postAggregateFilter: {
-      type: "object",
-      properties: {
-        predicates: {
-          type: "array",
-          minItems: 1,
-          items: postAggregatePredicateSchema
-        },
-        groups: {
-          type: "array",
-          minItems: 1,
-          items: {
-            type: "object",
-            properties: {
-              predicates: {
-                type: "array",
-                minItems: 1,
-                items: postAggregatePredicateSchema
-              }
-            },
-            required: ["predicates"]
-          }
-        }
-      },
-      anyOf: [
-        { required: ["predicates"] },
-        { required: ["groups"] }
-      ]
-    },
-    orderBy: {
-      type: "array",
-      description: "Optional list of bounded sort clauses. Every orderBy column must also appear in select.",
-      minItems: 1,
-      items: queryOrderBySchema
-    },
-    limit: {
-      type: "integer",
-      description: "Optional maximum rows to return. Runtime will clamp this to a safety limit.",
-      minimum: 0
-    }
-  },
-  anyOf: [
-    { required: ["select"] },
-    { required: ["where"] },
-    { required: ["groupBy"] },
-    { required: ["aggregates"] },
-    { required: ["postAggregateFilter"] },
-    { required: ["orderBy"] },
-    { required: ["limit"] }
-  ]
-};
-const dataPreparationSchema = {
-  type: "object",
-  properties: {
-    explanation: { type: "string", description: "A brief, user-facing explanation of the transformations that will be applied to the data." },
-    operations: {
-      type: "array",
-      description: "A short sequence of deterministic data operations. Keep the list empty if no permanent cleaning is needed.",
-      items: getDataOperationSchema(),
-      maxItems: 8
-    },
-    outputColumns: {
-      type: "array",
-      description: "A list of column profiles describing the structure of the data AFTER the transformation. If no transformation is performed, this should be the same as the input column profiles.",
-      items: columnProfileSchema
-    }
-  },
-  required: ["explanation", "operations", "outputColumns"]
-};
-const dataPreparationProviderOperationTypes = [
-  "drop_rows_by_index",
-  "drop_rows_by_condition",
-  "drop_blank_rows",
-  "promote_header_row",
-  "rename_columns",
-  "drop_columns",
-  "trim_whitespace",
-  "normalize_empty_values",
-  "replace_values",
-  "cast_column",
-  "fill_missing",
-  "dedupe_rows",
-  "filter_rows",
-  "split_column",
-  "unpivot_columns"
-];
-const dataPreparationProviderSchema = {
-  ...dataPreparationSchema,
-  properties: {
-    ...dataPreparationSchema.properties,
-    operations: {
-      ...dataPreparationSchema.properties.operations,
-      items: getDataOperationSchemaForTypes(dataPreparationProviderOperationTypes)
-    }
-  }
-};
-const compactColumnProfileSchema = {
-  type: "object",
-  properties: {
-    name: { type: "string" },
-    type: { type: "string", enum: ["numerical", "categorical", "date", "time", "currency", "percentage"] }
-  },
-  required: ["name", "type"]
-};
-const compactFilterPredicateSchema = {
-  type: "object",
-  properties: {
-    column: { type: "string" },
-    operator: { type: "string", enum: ["eq", "neq", "gt", "gte", "lt", "lte", "between", "contains", "starts_with", "ends_with", "in", "is_null", "not_null"] },
-    value: { type: "string" }
-  },
-  required: ["column", "operator"]
-};
-const compactFilterPredicateGroupSchema = {
-  type: "object",
-  properties: {
-    predicates: {
-      type: "array",
-      items: compactFilterPredicateSchema
-    }
-  },
-  required: ["predicates"]
-};
-const compactRenameMappingSchema = {
-  type: "object",
-  properties: {
-    from: { type: "string" },
-    to: { type: "string" }
-  },
-  required: ["from", "to"]
-};
-const compactUnpivotLabelMappingSchema = {
-  type: "object",
-  properties: {
-    sourceColumn: { type: "string" },
-    label: { type: "string" }
-  },
-  required: ["sourceColumn", "label"]
-};
-const compactUnpivotLabelColumnSchema = {
-  type: "object",
-  properties: {
-    outputColumn: { type: "string" },
-    mappings: {
-      type: "array",
-      items: compactUnpivotLabelMappingSchema
-    }
-  },
-  required: ["outputColumn", "mappings"]
-};
-const compactUnpivotRowClassMappingSchema = {
-  type: "object",
-  properties: {
-    sourceRowIndex: { type: "integer" },
-    rowClass: { type: "string" }
-  },
-  required: ["sourceRowIndex", "rowClass"]
-};
-const compactUnpivotHierarchyDepthMappingSchema = {
-  type: "object",
-  properties: {
-    sourceRowIndex: { type: "integer" },
-    depth: { type: "integer" }
-  },
-  required: ["sourceRowIndex", "depth"]
-};
-const compactWideTableProviderOperationTypes = [
-  "drop_rows_by_index",
-  "drop_rows_by_condition",
-  "drop_blank_rows",
-  "promote_header_row",
-  "rename_columns",
-  "drop_columns",
-  "trim_whitespace",
-  "normalize_empty_values",
-  "cast_column",
-  "unpivot_columns"
-];
-const compactWideTableOperationSchema = {
-  type: "object",
-  properties: {
-    id: { type: "string" },
-    reason: { type: "string" },
-    type: { type: "string", enum: compactWideTableProviderOperationTypes },
-    indices: {
-      type: "array",
-      items: { type: "integer" }
-    },
-    predicates: {
-      type: "array",
-      items: compactFilterPredicateSchema
-    },
-    groups: {
-      type: "array",
-      items: compactFilterPredicateGroupSchema
-    },
-    rowIndex: { type: "integer" },
-    mappings: {
-      type: "array",
-      items: compactRenameMappingSchema
-    },
-    columns: {
-      type: "array",
-      items: { type: "string" }
-    },
-    emptyMarkers: {
-      type: "array",
-      items: { type: "string" }
-    },
-    column: { type: "string" },
-    targetType: { type: "string", enum: ["number", "currency", "percentage", "date", "boolean", "string"] },
-    sourceColumns: {
-      type: "array",
-      items: { type: "string" }
-    },
-    keyColumn: { type: "string" },
-    valueColumn: { type: "string" },
-    keepColumns: {
-      type: "array",
-      items: { type: "string" }
-    },
-    labelColumn: { type: "string" },
-    labelMappings: {
-      type: "array",
-      items: compactUnpivotLabelMappingSchema
-    },
-    labelColumns: {
-      type: "array",
-      items: compactUnpivotLabelColumnSchema
-    },
-    sourceColumnNameColumn: { type: "string" },
-    sourceRowIndexColumn: { type: "string" },
-    rowClassColumn: { type: "string" },
-    rowClassMappings: {
-      type: "array",
-      items: compactUnpivotRowClassMappingSchema
-    },
-    hierarchyDepthColumn: { type: "string" },
-    hierarchyDepthMappings: {
-      type: "array",
-      items: compactUnpivotHierarchyDepthMappingSchema
-    }
-  },
-  required: ["id", "type", "reason"]
-};
-const compactWideTableDataPreparationProviderSchema = {
-  type: "object",
-  properties: {
-    explanation: { type: "string" },
-    operations: {
-      type: "array",
-      items: compactWideTableOperationSchema,
-      maxItems: 8
-    },
-    outputColumns: {
-      type: "array",
-      items: compactColumnProfileSchema
-    }
-  },
-  required: ["explanation", "operations", "outputColumns"]
-};
-const getDataPreparationProviderSchema = (options) => (options == null ? void 0 : options.compactWideTable) ? compactWideTableDataPreparationProviderSchema : dataPreparationProviderSchema;
-const reportContextExtractionSchema = {
-  type: "object",
-  properties: {
-    reportTitle: {
-      type: "string",
-      description: "A concise human-readable report title. You may rephrase or clean up raw text for readability, but it must be grounded in visible CSV evidence."
-    },
-    reportDescription: {
-      type: "string",
-      description: "A 1-2 sentence description of what this CSV dataset contains (domain, time period, scope). Ground in visible evidence from metadata, headers, and body sample."
-    },
-    parameterLines: {
-      type: "array",
-      description: "Up to 5 report parameter or filter lines that were preserved outside the body table.",
-      items: { type: "string" },
-      maxItems: 5
-    },
-    footerLines: {
-      type: "array",
-      description: "Up to 5 footer, memo, or remark lines that belong below the body table.",
-      items: { type: "string" },
-      maxItems: 5
-    },
-    candidateHeaderLine: {
-      type: "array",
-      description: "A likely tabular header row or header-layer labels. Return an empty array if unknown.",
-      items: { type: "string" },
-      maxItems: 20
-    },
-    confidence: {
-      type: "string",
-      enum: ["high", "medium", "low"],
-      description: "How confident you are that the extracted report context is correct."
-    },
-    reasoning: {
-      type: "string",
-      description: "A short explanation of which report evidence supported the extraction."
-    }
-  },
-  required: ["reportTitle", "reportDescription", "parameterLines", "footerLines", "candidateHeaderLine", "confidence", "reasoning"]
-};
-const datasetSemanticAnnotationSchema = {
-  type: "object",
-  properties: {
-    datasetRole: {
-      type: "string",
-      enum: ["detail_table", "summary_report", "mixed_report", "unknown"],
-      description: "Overall semantic role of the prepared dataset."
-    },
-    rowAnnotations: {
-      type: "array",
-      description: "Semantic judgments for the provided candidate rows only. Do not invent row indices that were not provided.",
-      maxItems: 80,
-      items: {
-        type: "object",
-        properties: {
-          rowIndex: { type: "integer", minimum: 0 },
-          rowRole: {
-            type: "string",
-            enum: ["detail", "subtotal", "grand_total", "group_header", "footer", "note", "bucket", "noise", "unknown"]
-          },
-          confidence: { type: "number", minimum: 0, maximum: 1 },
-          reason: { type: "string" },
-          confidenceBand: {
-            type: "string",
-            enum: ["high", "medium", "low"]
-          },
-          evidenceSources: {
-            type: "array",
-            items: {
-              type: "string",
-              enum: ["ai_prompt_context", "sample_values", "type_profile", "report_context", "deterministic_pattern"]
-            }
-          },
-          excludeFromDefaultAnalysis: { type: "boolean" },
-          unsafeForNarrative: { type: "boolean" }
-        },
-        required: ["rowIndex", "rowRole", "confidence", "reason"]
-      }
-    },
-    columnAnnotations: {
-      type: "array",
-      description: "Semantic role guesses for columns in the prepared dataset.",
-      maxItems: 80,
-      items: {
-        type: "object",
-        properties: {
-          columnName: { type: "string" },
-          semanticRole: {
-            type: "string",
-            enum: ["business_entity", "business_dimension", "metric", "time_dimension", "descriptor", "code", "helper_dimension", "note", "unknown"]
-          },
-          confidence: { type: "number", minimum: 0, maximum: 1 },
-          reason: { type: "string" },
-          rawHeader: { type: "string" },
-          businessLabel: { type: "string" },
-          sampleValueHints: {
-            type: "array",
-            items: { type: "string" },
-            maxItems: 5
-          },
-          isPrimaryGrainCandidate: { type: "boolean" },
-          isMetricCandidate: { type: "boolean" },
-          isBusinessSafe: { type: "boolean" },
-          confidenceBand: {
-            type: "string",
-            enum: ["high", "medium", "low"]
-          },
-          evidenceSources: {
-            type: "array",
-            items: {
-              type: "string",
-              enum: ["ai_prompt_context", "sample_values", "type_profile", "report_context", "deterministic_pattern"]
-            }
-          }
-        },
-        required: ["columnName", "semanticRole", "confidence", "reason"]
-      }
-    },
-    headerSemantics: {
-      type: "object",
-      properties: {
-        reportTitle: { type: "string" },
-        reportType: {
-          type: "string",
-          enum: ["financial_statement", "project_report", "operational_report", "detail_listing", "unknown"]
-        },
-        headerRoleHints: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              headerValue: { type: "string" },
-              role: {
-                type: "string",
-                enum: ["grain", "metric", "helper", "filter_scope", "unknown"]
-              },
-              confidence: { type: "number", minimum: 0, maximum: 1 },
-              reason: { type: "string" }
-            },
-            required: ["headerValue", "role", "confidence", "reason"]
-          },
-          maxItems: 20
-        },
-        scopeHints: {
-          type: "object",
-          properties: {
-            period: { type: "string" },
-            businessUnit: { type: "string" },
-            region: { type: "string" },
-            scenario: { type: "string" }
-          }
-        },
-        businessTerminology: {
-          type: "array",
-          items: { type: "string" },
-          maxItems: 12
-        },
-        headerConfidence: { type: "number", minimum: 0, maximum: 1 },
-        confidenceBand: {
-          type: "string",
-          enum: ["high", "medium", "low"]
-        },
-        evidenceSources: {
-          type: "array",
-          items: {
-            type: "string",
-            enum: ["ai_prompt_context", "sample_values", "type_profile", "report_context", "deterministic_pattern"]
-          }
-        },
-        conflictDetected: { type: "boolean" },
-        reason: { type: "string" }
-      },
-      required: ["reportTitle", "reportType", "headerRoleHints", "scopeHints", "businessTerminology", "headerConfidence", "reason"]
-    },
-    summary: {
-      type: "string",
-      description: "Short explanation of the semantic structure and any likely non-detail rows."
-    }
-  },
-  required: ["datasetRole", "rowAnnotations", "columnAnnotations", "headerSemantics", "summary"]
-};
-const sqlPrecheckAssessmentSchema = {
-  type: "object",
-  properties: {
-    status: {
-      type: "string",
-      enum: ["passed", "blocked"],
-      description: "Whether the prepared dataset looks ready for grouped SQL analysis."
-    },
-    summary: {
-      type: "string",
-      description: "Short explanation of the precheck decision."
-    },
-    candidatePairs: {
-      type: "array",
-      description: "Up to 3 metric/dimension pairs that look suitable for grouped SQL cards.",
-      maxItems: 3,
-      items: {
-        type: "object",
-        properties: {
-          dimension: { type: "string" },
-          metric: { type: "string" },
-          confidence: {
-            type: "string",
-            enum: ["high", "medium", "low"]
-          },
-          reason: { type: "string" }
-        },
-        required: ["dimension", "metric", "confidence", "reason"]
-      }
-    },
-    findings: {
-      type: "array",
-      description: "Specific blockers or warnings that explain the decision.",
-      maxItems: 8,
-      items: {
-        type: "object",
-        properties: {
-          kind: {
-            type: "string",
-            enum: [
-              "null_heavy_metric",
-              "constant_metric",
-              "zero_total_metric",
-              "flat_grouped_metric",
-              "low_distinct_dimension",
-              "parse_failures_remaining",
-              "high_fragmentation",
-              "no_viable_candidates"
-            ]
-          },
-          severity: {
-            type: "string",
-            enum: ["warn", "block"]
-          },
-          message: { type: "string" },
-          column: { type: "string" },
-          metric: { type: "string" },
-          dimension: { type: "string" }
-        },
-        required: ["kind", "severity", "message"]
-      }
-    }
-  },
-  required: ["status", "summary", "candidatePairs", "findings"]
-};
-const filterFunctionSchema = {
-  type: "object",
-  properties: {
-    explanation: { type: "string", description: "A brief, user-facing explanation of the filter that was created from the natural language query." },
-    operation: {
-      type: "object",
-      description: "Exactly one deterministic filter_rows operation. At least one of predicates or groups must be present.",
-      properties: {
-        id: { type: "string", description: "Stable operation identifier." },
-        type: { type: "string", enum: ["filter_rows"] },
-        reason: { type: "string", description: "Short explanation for why this filter is needed." },
-        predicates: {
-          type: "array",
-          items: filterPredicateSchema
-        },
-        groups: {
-          type: "array",
-          items: filterPredicateGroupSchema
-        }
-      },
-      required: ["id", "type", "reason"]
-    }
-  },
-  required: ["explanation", "operation"]
-};
-const dataQuerySchema = {
-  type: "object",
-  properties: {
-    explanation: { type: "string", minLength: 1, description: "A brief, user-facing explanation of the read-only query." },
-    plan: queryPlanSchema,
-    fallbackFilterOperation: filterRowsOperationSchema
-  },
-  required: ["explanation", "plan"]
-};
-const dataDescribeSchema = {
-  type: "object",
-  properties: {
-    explanation: { type: "string", minLength: 1, description: "A brief explanation of what summary statistics to compute." },
-    columns: { type: "array", items: { type: "string" }, description: "Optional list of numeric columns to describe. Defaults to all numeric columns." }
-  },
-  required: ["explanation"]
-};
-const dataValueCountsSchema = {
-  type: "object",
-  properties: {
-    explanation: { type: "string", minLength: 1, description: "A brief explanation of what frequency distribution to compute." },
-    column: { type: "string", minLength: 1, description: "The categorical column to count values for." },
-    limit: { type: "number", minimum: 1, maximum: 100, description: "Maximum number of values to return. Defaults to 20." }
-  },
-  required: ["explanation", "column"]
-};
-const dataOutliersSchema = {
-  type: "object",
-  properties: {
-    explanation: { type: "string", minLength: 1, description: "A brief explanation of what outlier detection to perform." },
-    column: { type: "string", minLength: 1, description: "The numeric column to detect outliers in." }
-  },
-  required: ["explanation", "column"]
-};
-const dataMissingSchema = {
-  type: "object",
-  properties: {
-    explanation: { type: "string", minLength: 1, description: "A brief explanation of what missing data analysis to perform." },
-    columns: { type: "array", items: { type: "string" }, description: "Optional list of columns to analyze. Defaults to all columns." }
-  },
-  required: ["explanation"]
-};
 const createDataToolManifests = () => [
   {
     name: "data.mutate",
@@ -21538,17 +21145,18 @@ const createRuntimeToolManifests = () => [
   },
   {
     name: "card.refine",
-    description: "Modify parameters of an existing analysis card: change chart type, adjust topN limit, apply or clear a filter, or toggle data table visibility.",
+    description: "Modify parameters of an existing analysis card: change chart type, adjust topN limit, apply or clear a filter, toggle data table visibility, or rewrite the AI summary.",
     category: "card",
     risk: "low",
     enabledByDefault: true,
     inputSchema: cardRefineSchema,
     groups: ["card.mutate"],
     promptHints: [
-      'Use when the user asks to change how an existing card looks or is filtered (e.g., "把第二张卡改成 top 5", "那张图换成 line chart", "filter to Region = North").',
-      "Always reference a valid cardId from the current card list.",
+      'Use when the user asks to change how an existing card looks, is filtered, or has its summary rewritten (e.g., "change to line chart", "top 5", "filter to Region = North", "rewrite the summary", "update summary to focus on trends").',
+      "Always reference a valid cardId from the current card list. When the user @mentions a card, use that cardId.",
       "Include only the changes that need to be applied — omit unchanged fields.",
-      "To clear a filter, pass filter with an empty values array."
+      "To clear a filter, pass filter with an empty values array.",
+      "To rewrite or update the card summary text, pass changes.summary as a plain text string. ALWAYS use card.refine for summary rewrite requests — do NOT reply with text instead."
     ],
     resultShape: "Applies the requested parameter changes to the specified card in-place.",
     isAvailable: requireAnalysisCards,
@@ -24724,73 +24332,6 @@ const datasetBinding = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defi
   resolveCurrentDuckDbBinding,
   resolveDatasetBindingTarget
 }, Symbol.toStringTag, { value: "Module" }));
-const reportStructureProposalSchema = {
-  type: "object",
-  properties: {
-    bodyRowRoles: {
-      type: "array",
-      maxItems: 48,
-      items: {
-        type: "object",
-        properties: {
-          rowIndex: {
-            type: "integer",
-            minimum: 0
-          },
-          role: {
-            type: "string",
-            enum: ["title", "parameter", "header", "detail", "group_header", "subtotal", "summary", "note", "footer", "blank", "unknown"]
-          },
-          confidence: {
-            type: "number",
-            minimum: 0,
-            maximum: 1
-          },
-          notes: {
-            type: "array",
-            maxItems: 3,
-            items: { type: "string" }
-          }
-        },
-        required: ["rowIndex", "role", "confidence"]
-      }
-    },
-    carryForwardColumns: {
-      type: "array",
-      maxItems: 8,
-      items: { type: "string" }
-    },
-    sectionLabelColumns: {
-      type: "array",
-      maxItems: 8,
-      items: { type: "string" }
-    },
-    detailInclusionRoles: {
-      type: "array",
-      maxItems: 4,
-      items: {
-        type: "string",
-        enum: ["detail", "group_header", "subtotal", "note", "unknown"]
-      }
-    },
-    confidence: {
-      type: "number",
-      minimum: 0,
-      maximum: 1
-    },
-    reasoning: {
-      type: "string"
-    }
-  },
-  required: [
-    "bodyRowRoles",
-    "carryForwardColumns",
-    "sectionLabelColumns",
-    "detailInclusionRoles",
-    "confidence",
-    "reasoning"
-  ]
-};
 const proposalCache = /* @__PURE__ */ new WeakMap();
 const resolveReportStructureArtifactsWithProposal = async (params) => {
   var _a, _b, _c, _d;
@@ -25239,66 +24780,6 @@ const parseCsvTextWithDetection = (text) => {
     )
   };
 };
-const intakeStructureBoundarySchema = {
-  type: "object",
-  properties: {
-    headerRowIndex: {
-      type: "integer",
-      minimum: -1,
-      description: "Zero-based index of the primary header row. This row contains the column names that describe the body data. Set to -1 when NO header row exists in the file (headerless report). When -1, you MUST provide syntheticHeaders."
-    },
-    headerLayerIndexes: {
-      type: "array",
-      items: { type: "integer", minimum: 0 },
-      maxItems: 4,
-      description: "Indexes of additional header layers (e.g., multi-line headers with code series above label rows). Exclude the primary header index."
-    },
-    bodyStartIndex: {
-      type: "integer",
-      minimum: 0,
-      description: "Zero-based index of the first data/body row, immediately after the header (and any parameter rows between header and body)."
-    },
-    summaryStartIndex: {
-      type: "integer",
-      minimum: 0,
-      description: "Zero-based index where summary/total/footer rows begin. Set equal to total row count if there is no summary section."
-    },
-    parameterRowIndexes: {
-      type: "array",
-      items: { type: "integer", minimum: 0 },
-      maxItems: 10,
-      description: 'Indexes of parameter/filter label rows between the header area and body start (e.g., "Sales Person Name", "Print Date").'
-    },
-    repeatedHeaderRowIndexes: {
-      type: "array",
-      items: { type: "integer", minimum: 0 },
-      maxItems: 10,
-      description: "Indexes of rows that repeat the primary header (common in paginated report exports)."
-    },
-    confidence: {
-      type: "number",
-      minimum: 0,
-      maximum: 1,
-      description: "Your confidence in this boundary detection (0.0 to 1.0). Use lower values when the structure is ambiguous."
-    },
-    reasoning: {
-      type: "string",
-      description: "Brief explanation (1-3 sentences) of why these boundaries were chosen."
-    },
-    syntheticHeaders: {
-      type: "array",
-      items: { type: "string" },
-      description: 'AI-inferred column names when headerRowIndex is -1 (headerless file). Array length MUST equal the column count. Infer names from data patterns: e.g. sparse text columns → dimension names, columns with monthly quantities → "Jan", "Feb", etc., total columns → "Total Qty", "Total Amount".'
-    }
-  },
-  required: [
-    "headerRowIndex",
-    "bodyStartIndex",
-    "summaryStartIndex",
-    "confidence",
-    "reasoning"
-  ]
-};
 const AI_TABULAR_REGRESSION_SHAPES = /* @__PURE__ */ new Set(["wide_crosstab", "multi_header_matrix", "mixed_report"]);
 const UNNAMED_COLUMN_PATTERN$1 = /^_unnamed_column_/i;
 const ROW_NUMBER_VALUE_PATTERN = /^\d+(?:\.\d+)?\.?$/;
@@ -25461,6 +24942,16 @@ const evaluateAiBoundaryQuality = (deterministicIntakeIr, aiIntakeIr) => {
   }
   if (!deterministicIntakeIr.provisionalTable && aiIntakeIr.provisionalTable) {
     improvedSignals.push("AI boundary recovered a provisional table boundary after deterministic fallback.");
+  }
+  const deterministicBodyRowCount = deterministicData.data.length;
+  const aiBodyRowCount = aiData.data.length;
+  if (deterministicBodyRowCount > 0 && aiBodyRowCount < deterministicBodyRowCount) {
+    const lossRatio = (deterministicBodyRowCount - aiBodyRowCount) / deterministicBodyRowCount;
+    if (lossRatio >= 0.05) {
+      regressionSignals.push(
+        `AI boundary loses ${deterministicBodyRowCount - aiBodyRowCount} body rows (${(lossRatio * 100).toFixed(1)}% of ${deterministicBodyRowCount}).`
+      );
+    }
   }
   const accepted = regressionSignals.length === 0 && improvedSignals.length > 0;
   return {
@@ -25850,21 +25341,6 @@ class AgentMemoryCollector {
   }
 }
 const agentMemoryCollector = new AgentMemoryCollector();
-const emitAgentEvent = (store, payload) => {
-  const recorder = store.getState().recordAgentEvent;
-  if (!recorder) return;
-  recorder(payload);
-};
-const updateAgentTaskStatus = (store, status) => {
-  const setter = store.getState().setAiTaskStatus;
-  if (!setter) return;
-  setter(status);
-};
-const agentMonitor = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
-  __proto__: null,
-  emitAgentEvent,
-  updateAgentTaskStatus
-}, Symbol.toStringTag, { value: "Module" }));
 const emitSilentFailure = (store, error, context) => {
   try {
     const recorder = store.getState().recordRuntimeEvent;
@@ -25970,7 +25446,7 @@ const validateRowSchema = (rows, expectedKeys) => {
     issues
   };
 };
-const LOG_PREFIX$s = "[FileProcessor]";
+const LOG_PREFIX$q = "[FileProcessor]";
 const SAMPLE_SIZE$2 = 20;
 const cloneCsvData$1 = (data) => {
   var _a;
@@ -26086,7 +25562,7 @@ async function* processAndCleanFile(file, store) {
   const sessionId = store.getState().sessionId;
   if (sessionId) {
     saveOriginalData(sessionId, cloneCsvData$1(rawData)).catch(
-      (err) => console.warn(`${LOG_PREFIX$s} Could not persist original data for rollback.`, err)
+      (err) => console.warn(`${LOG_PREFIX$q} Could not persist original data for rollback.`, err)
     );
   }
   yield { type: "progress", message: "Inferring report title and parameters..." };
@@ -26151,7 +25627,7 @@ async function* processAndCleanFile(file, store) {
   try {
     ({ profiles, issues } = await profileDataWithWorker(dataForAnalysis.data));
   } catch (profilingError) {
-    console.error(`${LOG_PREFIX$s} profileDataWithWorker failed, using lightweight fallback profiler.`, profilingError);
+    console.error(`${LOG_PREFIX$q} profileDataWithWorker failed, using lightweight fallback profiler.`, profilingError);
     emitSilentFailure(store, profilingError, {
       component: "FileProcessor",
       recoveryAction: "lightweight_profiler_fallback",
@@ -26184,7 +25660,7 @@ async function* processAndCleanFile(file, store) {
   });
   if (issues.length > 0) {
     const warningSummary = summarizeDataQualityIssues(issues) ?? getTranslation("file_processor_quality_warning_fallback", store.getState().settings.language);
-    console.warn(`${LOG_PREFIX$s} ${warningSummary}`, {
+    console.warn(`${LOG_PREFIX$q} ${warningSummary}`, {
       fileName: file.name,
       issueCount: issues.length,
       issues
@@ -26239,7 +25715,7 @@ async function* processAndCleanFile(file, store) {
       currentDatasetId: datasetId
     }
   });
-  console.log(`${LOG_PREFIX$s} AI-first intake complete for ${file.name}.`);
+  console.log(`${LOG_PREFIX$q} AI-first intake complete for ${file.name}.`);
   return {
     dataForAnalysis,
     rawData,
@@ -26324,6 +25800,85 @@ const toDeterministicProgram = (fallbackAction, fallbackProfiles, explanationPre
 };
 const isStructuralVerificationSignal = (signalKey) => typeof signalKey === "string" && STRUCTURAL_VERIFICATION_SIGNAL_KEYS.has(signalKey);
 const translateCleaning = (language, key, params) => getTranslation(key, language, params);
+const MAX_CLEANING_LOOP_ROUNDS = 3;
+const NOISE_LEAKAGE_THRESHOLD = 0.02;
+const CLEANING_ITERATION_ARTIFACT_PATHS = [
+  "/cleaning/row-inspection.json",
+  "/cleaning/row-classification.json",
+  "/cleaning/cleaning-loop-history.json"
+];
+const getVerificationRates = (report) => ({
+  noiseLeakageRate: Number(getVerificationSignalValue(report, "noise_leakage_rate") ?? 0),
+  repeatedHeaderLeakageRate: Number(getVerificationSignalValue(report, "repeated_header_leakage_rate") ?? 0)
+});
+const logCleaningLoopStage = (round, stage, startedAt, detail) => {
+  const suffix = detail ? ` | ${detail}` : "";
+  console.log(`[Perf:CleaningLoop][round ${round}] ${stage}: ${Math.round(performance.now() - startedAt)}ms${suffix}`);
+};
+const buildIterationFailureSignature = (record) => JSON.stringify({
+  rowCountAfter: record.rowCountAfter,
+  residualUnknownRowCount: record.residualUnknownRowCount,
+  residualSummaryLikeRowCount: record.residualSummaryLikeRowCount,
+  failureSignalKey: record.failureSignalKey
+});
+const buildDeterministicCleanupCandidate = (workingProfiles, operations, inspectionSummary) => {
+  const deterministicPlan = {
+    explanation: `Runtime deterministic cleanup removed high-confidence report-noise rows. ${inspectionSummary}`,
+    operations,
+    outputColumns: workingProfiles,
+    planStatus: operations.length > 0 ? "operations" : "schema_only",
+    consistencyIssues: []
+  };
+  const program = createAiCleaningProgramFromPlan(deterministicPlan, workingProfiles);
+  program.source = "semantic_deterministic";
+  return {
+    strategyId: `deterministic-cleanup-${Date.now()}`,
+    source: "deterministic_cleanup",
+    program,
+    plan: deterministicPlan,
+    intentSummary: "Deterministic cleanup-only fallback for the current working dataset.",
+    requires: [],
+    priority: 99
+  };
+};
+const buildAttemptRecord = (candidate, round, reasonCode, executed) => ({
+  strategyId: candidate.strategyId,
+  source: candidate.source,
+  requirement: candidate.requires[0] ?? null,
+  round,
+  reasonCode,
+  executed
+});
+const updateRecoveryStateForAttempt = (store, candidate, round, reasonCode, executed) => {
+  store.setState((prev) => {
+    var _a, _b, _c, _d, _e, _f, _g, _h;
+    return {
+      cleaningRun: updateCleaningRun(prev.cleaningRun, {
+        recoveryState: {
+          activeStrategyId: executed ? candidate.strategyId : ((_b = (_a = prev.cleaningRun) == null ? void 0 : _a.recoveryState) == null ? void 0 : _b.activeStrategyId) ?? null,
+          attemptedStrategies: [
+            ...((_d = (_c = prev.cleaningRun) == null ? void 0 : _c.recoveryState) == null ? void 0 : _d.attemptedStrategies) ?? [],
+            buildAttemptRecord(candidate, round, reasonCode, executed)
+          ].slice(-12),
+          lastReasonCode: reasonCode,
+          recoveredBy: ((_f = (_e = prev.cleaningRun) == null ? void 0 : _e.recoveryState) == null ? void 0 : _f.recoveredBy) ?? null,
+          analysisMode: ((_h = (_g = prev.cleaningRun) == null ? void 0 : _g.recoveryState) == null ? void 0 : _h.analysisMode) ?? "normal"
+        }
+      })
+    };
+  });
+};
+const applyFailureDetail = (store, detail) => {
+  store.setState((prev) => ({
+    cleaningRun: updateCleaningRun(prev.cleaningRun, {
+      userFacingMessage: detail.summary,
+      actionTakenMessage: detail.actionTaken ?? null,
+      dataSafetyMessage: detail.dataSafety ?? null,
+      nextStateMessage: detail.nextState ?? null,
+      technicalDetail: detail.technicalDetail ?? null
+    })
+  }));
+};
 const setRunningState = (store, resume, strategy, strategyKind) => {
   store.setState((prev) => {
     var _a, _b;
@@ -27285,7 +26840,7 @@ const buildCleaningFailureDetail = (input) => ({
   nextState: input.nextState ?? null,
   technicalDetail: input.technicalDetail ?? null
 });
-const buildHierarchyMismatchFailureDetail = (technicalDetail, language = "Mandarin") => buildCleaningFailureDetail({
+const buildHierarchyMismatchFailureDetail = (technicalDetail, language = "English") => buildCleaningFailureDetail({
   summary: getTranslation("cleaning_hierarchy_mismatch_summary", language),
   actionTaken: getTranslation("cleaning_hierarchy_mismatch_action", language),
   dataSafety: getTranslation("cleaning_hierarchy_mismatch_safety", language),
@@ -27298,87 +26853,108 @@ const toCleaningFailureChatText = (detail) => [
   detail.dataSafety,
   detail.nextState
 ].filter(Boolean).join(" ");
-const MAX_CLEANING_LOOP_ROUNDS = 3;
-const NOISE_LEAKAGE_THRESHOLD = 0.02;
-const CLEANING_ITERATION_ARTIFACT_PATHS = [
-  "/cleaning/row-inspection.json",
-  "/cleaning/row-classification.json",
-  "/cleaning/cleaning-loop-history.json"
-];
-const getVerificationRates = (report) => ({
-  noiseLeakageRate: Number(getVerificationSignalValue(report, "noise_leakage_rate") ?? 0),
-  repeatedHeaderLeakageRate: Number(getVerificationSignalValue(report, "repeated_header_leakage_rate") ?? 0)
-});
-const logCleaningLoopStage = (round, stage, startedAt, detail) => {
-  const suffix = detail ? ` | ${detail}` : "";
-  console.log(`[Perf:CleaningLoop][round ${round}] ${stage}: ${Math.round(performance.now() - startedAt)}ms${suffix}`);
-};
-const buildIterationFailureSignature = (record) => JSON.stringify({
-  rowCountAfter: record.rowCountAfter,
-  residualUnknownRowCount: record.residualUnknownRowCount,
-  residualSummaryLikeRowCount: record.residualSummaryLikeRowCount,
-  failureSignalKey: record.failureSignalKey
-});
-const buildDeterministicCleanupCandidate = (workingProfiles, operations, inspectionSummary) => {
-  const deterministicPlan = {
-    explanation: `Runtime deterministic cleanup removed high-confidence report-noise rows. ${inspectionSummary}`,
-    operations,
-    outputColumns: workingProfiles,
-    planStatus: operations.length > 0 ? "operations" : "schema_only",
-    consistencyIssues: []
-  };
-  const program = createAiCleaningProgramFromPlan(deterministicPlan, workingProfiles);
-  program.source = "semantic_deterministic";
-  return {
-    strategyId: `deterministic-cleanup-${Date.now()}`,
-    source: "deterministic_cleanup",
-    program,
-    plan: deterministicPlan,
-    intentSummary: "Deterministic cleanup-only fallback for the current working dataset.",
-    requires: [],
-    priority: 99
-  };
-};
-const buildAttemptRecord = (candidate, round, reasonCode, executed) => ({
-  strategyId: candidate.strategyId,
-  source: candidate.source,
-  requirement: candidate.requires[0] ?? null,
-  round,
-  reasonCode,
-  executed
-});
-const updateRecoveryStateForAttempt = (store, candidate, round, reasonCode, executed) => {
+const emitFailure = (store, message, rollbackReason, extra) => {
+  const lang = store.getState().settings.language;
+  const failureDetail = buildCleaningFailureDetail({
+    summary: translateCleaning(lang, "cleaning_terminal_failure_summary"),
+    actionTaken: translateCleaning(lang, "cleaning_terminal_failure_action"),
+    dataSafety: translateCleaning(lang, "cleaning_terminal_failure_data_safety"),
+    nextState: translateCleaning(lang, "cleaning_terminal_failure_next"),
+    technicalDetail: message
+  });
   store.setState((prev) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h;
+    var _a, _b;
     return {
       cleaningRun: updateCleaningRun(prev.cleaningRun, {
-        recoveryState: {
-          activeStrategyId: executed ? candidate.strategyId : ((_b = (_a = prev.cleaningRun) == null ? void 0 : _a.recoveryState) == null ? void 0 : _b.activeStrategyId) ?? null,
-          attemptedStrategies: [
-            ...((_d = (_c = prev.cleaningRun) == null ? void 0 : _c.recoveryState) == null ? void 0 : _d.attemptedStrategies) ?? [],
-            buildAttemptRecord(candidate, round, reasonCode, executed)
-          ].slice(-12),
-          lastReasonCode: reasonCode,
-          recoveredBy: ((_f = (_e = prev.cleaningRun) == null ? void 0 : _e.recoveryState) == null ? void 0 : _f.recoveredBy) ?? null,
-          analysisMode: ((_h = (_g = prev.cleaningRun) == null ? void 0 : _g.recoveryState) == null ? void 0 : _h.analysisMode) ?? "normal"
-        }
-      })
+        status: "failed",
+        lastError: message,
+        lastVerificationReason: message,
+        rollbackReason,
+        lastFailedStage: ((_a = prev.cleaningRun) == null ? void 0 : _a.lastFailedStage) ?? "verify",
+        userFacingMessage: failureDetail.summary,
+        actionTakenMessage: failureDetail.actionTaken,
+        dataSafetyMessage: failureDetail.dataSafety,
+        nextStateMessage: failureDetail.nextState,
+        technicalDetail: failureDetail.technicalDetail,
+        ...{}
+      }),
+      chatHistory: [
+        ...prev.chatHistory,
+        createChatMessage({
+          sender: "ai",
+          text: toCleaningFailureChatText(failureDetail),
+          timestamp: /* @__PURE__ */ new Date(),
+          type: "ai_cleaning_failure",
+          isError: true,
+          cleaningRunId: (_b = prev.cleaningRun) == null ? void 0 : _b.runId,
+          resolved: false,
+          cleaningFailure: failureDetail,
+          suggestedActions: [
+            { label: "Continue safe mode", action: "continue cleaning" },
+            { label: "Retry AI cleaning", action: "restart cleaning" },
+            { label: "Inspect technical detail", action: "show technical detail" }
+          ]
+        })
+      ]
     };
   });
 };
-const applyFailureDetail = (store, detail) => {
-  store.setState((prev) => ({
-    cleaningRun: updateCleaningRun(prev.cleaningRun, {
-      userFacingMessage: detail.summary,
-      actionTakenMessage: detail.actionTaken ?? null,
-      dataSafetyMessage: detail.dataSafety ?? null,
-      nextStateMessage: detail.nextState ?? null,
-      technicalDetail: detail.technicalDetail ?? null
-    })
-  }));
+const attemptGracefulDegradation = async (params) => {
+  var _a;
+  const { store, workingData, workingProfiles, rawData, lastError } = params;
+  const getState = () => store.getState();
+  if (workingData.data.length === 0) return false;
+  const finalInspection = inspectCsvRows(workingData, { source: "cleaned" });
+  const noiseCount = finalInspection.residualUnknownRowIndexes.length + finalInspection.residualSummaryLikeRowIndexes.length;
+  const detailRowRatio = 1 - noiseCount / workingData.data.length;
+  if (detailRowRatio < 0.7) return false;
+  const latestState = getState();
+  const degradedPlan = {
+    explanation: buildPlanExplanation(workingData.data.length, false, latestState.settings.language),
+    operations: [],
+    outputColumns: workingProfiles,
+    planStatus: "schema_only",
+    consistencyIssues: []
+  };
+  console.warn(
+    `[CleaningPipeline] Accepting partially-cleaned data (${detailRowRatio.toFixed(2)} detail-row ratio, ${noiseCount} residual noise rows).`
+  );
+  (_a = latestState.addProgress) == null ? void 0 : _a.call(
+    latestState,
+    translateCleaning(latestState.settings.language, "autonomous_cleaning_degraded_accept"),
+    "warning"
+  );
+  store.setState((prev) => {
+    var _a2, _b, _c, _d, _e, _f, _g, _h;
+    return {
+      cleaningRun: updateCleaningRun(prev.cleaningRun, {
+        recoveryState: {
+          activeStrategyId: ((_b = (_a2 = prev.cleaningRun) == null ? void 0 : _a2.recoveryState) == null ? void 0 : _b.activeStrategyId) ?? null,
+          attemptedStrategies: ((_d = (_c = prev.cleaningRun) == null ? void 0 : _c.recoveryState) == null ? void 0 : _d.attemptedStrategies) ?? [],
+          lastReasonCode: ((_f = (_e = prev.cleaningRun) == null ? void 0 : _e.recoveryState) == null ? void 0 : _f.lastReasonCode) ?? null,
+          recoveredBy: ((_h = (_g = prev.cleaningRun) == null ? void 0 : _g.recoveryState) == null ? void 0 : _h.recoveredBy) ?? "deterministic_cleanup",
+          analysisMode: "degraded_safe"
+        },
+        userFacingMessage: translateCleaning(latestState.settings.language, "cleaning_partial_noise_ok"),
+        actionTakenMessage: translateCleaning(latestState.settings.language, "cleaning_keep_snapshot_exclude_noise"),
+        dataSafetyMessage: translateCleaning(latestState.settings.language, "cleaning_original_snapshot_both_safe"),
+        nextStateMessage: translateCleaning(latestState.settings.language, "cleaning_analysis_labeled_safe_mode"),
+        technicalDetail: (lastError == null ? void 0 : lastError.message) ?? null
+      })
+    };
+  });
+  await persistSuccessfulCleaning({
+    store,
+    rawData,
+    latestState,
+    workingData,
+    workingProfiles,
+    plan: degradedPlan
+  });
+  return true;
 };
 const orchestrateAutonomousAiCleaning = async (store, options) => {
-  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _A, _B;
+  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _A;
   const { getState } = store;
   const initialState = getState();
   const rawData = initialState.rawCsvData;
@@ -28123,103 +27699,18 @@ const orchestrateAutonomousAiCleaning = async (store, options) => {
     }
   }
   const terminalRollbackReason = (_A = getState().cleaningRun) == null ? void 0 : _A.rollbackReason;
-  if (terminalRollbackReason !== "deterministic_recovery_failed" && workingData.data.length > 0) {
-    const finalInspection = inspectCsvRows(workingData, { source: "cleaned" });
-    const noiseCount = finalInspection.residualUnknownRowIndexes.length + finalInspection.residualSummaryLikeRowIndexes.length;
-    const detailRowRatio = workingData.data.length > 0 ? 1 - noiseCount / workingData.data.length : 0;
-    if (detailRowRatio >= 0.7) {
-      const latestState = getState();
-      const degradedPlan = {
-        explanation: buildPlanExplanation(workingData.data.length, false, latestState.settings.language),
-        operations: [],
-        outputColumns: workingProfiles,
-        planStatus: "schema_only",
-        consistencyIssues: []
-      };
-      console.warn(`[CleaningPipeline] Accepting partially-cleaned data (${detailRowRatio.toFixed(2)} detail-row ratio, ${noiseCount} residual noise rows).`);
-      (_B = latestState.addProgress) == null ? void 0 : _B.call(
-        latestState,
-        translateCleaning(latestState.settings.language, "autonomous_cleaning_degraded_accept"),
-        "warning"
-      );
-      store.setState((prev) => {
-        var _a2, _b2, _c2, _d2, _e2, _f2, _g2, _h2;
-        return {
-          cleaningRun: updateCleaningRun(prev.cleaningRun, {
-            recoveryState: {
-              activeStrategyId: ((_b2 = (_a2 = prev.cleaningRun) == null ? void 0 : _a2.recoveryState) == null ? void 0 : _b2.activeStrategyId) ?? null,
-              attemptedStrategies: ((_d2 = (_c2 = prev.cleaningRun) == null ? void 0 : _c2.recoveryState) == null ? void 0 : _d2.attemptedStrategies) ?? [],
-              lastReasonCode: ((_f2 = (_e2 = prev.cleaningRun) == null ? void 0 : _e2.recoveryState) == null ? void 0 : _f2.lastReasonCode) ?? null,
-              recoveredBy: ((_h2 = (_g2 = prev.cleaningRun) == null ? void 0 : _g2.recoveryState) == null ? void 0 : _h2.recoveredBy) ?? "deterministic_cleanup",
-              analysisMode: "degraded_safe"
-            },
-            userFacingMessage: translateCleaning(latestState.settings.language, "cleaning_partial_noise_ok"),
-            actionTakenMessage: translateCleaning(latestState.settings.language, "cleaning_keep_snapshot_exclude_noise"),
-            dataSafetyMessage: translateCleaning(latestState.settings.language, "cleaning_original_snapshot_both_safe"),
-            nextStateMessage: translateCleaning(latestState.settings.language, "cleaning_analysis_labeled_safe_mode"),
-            technicalDetail: (lastError == null ? void 0 : lastError.message) ?? null
-          })
-        };
-      });
-      await persistSuccessfulCleaning({
-        store,
-        rawData,
-        latestState,
-        workingData,
-        workingProfiles,
-        plan: degradedPlan
-      });
-      return;
-    }
+  if (terminalRollbackReason !== "deterministic_recovery_failed") {
+    const accepted = await attemptGracefulDegradation({
+      store,
+      workingData,
+      workingProfiles,
+      rawData,
+      lastError
+    });
+    if (accepted) return;
   }
   const finalFailureMessage = terminalRollbackReason === "deterministic_recovery_failed" ? `deterministic_recovery_failed: ${(lastError == null ? void 0 : lastError.message) ?? "Unknown error."}` : `Cleaning loop exhausted after ${MAX_CLEANING_LOOP_ROUNDS} rounds: ${(lastError == null ? void 0 : lastError.message) ?? "Unknown error."}`;
   emitFailure(store, finalFailureMessage, terminalRollbackReason === "deterministic_recovery_failed" ? "deterministic_recovery_failed" : "llm_budget_exhausted");
-};
-const emitFailure = (store, message, rollbackReason, extra) => {
-  const lang = store.getState().settings.language;
-  const failureDetail = buildCleaningFailureDetail({
-    summary: translateCleaning(lang, "cleaning_terminal_failure_summary"),
-    actionTaken: translateCleaning(lang, "cleaning_terminal_failure_action"),
-    dataSafety: translateCleaning(lang, "cleaning_terminal_failure_data_safety"),
-    nextState: translateCleaning(lang, "cleaning_terminal_failure_next"),
-    technicalDetail: message
-  });
-  store.setState((prev) => {
-    var _a, _b;
-    return {
-      cleaningRun: updateCleaningRun(prev.cleaningRun, {
-        status: "failed",
-        lastError: message,
-        lastVerificationReason: message,
-        rollbackReason,
-        lastFailedStage: ((_a = prev.cleaningRun) == null ? void 0 : _a.lastFailedStage) ?? "verify",
-        userFacingMessage: failureDetail.summary,
-        actionTakenMessage: failureDetail.actionTaken,
-        dataSafetyMessage: failureDetail.dataSafety,
-        nextStateMessage: failureDetail.nextState,
-        technicalDetail: failureDetail.technicalDetail,
-        ...{}
-      }),
-      chatHistory: [
-        ...prev.chatHistory,
-        createChatMessage({
-          sender: "ai",
-          text: toCleaningFailureChatText(failureDetail),
-          timestamp: /* @__PURE__ */ new Date(),
-          type: "ai_cleaning_failure",
-          isError: true,
-          cleaningRunId: (_b = prev.cleaningRun) == null ? void 0 : _b.runId,
-          resolved: false,
-          cleaningFailure: failureDetail,
-          suggestedActions: [
-            { label: "Continue safe mode", action: "continue cleaning" },
-            { label: "Retry AI cleaning", action: "restart cleaning" },
-            { label: "Inspect technical detail", action: "show technical detail" }
-          ]
-        })
-      ]
-    };
-  });
 };
 const autonomousCleaningPipeline = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
@@ -28312,7 +27803,7 @@ const analysisDatasetProfiles = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Ob
   datasetColumnsMatchProfiles,
   resolveAnalysisDatasetProfiles
 }, Symbol.toStringTag, { value: "Module" }));
-const LOG_PREFIX$r = "[FileOrchestrator]";
+const LOG_PREFIX$p = "[FileOrchestrator]";
 const buildCleaningReadinessMessage = (pipelineOutcome, sqlPrecheckStatus, lastError) => {
   if ((pipelineOutcome == null ? void 0 : pipelineOutcome.status) === "needs_structure_review") {
     return pipelineOutcome.message;
@@ -28350,7 +27841,7 @@ const runPostImportPipeline = (store, datasetId) => {
     currentStep: 0
   });
   void (async () => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t2, _u, _v, _w, _x, _y, _z;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t2, _u, _v, _w, _x, _y, _z, _A, _B;
     const _t = {};
     const _mark = (label) => {
       _t[label] = performance.now();
@@ -28488,6 +27979,28 @@ const runPostImportPipeline = (store, datasetId) => {
         canonicalCsvData: reportStructureArtifacts.canonicalCsvData,
         csvData: latestState.csvData
       });
+      const buildMeta = reportStructureArtifacts.canonicalBuildMeta;
+      if (buildMeta) {
+        const totalExcluded = Object.values(buildMeta.excludedRowCounts).reduce((sum, n) => sum + (n ?? 0), 0);
+        if (totalExcluded > 0) {
+          const originalRows = buildMeta.rowCount + totalExcluded;
+          const language = getState().settings.language;
+          const message = getTranslation("canonicalization_row_exclusion", language, {
+            totalRows: originalRows,
+            retainedRows: buildMeta.rowCount,
+            excludedRows: totalExcluded
+          });
+          (_o = (_n = getState()).addProgress) == null ? void 0 : _o.call(_n, message, "system");
+          store.setState((prev) => ({
+            dataQualityIssues: [...prev.dataQualityIssues ?? [], message]
+          }));
+          emitFilePipelineEvent(store, "structure_review", "done", message, {
+            totalRows: originalRows,
+            retainedRows: buildMeta.rowCount,
+            excludedRowCounts: buildMeta.excludedRowCounts
+          });
+        }
+      }
       enqueueDatasetMemoryDocs(store);
       store.setState({ vectorMemoryState: "queued" });
       emitFilePipelineEvent(
@@ -28502,39 +28015,39 @@ const runPostImportPipeline = (store, datasetId) => {
         "done",
         buildCleaningReadinessMessage(
           reportStructureArtifacts.pipelineOutcome,
-          (_n = latestState.cleaningRun) == null ? void 0 : _n.sqlPrecheckStatus,
-          (_o = latestState.cleaningRun) == null ? void 0 : _o.lastError
+          (_p = latestState.cleaningRun) == null ? void 0 : _p.sqlPrecheckStatus,
+          (_q = latestState.cleaningRun) == null ? void 0 : _q.lastError
         ),
         {
-          cleaningStatus: ((_p = latestState.cleaningRun) == null ? void 0 : _p.status) ?? null,
-          sqlPrecheckStatus: ((_q = latestState.cleaningRun) == null ? void 0 : _q.sqlPrecheckStatus) ?? null,
-          pipelineOutcome: ((_r = reportStructureArtifacts.pipelineOutcome) == null ? void 0 : _r.status) ?? null
+          cleaningStatus: ((_r = latestState.cleaningRun) == null ? void 0 : _r.status) ?? null,
+          sqlPrecheckStatus: ((_s = latestState.cleaningRun) == null ? void 0 : _s.sqlPrecheckStatus) ?? null,
+          pipelineOutcome: ((_t2 = reportStructureArtifacts.pipelineOutcome) == null ? void 0 : _t2.status) ?? null
         }
       );
-      if (!analysisDataset || !((_s = reportStructureArtifacts.pipelineOutcome) == null ? void 0 : _s.canAutoAnalyze)) {
+      if (!analysisDataset || !((_u = reportStructureArtifacts.pipelineOutcome) == null ? void 0 : _u.canAutoAnalyze)) {
         updateAgentTaskStatus(store, {
           status: "done",
           title: "Analysis paused",
           titleKey: "ai_task_analysis_paused",
-          subtitle: ((_t2 = reportStructureArtifacts.pipelineOutcome) == null ? void 0 : _t2.message) ?? "Automatic analysis is paused until the report structure is reviewed.",
+          subtitle: ((_v = reportStructureArtifacts.pipelineOutcome) == null ? void 0 : _v.message) ?? "Automatic analysis is paused until the report structure is reviewed.",
           totalSteps: 1,
           currentStep: 1
         });
         emitFilePipelineEvent(
           store,
           "goal_proposal",
-          ((_u = reportStructureArtifacts.pipelineOutcome) == null ? void 0 : _u.severity) === "blocked" ? "error" : "done",
-          ((_v = reportStructureArtifacts.pipelineOutcome) == null ? void 0 : _v.message) ?? "Automatic analysis is paused until the report structure is reviewed.",
+          ((_w = reportStructureArtifacts.pipelineOutcome) == null ? void 0 : _w.severity) === "blocked" ? "error" : "done",
+          ((_x = reportStructureArtifacts.pipelineOutcome) == null ? void 0 : _x.message) ?? "Automatic analysis is paused until the report structure is reviewed.",
           {
-            status: ((_w = reportStructureArtifacts.pipelineOutcome) == null ? void 0 : _w.status) ?? null,
-            reasonCode: ((_x = reportStructureArtifacts.pipelineOutcome) == null ? void 0 : _x.reasonCode) ?? null
+            status: ((_y = reportStructureArtifacts.pipelineOutcome) == null ? void 0 : _y.status) ?? null,
+            reasonCode: ((_z = reportStructureArtifacts.pipelineOutcome) == null ? void 0 : _z.reasonCode) ?? null
           }
         );
         store.setState({
           initialAnalysisStatus: "paused"
         });
-        const pipelineStatus = (_y = reportStructureArtifacts.pipelineOutcome) == null ? void 0 : _y.status;
-        const pauseReasonCode = (_z = reportStructureArtifacts.pipelineOutcome) == null ? void 0 : _z.reasonCode;
+        const pipelineStatus = (_A = reportStructureArtifacts.pipelineOutcome) == null ? void 0 : _A.status;
+        const pauseReasonCode = (_B = reportStructureArtifacts.pipelineOutcome) == null ? void 0 : _B.reasonCode;
         if (analysisDataset && (pipelineStatus === "needs_structure_review" || pipelineStatus === "blocked_by_intake" && pauseReasonCode !== "parse_errors")) {
           const resolution = getState().reportStructureResolution;
           if (resolution) {
@@ -28629,17 +28142,20 @@ const runPostImportPipeline = (store, datasetId) => {
   Initial analysis:    ${_elapsed("initial_analysis")}ms`,
         "color: #2563eb; font-weight: bold;"
       );
-      const fireGoals = () => {
-        void getState().proposeAnalysisGoals(analysisDataset);
+      const fireGoals = async () => {
+        await getState().proposeAnalysisGoals(analysisDataset);
+      };
+      const clearSummaryFlag = () => {
+        store.setState({ isSummaryGenerating: false });
       };
       if (analysisOutcome.summaryPromise) {
-        void analysisOutcome.summaryPromise.then(fireGoals);
+        void analysisOutcome.summaryPromise.then(fireGoals).finally(clearSummaryFlag);
       } else {
-        fireGoals();
+        void fireGoals().finally(clearSummaryFlag);
       }
     } catch (pipelineError) {
       const errorMsg = pipelineError instanceof Error ? pipelineError.message : String(pipelineError);
-      console.error(`${LOG_PREFIX$r} Post-import pipeline crashed unexpectedly:`, pipelineError);
+      console.error(`${LOG_PREFIX$p} Post-import pipeline crashed unexpectedly:`, pipelineError);
       updateAgentTaskStatus(store, {
         status: "error",
         title: "Pipeline failed",
@@ -28657,7 +28173,7 @@ async function* orchestrateFileUpload(file, store) {
   var _a;
   const { getState, setState } = store;
   performance.now();
-  console.log(`${LOG_PREFIX$r} Starting orchestration for file:`, file.name);
+  console.log(`${LOG_PREFIX$p} Starting orchestration for file:`, file.name);
   if (getState().clearAgentEvents) {
     getState().clearAgentEvents();
   }
@@ -28675,13 +28191,13 @@ async function* orchestrateFileUpload(file, store) {
     const existingSession = await getReport(CURRENT_SESSION_KEY);
     if (existingSession) {
       await saveReport({ ...existingSession, id: `report-${existingSession.createdAt.getTime()}`, updatedAt: /* @__PURE__ */ new Date() });
-      console.log(`${LOG_PREFIX$r} Archived previous session.`);
+      console.log(`${LOG_PREFIX$p} Archived previous session.`);
     }
   }
   vectorStore.clear();
   await deleteReport(CURRENT_SESSION_KEY);
   duckDbWorkerClient.initDuckDb(DUCKDB_INIT_TIMEOUT_MS).catch((error) => {
-    console.warn(`${LOG_PREFIX$r} Background DuckDB init failed (will retry at first query):`, error instanceof Error ? error.message : error);
+    console.warn(`${LOG_PREFIX$p} Background DuckDB init failed (will retry at first query):`, error instanceof Error ? error.message : error);
   });
   void Promise.all([
     __vitePreload(() => Promise.resolve().then(() => reportStructureState), true ? void 0 : void 0, import.meta.url),
@@ -28850,56 +28366,6 @@ const finalizeAndSaveRun = async (store) => {
   } catch (memoryError) {
     console.error("[AgentMemory] Failed to persist run:", memoryError);
   }
-};
-const assistantMessageSchema = {
-  type: "object",
-  properties: {
-    thought: { type: "string", description: "The reasoning for the assistant message." },
-    type: { type: "string", enum: ["assistant_message"] },
-    message: { type: "string", description: "Markdown response for the user." },
-    cardId: { type: "string", description: "Optional related card id." },
-    suggestedActions: {
-      type: "array",
-      description: "Optional 2-3 follow-up suggestions.",
-      maxItems: 3,
-      items: {
-        type: "object",
-        properties: {
-          label: { type: "string", description: "Short user-facing button text." },
-          action: { type: "string", description: "The exact user-facing follow-up prompt to send when clicked. Never use an internal tool name." }
-        },
-        required: ["label", "action"]
-      }
-    }
-  },
-  required: ["type", "thought", "message"]
-};
-const createToolCallSchema = (descriptor) => ({
-  type: "object",
-  properties: {
-    thought: { type: "string", description: "The reasoning for the tool call." },
-    type: { type: "string", enum: ["tool_call"] },
-    toolName: { type: "string", enum: [descriptor.name] },
-    args: descriptor.inputSchema
-  },
-  required: ["type", "thought", "toolName", "args"]
-});
-const createChatDecisionSchema = (columnNames, descriptors) => {
-  const registry = buildBuiltinToolRegistry(columnNames);
-  const tools = descriptors ?? registry.descriptors;
-  const actionSchema = {
-    anyOf: [
-      assistantMessageSchema,
-      ...tools.map(createToolCallSchema)
-    ]
-  };
-  return {
-    type: "object",
-    properties: {
-      action: actionSchema
-    },
-    required: ["action"]
-  };
 };
 const ANALYST_CAPABILITY_SKILLS = [
   {
@@ -29455,6 +28921,7 @@ const ANALYSIS_TOOLS = [
   "analysis.correlation",
   "analysis.validate_metric_mapping",
   "card.review",
+  "card.delete",
   "ui.change_chart_type",
   "ui.highlight_card",
   "ui.show_card_data",
@@ -29467,17 +28934,19 @@ const ANALYSIS_TOOLS = [
 const RUNTIME_TOOL_POLICY = [
   {
     phase: "converse",
-    label: "Conversational only — no data tools",
-    tools: ["conversation.request_clarification"]
+    label: "Conversational with card refinement + deletion",
+    tools: ["conversation.request_clarification", "card.refine", "card.delete", "data.query"]
   },
   {
     phase: "explore",
-    label: "Read-only evidence inspection + metric validation",
+    label: "Read-only evidence inspection + card refinement + deletion",
     tools: [
       "data.query",
       "spreadsheet.filter",
       "analysis.validate_metric_mapping",
-      "conversation.request_clarification"
+      "conversation.request_clarification",
+      "card.refine",
+      "card.delete"
     ]
   },
   {
@@ -29695,7 +29164,7 @@ const resolveAndApplyAnalystCapabilitySelection = (contract, message, state) => 
     state
   })
 );
-const LOG_PREFIX$q = "[OrientHarness]";
+const LOG_PREFIX$o = "[OrientHarness]";
 const rebuildToolContract = (targetPhase) => {
   const allowedToolNames = getToolsForPhase(targetPhase);
   return {
@@ -29827,7 +29296,7 @@ const deriveOrientDirectives = (findings, input) => {
   if (aiSituationBrief.length === 0) {
     aiSituationBrief.push("Continue with the current approach.");
   }
-  console.log(`${LOG_PREFIX$q} rebuild=${shouldRebuildContract}, reason=${contractOverrideReason ?? "none"}, confidence=${findings.confidenceLevel}`);
+  console.log(`${LOG_PREFIX$o} rebuild=${shouldRebuildContract}, reason=${contractOverrideReason ?? "none"}, confidence=${findings.confidenceLevel}`);
   return {
     shouldRebuildContract,
     updatedContract,
@@ -30035,80 +29504,6 @@ const inheritRuntimeContractMetadata = ({
   clarificationBudget: clarificationBudget ?? nextContract.clarificationBudget ?? currentContract.clarificationBudget ?? null,
   recoveryDirective: recoveryDirective ?? nextContract.recoveryDirective ?? currentContract.recoveryDirective ?? null
 });
-const LOG_PREFIX$p = "[MonitorAgent]";
-const recordMonitorEvent = (store, payload) => {
-  const { stage, action, detail, isError, phase } = payload;
-  const actionLabel = action.type === "assistant_message" ? "assistant_message" : typeof action.toolName === "string" && action.toolName.trim() ? action.toolName : "unknown_tool";
-  const message = `${stage.toUpperCase()} | ${actionLabel}${detail ? ` | ${detail}` : ""}`;
-  const state = store.getState();
-  const correlation = buildCorrelationFields(state, payload);
-  if (state.logTelemetryEvent) {
-    state.logTelemetryEvent({
-      stage,
-      responseType: actionLabel,
-      detail,
-      chunkSize: payload.chunkSize,
-      sessionId: correlation.sessionId,
-      datasetId: correlation.datasetId,
-      turnId: correlation.turnId,
-      stepId: correlation.stepId,
-      cleaningRunId: correlation.cleaningRunId,
-      requestId: correlation.requestId
-    });
-  }
-  if (isError) {
-    console.error(`${LOG_PREFIX$p} ${message}`);
-    state.addProgress(`Agent error: ${detail || "Unknown issue"}`, "error");
-  } else {
-    console.log(`${LOG_PREFIX$p} ${message}`);
-  }
-  emitAgentEvent(store, {
-    phase: phase ?? "chat",
-    step: stage,
-    status: isError ? "error" : stage.endsWith("start") ? "in_progress" : "done",
-    message,
-    detail: { action: actionLabel },
-    sessionId: correlation.sessionId,
-    datasetId: correlation.datasetId,
-    turnId: correlation.turnId,
-    stepId: correlation.stepId,
-    cleaningRunId: correlation.cleaningRunId,
-    requestId: correlation.requestId
-  });
-};
-const recordRuntimeEvent = (store, payload) => {
-  const recorder = store.getState().recordRuntimeEvent;
-  if (typeof recorder !== "function") {
-    return null;
-  }
-  return recorder(normalizeRuntimeEventPayload(payload));
-};
-const normalizeRequestText = (message) => message.trim().toLowerCase().replace(/\s+/g, " ");
-const buildRuntimeRequestFingerprint = (message, context) => {
-  const normalizedMessage = normalizeRequestText(message);
-  const sessionId = String((context == null ? void 0 : context.sessionId) ?? "").trim() || "no-session";
-  const datasetId = String((context == null ? void 0 : context.datasetId) ?? "").trim() || "no-dataset";
-  return [sessionId, datasetId, normalizedMessage].join("::");
-};
-const mapActionPhase = (action) => {
-  if (action.type === "assistant_message") return "chat";
-  if (action.toolName.startsWith("analysis.")) return "planning";
-  if (action.toolName.startsWith("data.") || action.toolName.startsWith("workspace.") || action.toolName.startsWith("card.")) {
-    return "execution";
-  }
-  return "chat";
-};
-const recordAcceptedMonitorOutcome = (store, action) => {
-  recordMonitorEvent(store, { stage: "executor_success", action, phase: mapActionPhase(action) });
-};
-const recordBlockedMonitorOutcome = (store, action, observation) => {
-  recordMonitorEvent(store, {
-    stage: "executor_blocked",
-    action,
-    detail: observation.summary,
-    phase: mapActionPhase(action)
-  });
-};
 const EXPLICIT_METRIC_VALIDATION_PATTERN = /\b(validate|validation|verify|verified|confirm|check|mapping|map|mapped|binding|bindings|label|labels)\b/i;
 const BASE_VALIDATION_METRICS = ["revenue", "cost", "budget", "actual"];
 const DERIVED_VALIDATION_METRICS = ["profit", "margin", "variance"];
@@ -31944,7 +31339,9 @@ const buildRuntimeStepContract = (message, state) => {
   if (clarificationResume == null ? void 0 : clarificationResume.priorQualityContext) {
     priorEvidenceBlockers.push(`Prior quality context: ${clarificationResume.priorQualityContext}`);
   }
+  const cardMentionInstruction = extractMentionedCardIds(message).length > 0 ? "The user explicitly @mentioned a card. If they ask to rewrite, update, change, or modify anything about that card (summary, chart type, filter, topN), you MUST use card.refine with the referenced cardId. Do NOT reply with text instead of calling the tool." : null;
   const baseInstruction = metricDerivationInstruction ?? [
+    cardMentionInstruction,
     bestEffortAssumptionInstruction,
     hasVisible ? expectedOutcome === "card" ? "Use visible evidence first. If more support is needed, gather only the smallest missing evidence and continue until you create a card or plan. Do not stop at prose." : "Use visible evidence first. If it already satisfies the request, answer directly. Otherwise choose the smallest next tool call that can close the evidence gap." : expectedOutcome === "card" ? "Choose the smallest grounded next step that can move the task toward a card or plan. Do not end with prose before the card outcome exists." : "Choose the smallest grounded next step that can move the task forward. Ask for clarification when the target, scope, or relevant fields are unstable."
   ].filter(Boolean).join(" ");
@@ -32604,7 +32001,7 @@ const formatRuntimeStepContract = (contract) => {
   lines.push(`Contract instruction: ${contract.instruction || "No extra instruction."}`);
   return lines.join("\n");
 };
-const LOG_PREFIX$o = "[SummaryManager]";
+const LOG_PREFIX$n = "[SummaryManager]";
 const buildCardContext = (cards) => {
   const irList = buildDisplayAnalysisIrList(cards);
   return cards.map((c) => {
@@ -32663,10 +32060,42 @@ ${getTranslation("reliability_note_body", summary.language, { count: fallbackCar
 const generateAllSummaries = async (store) => {
   const { getState, setState } = store;
   if (getState().isChangingGoal) return;
-  const cardsSnapshot = [...getState().analysisCards];
+  let cardsSnapshot = [...getState().analysisCards];
+  const columnProfiles = getState().columnProfiles;
+  const settings = getState().settings;
+  const cardsNeedingAiSummary = cardsSnapshot.filter((c) => !c.plan.isFallback);
+  if (cardsNeedingAiSummary.length > 0) {
+    const batchStart = performance.now();
+    console.log(`${LOG_PREFIX$n} Batch generating ${cardsNeedingAiSummary.length} card summaries in parallel...`);
+    getState().addProgress(`Generating ${cardsNeedingAiSummary.length} card summaries in parallel...`, "system", settings.simpleModel);
+    const displayIrList = buildDisplayAnalysisIrList(cardsNeedingAiSummary, columnProfiles);
+    const summaryResults = await Promise.all(
+      cardsNeedingAiSummary.map((card) => {
+        const ir = displayIrList.find((d) => d.cardId === card.id);
+        const title = (ir == null ? void 0 : ir.displayTitle) ?? card.plan.title ?? "";
+        const t0 = performance.now();
+        return generateSummary(title, card.aggregatedData, settings, columnProfiles, getState()).then((result) => {
+          console.log(`[Perf:BatchSummary] "${title.slice(0, 40)}" OK in ${Math.round(performance.now() - t0)}ms`);
+          return result;
+        }).catch(() => {
+          console.log(`[Perf:BatchSummary] "${title.slice(0, 40)}" FAILED in ${Math.round(performance.now() - t0)}ms`);
+          return card.summary;
+        });
+      })
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    setState((prev) => ({
+      analysisCards: prev.analysisCards.map((card) => {
+        const idx = cardsNeedingAiSummary.findIndex((c) => c.id === card.id);
+        return idx >= 0 ? { ...card, summary: summaryResults[idx] } : card;
+      })
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    cardsSnapshot = [...getState().analysisCards];
+    console.log(`[Perf:BatchSummary] Batch complete: ${cardsNeedingAiSummary.length} summaries in ${Math.round(performance.now() - batchStart)}ms (parallel)`);
+  }
   const fallbackCards = cardsSnapshot.filter((card) => card.plan.isFallback);
   const nonFallbackCards = cardsSnapshot.filter((card) => !card.plan.isFallback);
-  const columnProfiles = getState().columnProfiles;
   const irList = buildDisplayAnalysisIrList(nonFallbackCards, columnProfiles);
   const summaryEligibleCardIds = new Set(
     irList.filter((ir) => ir.autoAnalysisVerdict === "trusted" || ir.autoAnalysisVerdict === "caveated").map((ir) => ir.cardId)
@@ -32674,7 +32103,6 @@ const generateAllSummaries = async (store) => {
   const summaryCards = nonFallbackCards.filter((card) => summaryEligibleCardIds.has(card.id));
   const cardContext = buildCardContext(summaryCards);
   const narrativeInputs = buildNarrativeAnalysisIrInputList(summaryCards, columnProfiles);
-  const settings = getState().settings;
   if (cardsSnapshot.length === 0) {
     return;
   }
@@ -32699,7 +32127,7 @@ const generateAllSummaries = async (store) => {
   }
   const finalSummaryTask = (async () => {
     getState().addProgress("AI is composing the final summary...", "system", getState().settings.complexModel);
-    console.log(`${LOG_PREFIX$o} Generating final summary...`);
+    console.log(`${LOG_PREFIX$n} Generating final summary...`);
     try {
       const finalSummaryText = appendReliabilityNote(
         await generateFinalSummary(summaryCards, settings, getState()),
@@ -32707,45 +32135,47 @@ const generateAllSummaries = async (store) => {
       );
       if (getState().isChangingGoal) return;
       setState({ finalSummary: finalSummaryText });
+      await new Promise((resolve) => setTimeout(resolve, 0));
       getState().addProgress("Overall summary generated.");
     } catch (summaryError) {
       const message = summaryError instanceof Error ? summaryError.message : String(summaryError);
-      console.error(`${LOG_PREFIX$o} Final summary failed:`, summaryError);
+      console.error(`${LOG_PREFIX$n} Final summary failed:`, summaryError);
       getState().addProgress(`Final summary failed: ${message}`, "error");
     }
   })();
   const chatMessageTask = (async () => {
     getState().addProgress("AI is forming its core understanding of the data...", "system", getState().settings.complexModel);
-    console.log(`${LOG_PREFIX$o} Generating core analysis summary...`);
+    console.log(`${LOG_PREFIX$n} Generating core analysis summary...`);
     try {
       const coreSummary = await generateCoreAnalysisSummary(cardContext, columnProfiles, settings, getState());
       if (getState().isChangingGoal) return;
-      console.log(`${LOG_PREFIX$o} Core summary generated.`);
+      console.log(`${LOG_PREFIX$n} Core summary generated.`);
       const finalCoreSummary = appendReliabilityNote(coreSummary, fallbackCards);
       setState((prev) => ({
         aiCoreAnalysisSummary: finalCoreSummary,
         chatHistory: [...prev.chatHistory, createChatMessage({ sender: "ai", text: finalCoreSummary.text, timestamp: /* @__PURE__ */ new Date(), type: "ai_thinking" })]
       }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
     } catch (coreError) {
       const message = coreError instanceof Error ? coreError.message : String(coreError);
-      console.error(`${LOG_PREFIX$o} Core summary failed:`, coreError);
+      console.error(`${LOG_PREFIX$n} Core summary failed:`, coreError);
       getState().addProgress(`Core summary failed: ${message}`, "error");
     }
     getState().addProgress("AI is looking for key insights...", "system", getState().settings.simpleModel);
-    console.log(`${LOG_PREFIX$o} Generating proactive insights...`);
+    console.log(`${LOG_PREFIX$n} Generating proactive insights...`);
     try {
       const proactiveInsight = await generateProactiveInsights(cardContext, settings, getState(), narrativeInputs);
       if (!proactiveInsight || getState().isChangingGoal) {
-        console.log(`${LOG_PREFIX$o} No proactive insights found.`);
+        console.log(`${LOG_PREFIX$n} No proactive insights found.`);
         return;
       }
-      console.log(`${LOG_PREFIX$o} Proactive insight found:`, proactiveInsight);
+      console.log(`${LOG_PREFIX$n} Proactive insight found:`, proactiveInsight);
       setState((prev) => ({
         chatHistory: [...prev.chatHistory, createChatMessage({ sender: "ai", text: proactiveInsight.insight, timestamp: /* @__PURE__ */ new Date(), type: "ai_proactive_insight", cardId: proactiveInsight.cardId })]
       }));
     } catch (insightError) {
       const message = insightError instanceof Error ? insightError.message : String(insightError);
-      console.error(`${LOG_PREFIX$o} Proactive insight generation failed:`, insightError);
+      console.error(`${LOG_PREFIX$n} Proactive insight generation failed:`, insightError);
       getState().addProgress(`Proactive insight failed: ${message}`, "error");
     }
   })();
@@ -33174,13 +32604,18 @@ const executePresentationUpgrade = async (args, store) => {
     }
   };
 };
-const LOG_PREFIX$n = "[CardCreator]";
+const LOG_PREFIX$m = "[CardCreator]";
 const resolveDisplayChartType = (plan, rows) => plan.artifactType === "pivot_matrix" ? getRecommendedPivotChartType(plan, rows) : plan.chartType;
 const buildFallbackSummary = (title, rawGroupBy, rawValueColumn, displayGroupBy, displayValueColumn, aggregatedData, language) => {
+  const formatValue = (v) => {
+    if (v == null) return "n/a";
+    if (typeof v === "number") return Number.isInteger(v) ? String(v) : parseFloat(v.toFixed(2)).toLocaleString();
+    return String(v);
+  };
   const preview = aggregatedData.slice(0, 3).map((row) => {
     const label = row[rawGroupBy] ?? "Unknown";
-    const value = row[rawValueColumn] ?? "n/a";
-    return `- ${String(label)}: ${String(value)}`;
+    const value = row[rawValueColumn];
+    return `- ${String(label)}: ${formatValue(value)}`;
   }).join("\n");
   return {
     language,
@@ -33224,8 +32659,8 @@ const createNewCard = async (plan, aggregatedData, store, annotations) => {
     qualityWarnings: (annotations == null ? void 0 : annotations.qualityWarnings) ?? []
   };
   const displayIr = buildDisplayAnalysisIr(provisionalCard, [provisionalCard], getState().columnProfiles);
-  console.log(`${LOG_PREFIX$n} Creating card for plan: "${displayIr.displayTitle}"`);
-  const summary = plan.isFallback ? buildFallbackSummary(
+  console.log(`${LOG_PREFIX$m} Creating card for plan: "${displayIr.displayTitle}"`);
+  const summary = buildFallbackSummary(
     displayIr.displayTitle,
     plan.groupByColumn || "group",
     plan.valueColumn || plan.yValueColumn || "value",
@@ -33233,8 +32668,8 @@ const createNewCard = async (plan, aggregatedData, store, annotations) => {
     displayIr.displayMetricLabel || plan.valueColumn || plan.yValueColumn || "the selected metric",
     aggregatedData,
     language
-  ) : await generateSummary(displayIr.displayTitle, aggregatedData, getState().settings, getState().columnProfiles, getState());
-  console.log(`${LOG_PREFIX$n} Generated summary for "${displayIr.displayTitle}"`);
+  );
+  console.log(`${LOG_PREFIX$m} Generated summary for "${displayIr.displayTitle}"`);
   const newCard = {
     id: `card-${Date.now()}-${Math.random()}`,
     plan,
@@ -33257,30 +32692,31 @@ const createNewCard = async (plan, aggregatedData, store, annotations) => {
     autoAnalysisEvaluation: (annotations == null ? void 0 : annotations.autoAnalysisEvaluation) ?? null,
     qualityWarnings: (annotations == null ? void 0 : annotations.qualityWarnings) ?? []
   };
-  setState((prev) => ({
-    analysisCards: [newCard, ...prev.analysisCards],
-    progressMessages: trimProgressMessages([
-      ...prev.progressMessages,
-      createProgressMessage({ text: `Generated View: ${displayIr.displayTitle}`, type: "system", timestamp: /* @__PURE__ */ new Date() })
-    ])
-  }));
-  (async () => {
-    try {
-      await upsertCardMemoryDocument(store, newCard.id);
-    } catch (memoryError) {
-      const message = memoryError instanceof Error ? memoryError.message : String(memoryError);
-      console.error(`${LOG_PREFIX$n} Failed to persist card memory:`, memoryError);
-      getState().addProgress(`Could not save AI memory for "${displayIr.displayTitle}": ${message}`, "error");
-    }
-  })();
-  console.log(`${LOG_PREFIX$n} Card "${displayIr.displayTitle}" created and added to state and memory.`);
+  const _cardSetT0 = performance.now();
+  let _updaterDur = 0;
+  setState((prev) => {
+    const _uT0 = performance.now();
+    const result = {
+      analysisCards: [newCard, ...prev.analysisCards],
+      progressMessages: trimProgressMessages([
+        ...prev.progressMessages,
+        createProgressMessage({ text: `Generated View: ${displayIr.displayTitle}`, type: "system", timestamp: /* @__PURE__ */ new Date() })
+      ])
+    };
+    _updaterDur = performance.now() - _uT0;
+    return result;
+  });
+  const _totalDur = performance.now() - _cardSetT0;
+  console.log(`[Perf:Card] setState(analysisCards): ${Math.round(_totalDur)}ms (updater=${Math.round(_updaterDur)}ms, react=${Math.round(_totalDur - _updaterDur)}ms) | "${displayIr.displayTitle.slice(0, 40)}"`);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  console.log(`${LOG_PREFIX$m} Card "${displayIr.displayTitle}" created and added to state and memory.`);
   return newCard;
 };
 const cardCreator = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   createNewCard
 }, Symbol.toStringTag, { value: "Module" }));
-const LOG_PREFIX$m = "[DirectiveInjector]";
+const LOG_PREFIX$l = "[DirectiveInjector]";
 const getAvailableColumns = (context) => {
   var _a;
   if (Array.isArray(context.availableColumns) && context.availableColumns.length > 0) {
@@ -33309,7 +32745,7 @@ const resolveDetailRowColumn = (column, context) => {
   if (equivalent) {
     const fallback = resolveColumn$1(equivalent, context);
     if (fallback) {
-      console.warn(`${LOG_PREFIX$m} Detail-row column "${column}" not found, resolved to equivalent "${fallback}"`);
+      console.warn(`${LOG_PREFIX$l} Detail-row column "${column}" not found, resolved to equivalent "${fallback}"`);
       return fallback;
     }
   }
@@ -33547,6 +32983,49 @@ const injectTopN = (plan, directives) => {
     injected: `topN: LIMIT ${topN}`
   };
 };
+const BLOCKED_AGGREGATIONS = {
+  additive: /* @__PURE__ */ new Set(),
+  non_additive: /* @__PURE__ */ new Set(["sum"]),
+  dimension_only: /* @__PURE__ */ new Set(["sum", "avg", "median", "percentile", "min", "max"]),
+  unrestricted: /* @__PURE__ */ new Set()
+};
+const AGGREGATION_SUGGESTION = {
+  "non_additive:sum": "AVG",
+  "dimension_only:sum": "COUNT",
+  "dimension_only:avg": "COUNT",
+  "dimension_only:median": "COUNT",
+  "dimension_only:percentile": "COUNT",
+  "dimension_only:min": "COUNT",
+  "dimension_only:max": "COUNT"
+};
+const checkAggregationGovernance = (plan, context) => {
+  const registry = context.columnRegistry;
+  if (!registry || !Array.isArray(plan.aggregates) || plan.aggregates.length === 0) {
+    return { validationError: null, warning: null };
+  }
+  const violations = [];
+  for (const agg of plan.aggregates) {
+    if (!agg.column) continue;
+    const entry = registry.columns.find(
+      (c) => c.physicalName.toLowerCase() === agg.column.toLowerCase()
+    );
+    if (!entry) continue;
+    const hint = entry.allowedUsages.aggregationHint;
+    const blocked = BLOCKED_AGGREGATIONS[hint];
+    if (!blocked.has(agg.function)) continue;
+    const suggestion = AGGREGATION_SUGGESTION[`${hint}:${agg.function}`] ?? "COUNT";
+    violations.push(
+      `${agg.function.toUpperCase()}(${agg.column}) is invalid — "${agg.column}" is ${hint}, use ${suggestion} instead`
+    );
+  }
+  if (violations.length === 0) {
+    return { validationError: null, warning: null };
+  }
+  return {
+    validationError: `aggregation_governance_violation: ${violations.join("; ")}`,
+    warning: `Aggregation governance: ${violations.join("; ")}`
+  };
+};
 const injectDirectivesIntoQueryPlan = (plan, context) => {
   const injected = [];
   const warnings = [];
@@ -33570,16 +33049,21 @@ const injectDirectivesIntoQueryPlan = (plan, context) => {
   if (r4.validationError) {
     validationError = r4.validationError;
   }
+  const r6 = checkAggregationGovernance(current, context);
+  if (r6.validationError) {
+    validationError = validationError ?? r6.validationError;
+  }
+  if (r6.warning) warnings.push(r6.warning);
   const compilationOverrides = {};
   if (context.dimensionNormalization && Array.isArray(current.groupBy) && current.groupBy.length > 0) {
     compilationOverrides.dimensionNormalization = context.dimensionNormalization;
     injected.push("dimension_normalization: groupBy columns normalized");
   }
   if (injected.length > 0) {
-    console.log(`${LOG_PREFIX$m} Injected ${injected.length} directive(s): ${injected.join("; ")}`);
+    console.log(`${LOG_PREFIX$l} Injected ${injected.length} directive(s): ${injected.join("; ")}`);
   }
   if (warnings.length > 0) {
-    warnings.forEach((w) => console.warn(`${LOG_PREFIX$m} ${w}`));
+    warnings.forEach((w) => console.warn(`${LOG_PREFIX$l} ${w}`));
   }
   return {
     plan: current,
@@ -33589,7 +33073,7 @@ const injectDirectivesIntoQueryPlan = (plan, context) => {
     ...Object.keys(compilationOverrides).length > 0 ? { compilationOverrides } : {}
   };
 };
-const LOG_PREFIX$l = "[InvestigationHarness]";
+const LOG_PREFIX$k = "[InvestigationHarness]";
 const QUERY_TIMEOUT_MS$2 = 5e3;
 const HARNESS_TIMEOUT_MS = 3e4;
 const HIGH_CARDINALITY_DESCRIPTION_THRESHOLD = 5e4;
@@ -33882,6 +33366,454 @@ const createQueryTraceEntry = (query, phase, options = null) => {
   };
 };
 const appendQueryHistory = (history, entry) => [...history, entry].slice(-50);
+const normalize$2 = (value) => value.trim().toLowerCase();
+const stringifyWhere = (value) => JSON.stringify(value ?? []);
+const normalizeList = (values) => [...values ?? []].map(normalize$2).sort();
+const buildNormalizedMetricKey = (plan, summary) => (plan.query.aggregates ?? []).map((aggregate) => `${aggregate.function}:${aggregate.column}`).filter(Boolean).join("|") || summary.numericColumns.join("|");
+const buildEvidenceSignature = (plan) => JSON.stringify({
+  queryMode: plan.queryMode,
+  groupBy: [...plan.query.groupBy ?? []].sort(),
+  // Exclude the AI-generated alias (aggregate.as) from the signature.
+  // Two plans with SUM(Value) AS "TotalValue" vs SUM(Value) AS "Total"
+  // answer the same question — the alias is cosmetic.
+  aggregates: (plan.query.aggregates ?? []).map((aggregate) => ({
+    fn: aggregate.function,
+    column: aggregate.column
+  })).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
+  where: stringifyWhere(plan.query.where),
+  postAggregateFilter: stringifyWhere(plan.query.postAggregateFilter)
+});
+const buildSemanticSignature = (plan, summary, semanticUnderstanding) => {
+  var _a, _b, _c;
+  return JSON.stringify({
+    grain: normalize$2(((_a = plan.query.groupBy) == null ? void 0 : _a[0]) ?? "none"),
+    metric: normalize$2(buildNormalizedMetricKey(plan, summary) || "none"),
+    // Intent is excluded from the signature on purpose: two queries with
+    // the same grain + metric + aggregate function answer the same question
+    // regardless of how the AI phrased the intent.  Including intent caused
+    // near-duplicate cards to slip through dedup (e.g. "Top X by Value" vs
+    // "Value distribution by X" both GROUP BY Description, SUM(Value)).
+    aggregateFn: normalize$2((plan.query.aggregates ?? []).map((a) => a.function).join("|") || "none"),
+    blocked: semanticUnderstanding.blockedDimensions.includes(((_b = plan.query.groupBy) == null ? void 0 : _b[0]) ?? ""),
+    helper: semanticUnderstanding.helperDimensions.includes(((_c = plan.query.groupBy) == null ? void 0 : _c[0]) ?? "")
+  });
+};
+const buildPlanOnlySemanticSignature = (plan, semanticUnderstanding) => {
+  var _a, _b, _c;
+  return JSON.stringify({
+    grain: normalize$2(((_a = plan.query.groupBy) == null ? void 0 : _a[0]) ?? "none"),
+    metric: normalize$2(
+      (plan.query.aggregates ?? []).map((a) => `${a.function}:${a.column}`).filter(Boolean).join("|") || "none"
+    ),
+    aggregateFn: normalize$2((plan.query.aggregates ?? []).map((a) => a.function).join("|") || "none"),
+    blocked: semanticUnderstanding.blockedDimensions.includes(((_b = plan.query.groupBy) == null ? void 0 : _b[0]) ?? ""),
+    helper: semanticUnderstanding.helperDimensions.includes(((_c = plan.query.groupBy) == null ? void 0 : _c[0]) ?? "")
+  });
+};
+const buildPivotToolQuerySignature = (request) => JSON.stringify({
+  tool: "analysis.pivot_matrix",
+  rows: normalizeList(request.rows),
+  columns: normalizeList(request.columns),
+  metric: normalize$2(request.metric ?? "count"),
+  aggregate: normalize$2(request.aggregate),
+  topN: request.topN ?? null,
+  sort: request.sort ?? null
+});
+const buildPivotToolSemanticSignature = (request, steering) => {
+  var _a;
+  return JSON.stringify({
+    tool: "analysis.pivot_matrix",
+    primaryRow: normalize$2(((_a = request.rows) == null ? void 0 : _a[0]) ?? "none"),
+    columns: normalizeList(request.columns),
+    metric: normalize$2(request.metric ?? "count"),
+    aggregate: normalize$2(request.aggregate),
+    detailRowFilter: (steering == null ? void 0 : steering.detailRowFilter) ? `${normalize$2(steering.detailRowFilter.column)}=${normalize$2(steering.detailRowFilter.value)}` : "none"
+  });
+};
+const buildDetail = (reasonCodes) => reasonCodes.length === 0 ? "pass" : reasonCodes.join(", ");
+const includesNormalized = (values, candidate) => {
+  const normalizedCandidate = candidate ? normalize$2(candidate) : null;
+  if (!normalizedCandidate) {
+    return false;
+  }
+  return (values ?? []).some((value) => normalize$2(value) === normalizedCandidate);
+};
+const evaluateDeterministicSafetyFloor = (params) => {
+  var _a, _b;
+  const { semanticUnderstanding, evidencePlan, existingAcceptedOutputs, querySignature, semanticSignature, harnessContext } = params;
+  const reasonCodes = [];
+  const groupByColumn = ((_a = evidencePlan.query.groupBy) == null ? void 0 : _a[0]) ?? null;
+  const isBlockedBySemanticUnderstanding = Boolean(groupByColumn && semanticUnderstanding.blockedDimensions.includes(groupByColumn));
+  const isBlockedByHarness = Boolean(groupByColumn && (harnessContext == null ? void 0 : harnessContext.blockGroupBy.includes(groupByColumn)));
+  const isBlockedDimension = isBlockedBySemanticUnderstanding || isBlockedByHarness;
+  const isSoftDeprioritized = Boolean(
+    groupByColumn && !isBlockedDimension && ((_b = harnessContext == null ? void 0 : harnessContext.softDeprioritizeGroupBy) == null ? void 0 : _b.includes(groupByColumn))
+  );
+  if (isBlockedDimension) {
+    reasonCodes.push("blocked_dimension");
+  }
+  if (isSoftDeprioritized) {
+    reasonCodes.push("soft_deprioritized_dimension");
+  }
+  if (existingAcceptedOutputs.some((output) => output.querySignature === querySignature)) {
+    reasonCodes.push("duplicate_query");
+  }
+  if (existingAcceptedOutputs.some((output) => output.semanticSignature === semanticSignature)) {
+    reasonCodes.push("duplicate_semantic");
+  }
+  if (params.evidenceSummary.totalValue === 0) {
+    reasonCodes.push("zero_total_value");
+  }
+  const hardReject = reasonCodes.includes("duplicate_query") || reasonCodes.includes("duplicate_semantic") || reasonCodes.includes("zero_total_value");
+  return { hardReject, reasonCodes };
+};
+const queryHasDetailRowFilter = (plan, harnessContext) => {
+  var _a, _b;
+  if (!harnessContext.detailRowColumn || !harnessContext.detailRowValue) return false;
+  const col = harnessContext.detailRowColumn.toLowerCase();
+  const val = harnessContext.detailRowValue.toLowerCase();
+  const allPredicates = [
+    ...((_a = plan.query.where) == null ? void 0 : _a.predicates) ?? [],
+    ...(((_b = plan.query.where) == null ? void 0 : _b.groups) ?? []).flatMap((g) => g.predicates)
+  ];
+  return allPredicates.some(
+    (p) => p.column.toLowerCase() === col && (p.operator === "eq" || p.operator === "in") && (typeof p.value === "string" ? p.value.toLowerCase() === val : Array.isArray(p.value) && p.value.some((v) => String(v).toLowerCase() === val))
+  );
+};
+const hasHierarchySafeGrouping = (evidencePlan, harnessContext) => {
+  var _a;
+  const groupByColumn = ((_a = evidencePlan.query.groupBy) == null ? void 0 : _a[0]) ?? null;
+  if (!groupByColumn) {
+    return false;
+  }
+  const isPreferred = includesNormalized(harnessContext.preferGroupBy, groupByColumn);
+  const isBlocked = includesNormalized(harnessContext.blockGroupBy, groupByColumn);
+  const isHierarchyColumn = harnessContext.hierarchyColumn ? normalize$2(harnessContext.hierarchyColumn) === normalize$2(groupByColumn) : false;
+  return isPreferred && !isBlocked && !isHierarchyColumn;
+};
+const evaluateSteeringFloor = (params) => {
+  const { evidencePlan, harnessContext } = params;
+  const reasonCodes = [];
+  let floorDecision = "pass";
+  const detailRowFiltered = queryHasDetailRowFilter(evidencePlan, harnessContext);
+  if (harnessContext.reportShapeClass === "hierarchical_statement" && !detailRowFiltered && !hasHierarchySafeGrouping(evidencePlan, harnessContext)) {
+    reasonCodes.push("missing_detail_row_filter");
+    floorDecision = "table_only";
+  }
+  if (harnessContext.detailRowPolicy === "exclude_non_detail_rows" && harnessContext.detailRowColumn && harnessContext.detailRowValue && !detailRowFiltered && (harnessContext.reportShapeClass === "hierarchical_statement" || harnessContext.parentDescriptions.length > 0 || harnessContext.excludeFromAggregation.length > 0)) {
+    reasonCodes.push("missing_detail_row_filter");
+    floorDecision = "table_only";
+  }
+  if (harnessContext.widePivotMode === "reshape_required") {
+    reasonCodes.push("reshape_required");
+    floorDecision = "table_only";
+  }
+  if (harnessContext.signalConfidence === "low") {
+    reasonCodes.push("low_signal_confidence");
+    floorDecision = "table_only";
+  }
+  return {
+    reasonCodes: [...new Set(reasonCodes)],
+    floorDecision
+  };
+};
+const evaluateHarnessContamination = (params) => {
+  var _a;
+  const { evidencePlan, evidenceSummary, harnessContext } = params;
+  const reasonCodes = [];
+  const groupByColumn = ((_a = evidencePlan.query.groupBy) == null ? void 0 : _a[0]) ?? null;
+  let atLeastTableOnly = false;
+  const detailRowFiltered = queryHasDetailRowFilter(evidencePlan, harnessContext);
+  if (!detailRowFiltered) {
+    if (groupByColumn && harnessContext.hierarchyColumn && normalize$2(groupByColumn) === normalize$2(harnessContext.hierarchyColumn) && evidenceSummary.previewRows.length > 0) {
+      const contaminationLabels = /* @__PURE__ */ new Set([
+        ...harnessContext.parentDescriptions.map(normalize$2),
+        ...harnessContext.excludeFromAggregation.map(normalize$2)
+      ]);
+      if (contaminationLabels.size > 0) {
+        const hasContamination = evidenceSummary.previewRows.some((row) => {
+          const groupValue = row[groupByColumn];
+          return typeof groupValue === "string" && contaminationLabels.has(normalize$2(groupValue));
+        });
+        if (hasContamination) {
+          reasonCodes.push("hierarchy_contamination");
+          atLeastTableOnly = true;
+        }
+      }
+    }
+    if (groupByColumn && harnessContext.duplicateDescriptions.length > 0 && evidenceSummary.previewRows.length > 0) {
+      const duplicateLabels = new Set(harnessContext.duplicateDescriptions.map(normalize$2));
+      const hasDuplicateContamination = evidenceSummary.previewRows.some((row) => {
+        const groupValue = row[groupByColumn];
+        return typeof groupValue === "string" && duplicateLabels.has(normalize$2(groupValue));
+      });
+      if (hasDuplicateContamination) {
+        reasonCodes.push("duplicate_label_contamination");
+        atLeastTableOnly = true;
+      }
+    }
+  }
+  return { reasonCodes, atLeastTableOnly };
+};
+const evaluateDeterministicQuality = (params) => {
+  var _a;
+  const { semanticUnderstanding, evidencePlan, evidenceSummary, harnessContext } = params;
+  const reasonCodes = [];
+  const groupByColumn = ((_a = evidencePlan.query.groupBy) == null ? void 0 : _a[0]) ?? null;
+  const isHelperBySemanticUnderstanding = Boolean(groupByColumn && semanticUnderstanding.helperDimensions.includes(groupByColumn));
+  const isHelperByHarness = Boolean(
+    groupByColumn && harnessContext && harnessContext.blockGroupBy.includes(groupByColumn) && !harnessContext.preferGroupBy.includes(groupByColumn)
+  );
+  const isHelperDimension = isHelperBySemanticUnderstanding || isHelperByHarness;
+  if (isHelperDimension) {
+    reasonCodes.push("helper_dimension");
+  }
+  if (semanticUnderstanding.unsafeForBusinessNarrative) {
+    reasonCodes.push("unsafe_business_narrative");
+  }
+  if (semanticUnderstanding.businessGrainConfidence === "low") {
+    reasonCodes.push("low_business_confidence");
+  }
+  if (evidenceSummary.rowCount <= 2) {
+    reasonCodes.push("too_few_rows");
+  }
+  if ((evidenceSummary.distinctGroupCount ?? 0) <= 1 && evidencePlan.queryMode === "aggregate") {
+    reasonCodes.push("single_group_result");
+  }
+  if (evidenceSummary.isWideCategorySet) {
+    reasonCodes.push("fragmented_groups");
+  }
+  let harnessAtLeastTableOnly = false;
+  if (harnessContext) {
+    const harnessResult = evaluateHarnessContamination({
+      evidencePlan,
+      evidenceSummary,
+      harnessContext
+    });
+    reasonCodes.push(...harnessResult.reasonCodes);
+    harnessAtLeastTableOnly = harnessResult.atLeastTableOnly;
+  }
+  let decision = reasonCodes.length === 0 ? "pass" : "table_only";
+  if (harnessAtLeastTableOnly && decision === "pass") {
+    decision = "table_only";
+  }
+  return { reasonCodes, decision };
+};
+const hasRecoverableChartWorthiness = (params) => {
+  var _a;
+  const {
+    aiDecision,
+    aiReasonCodes,
+    semanticUnderstanding,
+    evidencePlan,
+    evidenceSummary,
+    harnessContext,
+    harnessFloorDecision
+  } = params;
+  if (aiDecision.decision !== "table_only" || aiDecision.chartWorthy) {
+    return false;
+  }
+  if (harnessFloorDecision !== "pass") {
+    return false;
+  }
+  if (aiReasonCodes.length !== 1 || aiReasonCodes[0] !== "not_chart_worthy") {
+    return false;
+  }
+  const aggregateFunctions = new Set((evidencePlan.query.aggregates ?? []).map((aggregate) => aggregate.function));
+  const onlyChartFriendlyAggregate = aggregateFunctions.size === 1 && (aggregateFunctions.has("sum") || aggregateFunctions.has("avg"));
+  if (!onlyChartFriendlyAggregate) {
+    return false;
+  }
+  const groupByColumn = ((_a = evidencePlan.query.groupBy) == null ? void 0 : _a[0]) ?? null;
+  if (!groupByColumn) {
+    return false;
+  }
+  if (semanticUnderstanding.blockedDimensions.includes(groupByColumn)) {
+    return false;
+  }
+  if (semanticUnderstanding.helperDimensions.includes(groupByColumn) && !semanticUnderstanding.businessGrains.includes(groupByColumn)) {
+    return false;
+  }
+  if (semanticUnderstanding.unsafeForBusinessNarrative && !semanticUnderstanding.fallbackPromotedGrains) {
+    return false;
+  }
+  if (semanticUnderstanding.businessGrainConfidence === "low" && semanticUnderstanding.businessGrains.length === 0) {
+    return false;
+  }
+  if (evidencePlan.queryMode !== "aggregate" || evidenceSummary.rowCount < 5 || (evidenceSummary.distinctGroupCount ?? 0) < 3 || evidenceSummary.isWideCategorySet) {
+    return false;
+  }
+  if (!harnessContext) {
+    return true;
+  }
+  const detailRowFiltered = queryHasDetailRowFilter(evidencePlan, harnessContext);
+  const preferredGrouping = includesNormalized(harnessContext.preferGroupBy, groupByColumn);
+  const blockedGrouping = includesNormalized(harnessContext.blockGroupBy, groupByColumn);
+  return detailRowFiltered && preferredGrouping && !blockedGrouping;
+};
+const mapAiDecisionToReasonCodes = (aiDecision, semanticUnderstanding, plan, summary) => {
+  var _a;
+  if (aiDecision.decision === "pass" && aiDecision.chartWorthy) return [];
+  const codes = [];
+  const groupByColumn = ((_a = plan.query.groupBy) == null ? void 0 : _a[0]) ?? null;
+  if (groupByColumn && semanticUnderstanding.helperDimensions.includes(groupByColumn)) {
+    codes.push("helper_dimension");
+  }
+  if (semanticUnderstanding.unsafeForBusinessNarrative) {
+    codes.push("unsafe_business_narrative");
+  }
+  if (semanticUnderstanding.businessGrainConfidence === "low") {
+    codes.push("low_business_confidence");
+  }
+  if (summary.rowCount <= 2) {
+    codes.push("too_few_rows");
+  }
+  if ((summary.distinctGroupCount ?? 0) <= 1 && plan.queryMode === "aggregate") {
+    codes.push("single_group_result");
+  }
+  if (summary.isWideCategorySet) {
+    codes.push("fragmented_groups");
+  }
+  if (!aiDecision.chartWorthy) {
+    codes.push("not_chart_worthy");
+  }
+  return codes;
+};
+const enforceDecisionPriority = (current, floor) => {
+  const priority = {
+    reject: 2,
+    table_only: 1,
+    pass: 0
+  };
+  return priority[floor] > priority[current] ? floor : current;
+};
+const evaluateEvidenceValue = (params) => {
+  const {
+    semanticUnderstanding,
+    evidencePlan,
+    evidenceSummary,
+    existingAcceptedOutputs = [],
+    aiEvaluation,
+    harnessContext
+  } = params;
+  const querySignature = buildEvidenceSignature(evidencePlan);
+  const semanticSignature = buildSemanticSignature(evidencePlan, evidenceSummary, semanticUnderstanding);
+  const safetyFloor = evaluateDeterministicSafetyFloor({
+    semanticUnderstanding,
+    evidencePlan,
+    evidenceSummary,
+    existingAcceptedOutputs,
+    querySignature,
+    semanticSignature,
+    harnessContext
+  });
+  if (safetyFloor.hardReject) {
+    return {
+      decision: "reject",
+      reasonCodes: safetyFloor.reasonCodes,
+      detail: buildDetail(safetyFloor.reasonCodes),
+      querySignature,
+      semanticSignature,
+      semanticRisk: "high"
+    };
+  }
+  const blockedDimensionFloor = safetyFloor.reasonCodes.includes("blocked_dimension") ? "table_only" : "pass";
+  let harnessReasonCodes = [];
+  let harnessFloorDecision = "pass";
+  if (harnessContext) {
+    const steeringFloor = evaluateSteeringFloor({
+      evidencePlan,
+      harnessContext
+    });
+    const harnessResult = evaluateHarnessContamination({
+      evidencePlan,
+      evidenceSummary,
+      harnessContext
+    });
+    harnessReasonCodes = [
+      ...steeringFloor.reasonCodes,
+      ...harnessResult.reasonCodes
+    ];
+    if (harnessResult.atLeastTableOnly) {
+      harnessFloorDecision = "table_only";
+    }
+    harnessFloorDecision = enforceDecisionPriority(harnessFloorDecision, steeringFloor.floorDecision);
+  }
+  if (aiEvaluation) {
+    const aiReasonCodes = mapAiDecisionToReasonCodes(aiEvaluation, semanticUnderstanding, evidencePlan, evidenceSummary);
+    const allReasonCodes2 = [
+      ...safetyFloor.reasonCodes,
+      ...harnessReasonCodes,
+      ...aiReasonCodes
+    ];
+    const uniqueReasonCodes2 = [...new Set(allReasonCodes2)];
+    let decision2 = aiEvaluation.decision;
+    if (decision2 === "pass" && !aiEvaluation.chartWorthy) {
+      decision2 = "table_only";
+      if (!uniqueReasonCodes2.includes("not_chart_worthy")) {
+        uniqueReasonCodes2.push("not_chart_worthy");
+      }
+    }
+    if (hasRecoverableChartWorthiness({
+      aiDecision: aiEvaluation,
+      aiReasonCodes,
+      semanticUnderstanding,
+      evidencePlan,
+      evidenceSummary,
+      harnessContext,
+      harnessFloorDecision
+    })) {
+      decision2 = "pass";
+      const notChartWorthyIndex = uniqueReasonCodes2.indexOf("not_chart_worthy");
+      if (notChartWorthyIndex >= 0) {
+        uniqueReasonCodes2.splice(notChartWorthyIndex, 1);
+      }
+    }
+    decision2 = enforceDecisionPriority(decision2, harnessFloorDecision);
+    decision2 = enforceDecisionPriority(decision2, blockedDimensionFloor);
+    const degradationSteps2 = [];
+    if (blockedDimensionFloor !== "pass") degradationSteps2.push(`blocked_dimension→${blockedDimensionFloor}`);
+    if (harnessFloorDecision !== "pass") degradationSteps2.push(`harness→${harnessFloorDecision}`);
+    const semanticRisk2 = decision2 === "pass" ? "low" : decision2 === "table_only" ? "medium" : "high";
+    return {
+      decision: decision2,
+      reasonCodes: uniqueReasonCodes2,
+      detail: aiEvaluation.reasoning || buildDetail(uniqueReasonCodes2),
+      querySignature,
+      semanticSignature,
+      semanticRisk: semanticRisk2,
+      degradationPath: degradationSteps2.length > 0 ? degradationSteps2.join(" + ") : void 0
+    };
+  }
+  const deterministicQuality = evaluateDeterministicQuality({
+    semanticUnderstanding,
+    evidencePlan,
+    evidenceSummary,
+    harnessContext
+  });
+  const allReasonCodes = [
+    ...safetyFloor.reasonCodes,
+    ...harnessReasonCodes,
+    ...deterministicQuality.reasonCodes
+  ];
+  const uniqueReasonCodes = [...new Set(allReasonCodes)];
+  let decision = deterministicQuality.decision;
+  decision = enforceDecisionPriority(decision, harnessFloorDecision);
+  decision = enforceDecisionPriority(decision, blockedDimensionFloor);
+  const degradationSteps = [];
+  if (blockedDimensionFloor !== "pass") degradationSteps.push(`blocked_dimension→${blockedDimensionFloor}`);
+  if (harnessFloorDecision !== "pass") degradationSteps.push(`harness→${harnessFloorDecision}`);
+  const semanticRisk = decision === "pass" ? "low" : decision === "table_only" ? "medium" : "high";
+  return {
+    decision,
+    reasonCodes: uniqueReasonCodes,
+    detail: buildDetail(uniqueReasonCodes),
+    querySignature,
+    semanticSignature,
+    semanticRisk,
+    degradationPath: degradationSteps.length > 0 ? degradationSteps.join(" + ") : void 0
+  };
+};
 const executeNonAggregatingPlan = (data, plan) => {
   let dataToProcess = data.data;
   if (plan.chartType === "scatter") {
@@ -34191,10 +34123,10 @@ class PlanExecutionSoftError extends Error {
 }
 const isPlanExecutionSoftError = (value) => value instanceof PlanExecutionSoftError;
 const executeAggregation = async (data, spec) => executeAggregationWithWorker(data, spec);
-const LOG_PREFIX$k = "[CardExecutor]";
+const LOG_PREFIX$j = "[CardExecutor]";
 const executePlanAndCreateCard = async (plan, data, store, options) => {
   var _a, _b;
-  console.log(`${LOG_PREFIX$k} Executing plan: "${plan.title}"`);
+  console.log(`${LOG_PREFIX$j} Executing plan: "${plan.title}"`);
   let explorationId = null;
   try {
     const { getState } = store;
@@ -34202,7 +34134,7 @@ const executePlanAndCreateCard = async (plan, data, store, options) => {
     if (!validPlan) {
       throw new Error(`Invalid plan: ${errors.join(", ")}`);
     }
-    console.log(`${LOG_PREFIX$k} Plan validated for "${plan.title}".`);
+    console.log(`${LOG_PREFIX$j} Plan validated for "${plan.title}".`);
     emitAgentEvent(store, {
       phase: "planning",
       step: "plan_validated",
@@ -34222,10 +34154,10 @@ const executePlanAndCreateCard = async (plan, data, store, options) => {
     });
     const isAggregatingPlan = validPlan.chartType !== "scatter";
     const processedData = isAggregatingPlan ? await executeAggregation(data, validPlan) : executeNonAggregatingPlan(data, validPlan);
-    console.log(`${LOG_PREFIX$k} Data processing complete for plan "${plan.title}". Rows:`, processedData.length);
+    console.log(`${LOG_PREFIX$j} Data processing complete for plan "${plan.title}". Rows:`, processedData.length);
     if (processedData.length === 0) {
       getState().addProgress(`Plan "${validPlan.title}" resulted in no data. It might be too specific.`, "error");
-      console.warn(`${LOG_PREFIX$k} Plan "${plan.title}" resulted in no data.`);
+      console.warn(`${LOG_PREFIX$j} Plan "${plan.title}" resulted in no data.`);
       emitAgentEvent(store, {
         phase: "execution",
         step: "card_generation",
@@ -34298,7 +34230,7 @@ const executePlanAndCreateCard = async (plan, data, store, options) => {
       throw error;
     }
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error(`${LOG_PREFIX$k} Error executing plan "${plan.title}":`, error);
+    console.error(`${LOG_PREFIX$j} Error executing plan "${plan.title}":`, error);
     store.getState().addProgress(`Error executing plan "${plan.title}": ${errorMessage}`, "error");
     agentMemoryCollector.failExploration(explorationId, errorMessage);
     return null;
@@ -35655,8 +35587,8 @@ const buildEvidenceCompatibleSqlPlan = (evidencePlan, presentationPlan) => {
     queryMode: evidencePlan.queryMode,
     query: evidencePlan.query,
     bindings: presentationPlan.bindings,
-    aggregation: primaryAggregate === "sum" || primaryAggregate === "count" || primaryAggregate === "avg" ? primaryAggregate : void 0,
-    secondaryAggregation: secondaryAggregate === "sum" || secondaryAggregate === "count" || secondaryAggregate === "avg" ? secondaryAggregate : void 0,
+    aggregation: isAggregationType(primaryAggregate) ? primaryAggregate : void 0,
+    secondaryAggregation: isAggregationType(secondaryAggregate) ? secondaryAggregate : void 0,
     defaultTopN: presentationPlan.defaultTopN,
     defaultHideOthers: presentationPlan.defaultHideOthers,
     preFilter: evidencePlan.preFilter
@@ -35727,7 +35659,7 @@ const buildEvidenceResultSummary = (evidencePlan, result, profiles) => {
   };
 };
 const executeEvidenceQuery = async (evidencePlan, store, binding, options) => {
-  var _a, _b, _c, _d, _e;
+  var _a, _b, _c, _d, _e, _f;
   const { getState } = store;
   const state = getState();
   const dataset = (options == null ? void 0 : options.dataset) ?? getPreferredAnalysisDataset(state);
@@ -35748,6 +35680,7 @@ const executeEvidenceQuery = async (evidencePlan, store, binding, options) => {
   if (!binding || binding.loadVersion !== bindingTarget.datasetVersion) {
     binding = null;
   }
+  const _sqlT0 = performance.now();
   const allowedColumns = getDatasetColumns$1(dataset, state.columnProfiles.map((profile) => profile.name));
   const reportDiagnostics = createWorkerDiagnosticsTelemetryReporter(store);
   const executableQuery = mergeEvidencePreFilterIntoQuery(evidencePlan.query, evidencePlan.preFilter);
@@ -35811,11 +35744,12 @@ const executeEvidenceQuery = async (evidencePlan, store, binding, options) => {
       dimensionNormalization
     }
   ));
+  console.log(`[Perf:SQL] DuckDB query: ${Math.round(performance.now() - _sqlT0)}ms | "${(_a = evidencePlan.title) == null ? void 0 : _a.slice(0, 40)}"`);
   const result = execution.result;
   const activeDataQuery = {
     sessionId: getState().sessionId,
-    turnId: (_a = getState().activeTurn) == null ? void 0 : _a.turnId,
-    stepId: (_c = (_b = getState().activeTurn) == null ? void 0 : _b.steps.at(-1)) == null ? void 0 : _c.stepId,
+    turnId: (_b = getState().activeTurn) == null ? void 0 : _b.turnId,
+    stepId: (_d = (_c = getState().activeTurn) == null ? void 0 : _c.steps.at(-1)) == null ? void 0 : _d.stepId,
     explanation: `Automatic SQL-first evidence query for "${evidencePlan.title}"`,
     plan: {
       ...executableQuery,
@@ -35833,12 +35767,13 @@ const executeEvidenceQuery = async (evidencePlan, store, binding, options) => {
     fallbackReason: execution.fallbackReason,
     fallbackFilterOperation: null
   };
-  appendQueryTrace(store, activeDataQuery);
-  store.setState({
-    activeDataQuery,
-    duckDbSessionStatus: createDuckDbSessionStatusFromExecution(execution)
-  });
-  (_e = (_d = getState()).logAgentToolUsage) == null ? void 0 : _e.call(_d, {
+  if (!(options == null ? void 0 : options.suppressQueryStateUpdates)) {
+    appendQueryTrace(store, activeDataQuery);
+    const _setT0 = performance.now();
+    store.setState({ activeDataQuery });
+    console.log(`[Perf:SQL] setState(activeDataQuery): ${Math.round(performance.now() - _setT0)}ms`);
+  }
+  (_f = (_e = getState()).logAgentToolUsage) == null ? void 0 : _f.call(_e, {
     tool: "duckdb_query_engine",
     description: `Executed SQL-first evidence query for "${evidencePlan.title}".`,
     detail: {
@@ -35863,27 +35798,42 @@ const executeEvidenceQuery = async (evidencePlan, store, binding, options) => {
   };
 };
 const executePresentationPlanAndCreateCard = async (evidencePlan, presentationPlan, store, evidenceSummary, executionResult, options) => {
-  var _a, _b, _c, _d, _e, _f;
+  var _a, _b, _c, _d, _e, _f, _g;
   const { getState } = store;
   let effectivePresentationPlan = presentationPlan;
   if (presentationPlan.pivotDecision === "prefer_pivot" && presentationPlan.pivotRequest) {
-    const pivotResult = await executePivotMatrixAnalysis(presentationPlan.pivotRequest, store);
-    const pivotCardId = (_a = pivotResult.artifacts) == null ? void 0 : _a.cardId;
-    const pivotCard = typeof pivotCardId === "string" ? getState().analysisCards.find((card2) => card2.id === pivotCardId) ?? null : null;
-    if (pivotResult.status === "success" && pivotCard) {
-      return {
-        card: pivotCard,
-        presentationPlan,
-        evidenceSummary,
-        activeDataQuery: executionResult.activeDataQuery
+    const pivotQSig = buildPivotToolQuerySignature(presentationPlan.pivotRequest);
+    const pivotSSig = buildPivotToolSemanticSignature(presentationPlan.pivotRequest);
+    const isDupPivot = ((options == null ? void 0 : options.existingAcceptedOutputs) ?? []).some(
+      (o) => o.querySignature === pivotQSig || o.semanticSignature === pivotSSig
+    );
+    if (isDupPivot) {
+      console.log("[SqlCardExecutor] Pivot dedup: skipping duplicate pivot matrix, falling back to chart.");
+      effectivePresentationPlan = {
+        ...presentationPlan,
+        pivotDecision: void 0,
+        pivotPresentation: void 0,
+        pivotRequest: void 0
+      };
+    } else {
+      const pivotResult = await executePivotMatrixAnalysis(presentationPlan.pivotRequest, store);
+      const pivotCardId = (_a = pivotResult.artifacts) == null ? void 0 : _a.cardId;
+      const pivotCard = typeof pivotCardId === "string" ? getState().analysisCards.find((card2) => card2.id === pivotCardId) ?? null : null;
+      if (pivotResult.status === "success" && pivotCard) {
+        return {
+          card: pivotCard,
+          presentationPlan,
+          evidenceSummary,
+          activeDataQuery: executionResult.activeDataQuery
+        };
+      }
+      effectivePresentationPlan = {
+        ...presentationPlan,
+        pivotDecision: void 0,
+        pivotPresentation: void 0,
+        pivotRequest: void 0
       };
     }
-    effectivePresentationPlan = {
-      ...presentationPlan,
-      pivotDecision: void 0,
-      pivotPresentation: void 0,
-      pivotRequest: void 0
-    };
   }
   const compatiblePlan = buildEvidenceCompatibleSqlPlan(evidencePlan, effectivePresentationPlan);
   const uiPlan = compatiblePlan ? mapSqlAnalysisPlanToAnalysisPlan(compatiblePlan) : buildAnalysisPlanFromPresentation(evidencePlan, effectivePresentationPlan, evidenceSummary);
@@ -35924,6 +35874,7 @@ const executePresentationPlanAndCreateCard = async (evidencePlan, presentationPl
   };
   const groupByKey = normalizedPlan.groupByColumn ?? ((_f = (_e = evidencePlan.query) == null ? void 0 : _e.groupBy) == null ? void 0 : _f[0]) ?? null;
   const chronologicalRows = groupByKey ? tryChronologicalSort(executionResult.result.rows, groupByKey) ?? executionResult.result.rows : executionResult.result.rows;
+  const _cardT0 = performance.now();
   const card = await createNewCard(normalizedPlan, chronologicalRows, store, {
     sourceTopic: (options == null ? void 0 : options.topic) ?? null,
     sourceStepIds: (options == null ? void 0 : options.sourceStepIds) ?? [],
@@ -35935,6 +35886,7 @@ const executePresentationPlanAndCreateCard = async (evidencePlan, presentationPl
     } : null,
     autoAnalysisEvaluation: null
   });
+  console.log(`[Perf:CardExec] createNewCard: ${Math.round(performance.now() - _cardT0)}ms | "${(_g = normalizedPlan.title) == null ? void 0 : _g.slice(0, 40)}"`);
   const cardEvaluation = evaluateAutoAnalysisCards([card]).cards[0] ?? null;
   emitAgentEvent(store, {
     phase: "execution",
@@ -36061,580 +36013,6 @@ const executeSqlPlanAndCreateCard = async (plan, store, binding, options) => {
       tableName: (binding == null ? void 0 : binding.tableName) ?? null
     });
   }
-};
-const LOG_PREFIX$j = "[EvidenceValueGate]";
-const AI_EVAL_TIMEOUT_MS = 8e3;
-const AI_EVAL_TIMEOUT_MESSAGE = `AI evidence evaluation timed out after ${AI_EVAL_TIMEOUT_MS}ms`;
-const normalize$2 = (value) => value.trim().toLowerCase();
-const stringifyWhere = (value) => JSON.stringify(value ?? []);
-const normalizeList = (values) => [...values ?? []].map(normalize$2).sort();
-const createEvidenceEvalTimeoutError = () => {
-  if (typeof DOMException === "function") {
-    return new DOMException(AI_EVAL_TIMEOUT_MESSAGE, "AbortError");
-  }
-  const error = new Error(AI_EVAL_TIMEOUT_MESSAGE);
-  error.name = "AbortError";
-  return error;
-};
-const isEvidenceEvalTimeoutError = (error) => error instanceof Error && error.name === "AbortError" && error.message === AI_EVAL_TIMEOUT_MESSAGE;
-const buildNormalizedMetricKey = (plan, summary) => (plan.query.aggregates ?? []).map((aggregate) => `${aggregate.function}:${aggregate.column}`).filter(Boolean).join("|") || summary.numericColumns.join("|");
-const buildEvidenceSignature = (plan) => JSON.stringify({
-  queryMode: plan.queryMode,
-  groupBy: [...plan.query.groupBy ?? []].sort(),
-  // Exclude the AI-generated alias (aggregate.as) from the signature.
-  // Two plans with SUM(Value) AS "TotalValue" vs SUM(Value) AS "Total"
-  // answer the same question — the alias is cosmetic.
-  aggregates: (plan.query.aggregates ?? []).map((aggregate) => ({
-    fn: aggregate.function,
-    column: aggregate.column
-  })).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
-  where: stringifyWhere(plan.query.where),
-  postAggregateFilter: stringifyWhere(plan.query.postAggregateFilter)
-});
-const buildSemanticSignature = (plan, summary, semanticUnderstanding) => {
-  var _a, _b, _c;
-  return JSON.stringify({
-    grain: normalize$2(((_a = plan.query.groupBy) == null ? void 0 : _a[0]) ?? "none"),
-    metric: normalize$2(buildNormalizedMetricKey(plan, summary) || "none"),
-    // Intent is excluded from the signature on purpose: two queries with
-    // the same grain + metric + aggregate function answer the same question
-    // regardless of how the AI phrased the intent.  Including intent caused
-    // near-duplicate cards to slip through dedup (e.g. "Top X by Value" vs
-    // "Value distribution by X" both GROUP BY Description, SUM(Value)).
-    aggregateFn: normalize$2((plan.query.aggregates ?? []).map((a) => a.function).join("|") || "none"),
-    blocked: semanticUnderstanding.blockedDimensions.includes(((_b = plan.query.groupBy) == null ? void 0 : _b[0]) ?? ""),
-    helper: semanticUnderstanding.helperDimensions.includes(((_c = plan.query.groupBy) == null ? void 0 : _c[0]) ?? "")
-  });
-};
-const buildPlanOnlySemanticSignature = (plan, semanticUnderstanding) => {
-  var _a, _b, _c;
-  return JSON.stringify({
-    grain: normalize$2(((_a = plan.query.groupBy) == null ? void 0 : _a[0]) ?? "none"),
-    metric: normalize$2(
-      (plan.query.aggregates ?? []).map((a) => `${a.function}:${a.column}`).filter(Boolean).join("|") || "none"
-    ),
-    aggregateFn: normalize$2((plan.query.aggregates ?? []).map((a) => a.function).join("|") || "none"),
-    blocked: semanticUnderstanding.blockedDimensions.includes(((_b = plan.query.groupBy) == null ? void 0 : _b[0]) ?? ""),
-    helper: semanticUnderstanding.helperDimensions.includes(((_c = plan.query.groupBy) == null ? void 0 : _c[0]) ?? "")
-  });
-};
-const buildPivotToolQuerySignature = (request) => JSON.stringify({
-  tool: "analysis.pivot_matrix",
-  rows: normalizeList(request.rows),
-  columns: normalizeList(request.columns),
-  metric: normalize$2(request.metric ?? "count"),
-  aggregate: normalize$2(request.aggregate),
-  topN: request.topN ?? null,
-  sort: request.sort ?? null
-});
-const buildPivotToolSemanticSignature = (request, steering) => {
-  var _a;
-  return JSON.stringify({
-    tool: "analysis.pivot_matrix",
-    primaryRow: normalize$2(((_a = request.rows) == null ? void 0 : _a[0]) ?? "none"),
-    columns: normalizeList(request.columns),
-    metric: normalize$2(request.metric ?? "count"),
-    aggregate: normalize$2(request.aggregate),
-    detailRowFilter: (steering == null ? void 0 : steering.detailRowFilter) ? `${normalize$2(steering.detailRowFilter.column)}=${normalize$2(steering.detailRowFilter.value)}` : "none"
-  });
-};
-const buildDetail = (reasonCodes) => reasonCodes.length === 0 ? "pass" : reasonCodes.join(", ");
-const includesNormalized = (values, candidate) => {
-  const normalizedCandidate = candidate ? normalize$2(candidate) : null;
-  if (!normalizedCandidate) {
-    return false;
-  }
-  return (values ?? []).some((value) => normalize$2(value) === normalizedCandidate);
-};
-const evaluateDeterministicSafetyFloor = (params) => {
-  var _a, _b;
-  const { semanticUnderstanding, evidencePlan, existingAcceptedOutputs, querySignature, semanticSignature, harnessContext } = params;
-  const reasonCodes = [];
-  const groupByColumn = ((_a = evidencePlan.query.groupBy) == null ? void 0 : _a[0]) ?? null;
-  const isBlockedBySemanticUnderstanding = Boolean(groupByColumn && semanticUnderstanding.blockedDimensions.includes(groupByColumn));
-  const isBlockedByHarness = Boolean(groupByColumn && (harnessContext == null ? void 0 : harnessContext.blockGroupBy.includes(groupByColumn)));
-  const isBlockedDimension = isBlockedBySemanticUnderstanding || isBlockedByHarness;
-  const isSoftDeprioritized = Boolean(
-    groupByColumn && !isBlockedDimension && ((_b = harnessContext == null ? void 0 : harnessContext.softDeprioritizeGroupBy) == null ? void 0 : _b.includes(groupByColumn))
-  );
-  if (isBlockedDimension) {
-    reasonCodes.push("blocked_dimension");
-  }
-  if (isSoftDeprioritized) {
-    reasonCodes.push("soft_deprioritized_dimension");
-  }
-  if (existingAcceptedOutputs.some((output) => output.querySignature === querySignature)) {
-    reasonCodes.push("duplicate_query");
-  }
-  if (existingAcceptedOutputs.some((output) => output.semanticSignature === semanticSignature)) {
-    reasonCodes.push("duplicate_semantic");
-  }
-  const hardReject = reasonCodes.includes("duplicate_query") || reasonCodes.includes("duplicate_semantic");
-  return { hardReject, reasonCodes };
-};
-const queryHasDetailRowFilter = (plan, harnessContext) => {
-  var _a, _b;
-  if (!harnessContext.detailRowColumn || !harnessContext.detailRowValue) return false;
-  const col = harnessContext.detailRowColumn.toLowerCase();
-  const val = harnessContext.detailRowValue.toLowerCase();
-  const allPredicates = [
-    ...((_a = plan.query.where) == null ? void 0 : _a.predicates) ?? [],
-    ...(((_b = plan.query.where) == null ? void 0 : _b.groups) ?? []).flatMap((g) => g.predicates)
-  ];
-  return allPredicates.some(
-    (p) => p.column.toLowerCase() === col && (p.operator === "eq" || p.operator === "in") && (typeof p.value === "string" ? p.value.toLowerCase() === val : Array.isArray(p.value) && p.value.some((v) => String(v).toLowerCase() === val))
-  );
-};
-const hasHierarchySafeGrouping = (evidencePlan, harnessContext) => {
-  var _a;
-  const groupByColumn = ((_a = evidencePlan.query.groupBy) == null ? void 0 : _a[0]) ?? null;
-  if (!groupByColumn) {
-    return false;
-  }
-  const isPreferred = includesNormalized(harnessContext.preferGroupBy, groupByColumn);
-  const isBlocked = includesNormalized(harnessContext.blockGroupBy, groupByColumn);
-  const isHierarchyColumn = harnessContext.hierarchyColumn ? normalize$2(harnessContext.hierarchyColumn) === normalize$2(groupByColumn) : false;
-  return isPreferred && !isBlocked && !isHierarchyColumn;
-};
-const evaluateSteeringFloor = (params) => {
-  const { evidencePlan, harnessContext } = params;
-  const reasonCodes = [];
-  let floorDecision = "pass";
-  const detailRowFiltered = queryHasDetailRowFilter(evidencePlan, harnessContext);
-  if (harnessContext.reportShapeClass === "hierarchical_statement" && !detailRowFiltered && !hasHierarchySafeGrouping(evidencePlan, harnessContext)) {
-    reasonCodes.push("missing_detail_row_filter");
-    floorDecision = "table_only";
-  }
-  if (harnessContext.detailRowPolicy === "exclude_non_detail_rows" && harnessContext.detailRowColumn && harnessContext.detailRowValue && !detailRowFiltered && (harnessContext.reportShapeClass === "hierarchical_statement" || harnessContext.parentDescriptions.length > 0 || harnessContext.excludeFromAggregation.length > 0)) {
-    reasonCodes.push("missing_detail_row_filter");
-    floorDecision = "table_only";
-  }
-  if (harnessContext.widePivotMode === "reshape_required") {
-    reasonCodes.push("reshape_required");
-    floorDecision = "table_only";
-  }
-  if (harnessContext.signalConfidence === "low") {
-    reasonCodes.push("low_signal_confidence");
-    floorDecision = "table_only";
-  }
-  return {
-    reasonCodes: [...new Set(reasonCodes)],
-    floorDecision
-  };
-};
-const evaluateHarnessContamination = (params) => {
-  var _a;
-  const { evidencePlan, evidenceSummary, harnessContext } = params;
-  const reasonCodes = [];
-  const groupByColumn = ((_a = evidencePlan.query.groupBy) == null ? void 0 : _a[0]) ?? null;
-  let atLeastTableOnly = false;
-  const detailRowFiltered = queryHasDetailRowFilter(evidencePlan, harnessContext);
-  if (!detailRowFiltered) {
-    if (groupByColumn && harnessContext.hierarchyColumn && normalize$2(groupByColumn) === normalize$2(harnessContext.hierarchyColumn) && evidenceSummary.previewRows.length > 0) {
-      const contaminationLabels = /* @__PURE__ */ new Set([
-        ...harnessContext.parentDescriptions.map(normalize$2),
-        ...harnessContext.excludeFromAggregation.map(normalize$2)
-      ]);
-      if (contaminationLabels.size > 0) {
-        const hasContamination = evidenceSummary.previewRows.some((row) => {
-          const groupValue = row[groupByColumn];
-          return typeof groupValue === "string" && contaminationLabels.has(normalize$2(groupValue));
-        });
-        if (hasContamination) {
-          reasonCodes.push("hierarchy_contamination");
-          atLeastTableOnly = true;
-        }
-      }
-    }
-    if (groupByColumn && harnessContext.duplicateDescriptions.length > 0 && evidenceSummary.previewRows.length > 0) {
-      const duplicateLabels = new Set(harnessContext.duplicateDescriptions.map(normalize$2));
-      const hasDuplicateContamination = evidenceSummary.previewRows.some((row) => {
-        const groupValue = row[groupByColumn];
-        return typeof groupValue === "string" && duplicateLabels.has(normalize$2(groupValue));
-      });
-      if (hasDuplicateContamination) {
-        reasonCodes.push("duplicate_label_contamination");
-        atLeastTableOnly = true;
-      }
-    }
-  }
-  return { reasonCodes, atLeastTableOnly };
-};
-const evaluateDeterministicQuality = (params) => {
-  var _a;
-  const { semanticUnderstanding, evidencePlan, evidenceSummary, harnessContext } = params;
-  const reasonCodes = [];
-  const groupByColumn = ((_a = evidencePlan.query.groupBy) == null ? void 0 : _a[0]) ?? null;
-  const isHelperBySemanticUnderstanding = Boolean(groupByColumn && semanticUnderstanding.helperDimensions.includes(groupByColumn));
-  const isHelperByHarness = Boolean(
-    groupByColumn && harnessContext && harnessContext.blockGroupBy.includes(groupByColumn) && !harnessContext.preferGroupBy.includes(groupByColumn)
-  );
-  const isHelperDimension = isHelperBySemanticUnderstanding || isHelperByHarness;
-  if (isHelperDimension) {
-    reasonCodes.push("helper_dimension");
-  }
-  if (semanticUnderstanding.unsafeForBusinessNarrative) {
-    reasonCodes.push("unsafe_business_narrative");
-  }
-  if (semanticUnderstanding.businessGrainConfidence === "low") {
-    reasonCodes.push("low_business_confidence");
-  }
-  if (evidenceSummary.rowCount <= 2) {
-    reasonCodes.push("too_few_rows");
-  }
-  if ((evidenceSummary.distinctGroupCount ?? 0) <= 1 && evidencePlan.queryMode === "aggregate") {
-    reasonCodes.push("single_group_result");
-  }
-  if (evidenceSummary.isWideCategorySet) {
-    reasonCodes.push("fragmented_groups");
-  }
-  let harnessAtLeastTableOnly = false;
-  if (harnessContext) {
-    const harnessResult = evaluateHarnessContamination({
-      evidencePlan,
-      evidenceSummary,
-      harnessContext
-    });
-    reasonCodes.push(...harnessResult.reasonCodes);
-    harnessAtLeastTableOnly = harnessResult.atLeastTableOnly;
-  }
-  let decision = reasonCodes.length === 0 ? "pass" : "table_only";
-  if (harnessAtLeastTableOnly && decision === "pass") {
-    decision = "table_only";
-  }
-  return { reasonCodes, decision };
-};
-const hasRecoverableChartWorthiness = (params) => {
-  var _a;
-  const {
-    aiDecision,
-    aiReasonCodes,
-    semanticUnderstanding,
-    evidencePlan,
-    evidenceSummary,
-    harnessContext,
-    harnessFloorDecision
-  } = params;
-  if (aiDecision.decision !== "table_only" || aiDecision.chartWorthy) {
-    return false;
-  }
-  if (harnessFloorDecision !== "pass") {
-    return false;
-  }
-  if (aiReasonCodes.length !== 1 || aiReasonCodes[0] !== "not_chart_worthy") {
-    return false;
-  }
-  const aggregateFunctions = new Set((evidencePlan.query.aggregates ?? []).map((aggregate) => aggregate.function));
-  const onlyChartFriendlyAggregate = aggregateFunctions.size === 1 && (aggregateFunctions.has("sum") || aggregateFunctions.has("avg"));
-  if (!onlyChartFriendlyAggregate) {
-    return false;
-  }
-  const groupByColumn = ((_a = evidencePlan.query.groupBy) == null ? void 0 : _a[0]) ?? null;
-  if (!groupByColumn) {
-    return false;
-  }
-  if (semanticUnderstanding.blockedDimensions.includes(groupByColumn)) {
-    return false;
-  }
-  if (semanticUnderstanding.helperDimensions.includes(groupByColumn) && !semanticUnderstanding.businessGrains.includes(groupByColumn)) {
-    return false;
-  }
-  if (semanticUnderstanding.unsafeForBusinessNarrative && !semanticUnderstanding.fallbackPromotedGrains) {
-    return false;
-  }
-  if (semanticUnderstanding.businessGrainConfidence === "low" && semanticUnderstanding.businessGrains.length === 0) {
-    return false;
-  }
-  if (evidencePlan.queryMode !== "aggregate" || evidenceSummary.rowCount < 5 || (evidenceSummary.distinctGroupCount ?? 0) < 3 || evidenceSummary.isWideCategorySet) {
-    return false;
-  }
-  if (!harnessContext) {
-    return true;
-  }
-  const detailRowFiltered = queryHasDetailRowFilter(evidencePlan, harnessContext);
-  const preferredGrouping = includesNormalized(harnessContext.preferGroupBy, groupByColumn);
-  const blockedGrouping = includesNormalized(harnessContext.blockGroupBy, groupByColumn);
-  return detailRowFiltered && preferredGrouping && !blockedGrouping;
-};
-const buildEvidenceSummaryText = (plan, summary) => {
-  var _a;
-  const lines = [
-    `Query mode: ${plan.queryMode}`,
-    `Intent: ${plan.intentSummary || plan.title}`,
-    `Rows returned: ${summary.rowCount}`,
-    `Columns: ${summary.columns.join(", ")}`,
-    `Numeric columns: ${summary.numericColumns.join(", ") || "none"}`,
-    `Categorical columns: ${summary.categoricalColumns.join(", ") || "none"}`,
-    `Time columns: ${summary.timeColumns.join(", ") || "none"}`
-  ];
-  if ((_a = plan.query.groupBy) == null ? void 0 : _a.length) {
-    lines.push(`GroupBy: ${plan.query.groupBy.join(", ")}`);
-  }
-  if (summary.distinctGroupCount != null) {
-    lines.push(`Distinct groups: ${summary.distinctGroupCount}`);
-  }
-  if (summary.totalValue != null) {
-    lines.push(`Total metric value: ${summary.totalValue}`);
-  }
-  lines.push(`Time series candidate: ${summary.isTimeSeriesCandidate ? "yes" : "no"}`);
-  lines.push(`Wide category set (>30 groups): ${summary.isWideCategorySet ? "yes" : "no"}`);
-  lines.push(`Has secondary metric: ${summary.hasSecondaryMetric ? "yes" : "no"}`);
-  if (summary.previewRows.length > 0) {
-    lines.push(`Preview rows (first ${Math.min(summary.previewRows.length, 3)}):`);
-    summary.previewRows.slice(0, 3).forEach((row) => {
-      lines.push(`  ${JSON.stringify(row)}`);
-    });
-  }
-  return lines.join("\n");
-};
-const buildSemanticContextText = (semanticUnderstanding, harnessContext, evidencePlan) => {
-  var _a;
-  const lines = [
-    `Business grains: ${semanticUnderstanding.businessGrains.join(", ") || "none"}`,
-    `Helper dimensions: ${semanticUnderstanding.helperDimensions.join(", ") || "none"}`,
-    `Blocked dimensions: ${semanticUnderstanding.blockedDimensions.join(", ") || "none"}`,
-    `Business grain confidence: ${semanticUnderstanding.businessGrainConfidence}`,
-    `Unsafe for business narrative: ${semanticUnderstanding.unsafeForBusinessNarrative ? "yes" : "no"}`
-  ];
-  if (harnessContext) {
-    lines.push(`Canonical report shape class: ${harnessContext.reportShapeClass ?? "uncertain"}`);
-    lines.push(`Canonical detail row policy: ${harnessContext.detailRowPolicy ?? "uncertain"}`);
-    lines.push(`Canonical hierarchy mode: ${harnessContext.hierarchyMode ?? "uncertain"}`);
-    lines.push(`Canonical wide pivot mode: ${harnessContext.widePivotMode ?? "uncertain"}`);
-    lines.push(`Canonical signal confidence: ${harnessContext.signalConfidence ?? "low"}`);
-    if ((((_a = harnessContext.signalSources) == null ? void 0 : _a.length) ?? 0) > 0) {
-      lines.push(`Canonical signal sources: ${(harnessContext.signalSources ?? []).join(", ")}`);
-    }
-    if (harnessContext.preferGroupBy.length > 0) {
-      lines.push(`Preferred grain columns (harness): ${harnessContext.preferGroupBy.join(", ")}`);
-    }
-    if (harnessContext.blockGroupBy.length > 0) {
-      lines.push(`Blocked grain columns (harness): ${harnessContext.blockGroupBy.join(", ")}`);
-    }
-    if (harnessContext.hierarchyColumn) {
-      lines.push(`Hierarchy column: ${harnessContext.hierarchyColumn}`);
-    }
-    if (harnessContext.parentDescriptions.length > 0) {
-      lines.push(`Parent/subtotal labels (exclude from aggregation): ${harnessContext.parentDescriptions.join(", ")}`);
-    }
-    if (harnessContext.duplicateDescriptions.length > 0) {
-      lines.push(`Duplicate/alias labels (may contaminate grouping): ${harnessContext.duplicateDescriptions.join(", ")}`);
-    }
-    if (harnessContext.excludeFromAggregation.length > 0) {
-      lines.push(`Rows to exclude from aggregation: ${harnessContext.excludeFromAggregation.join(", ")}`);
-    }
-    if (evidencePlan && queryHasDetailRowFilter(evidencePlan, harnessContext)) {
-      lines.push(`Detail-row filter applied: this query includes WHERE ${harnessContext.detailRowColumn}='${harnessContext.detailRowValue}' which excludes parent/subtotal rows. Hierarchy contamination risk is mitigated — chart presentation is safe if the data shape supports it.`);
-    }
-  }
-  return lines.join("\n");
-};
-const callAiEvidenceEvaluation = async (topic, plan, summary, semanticUnderstanding, settings, harnessContext) => {
-  if (!isProviderConfigured(settings)) {
-    return null;
-  }
-  try {
-    const { model, modelId } = createProviderModel(settings);
-    const evidenceText = buildEvidenceSummaryText(plan, summary);
-    const semanticText = buildSemanticContextText(semanticUnderstanding, harnessContext, plan);
-    const prompt = buildEvidenceEvaluationPrompt(topic, evidenceText, semanticText);
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(createEvidenceEvalTimeoutError()), AI_EVAL_TIMEOUT_MS);
-    try {
-      const result = await withTransientRetry(
-        (fb) => generateText({
-          model: fb ?? model,
-          messages: [
-            { role: "system", content: "You are an expert data analyst evaluating SQL query evidence quality. Return one JSON object." },
-            { role: "user", content: prompt }
-          ],
-          output: output_exports.object({
-            schema: jsonSchema(prepareSchemaForProvider(createEvidenceEvaluationSchema(), settings.provider))
-          }),
-          abortSignal: controller.signal
-        }),
-        { settings, primaryModelId: modelId, label: "evidenceValueGate", abortSignal: controller.signal }
-      );
-      clearTimeout(timeout);
-      const parsed = result.output !== void 0 ? result.output : robustlyParseJsonObject(result.text);
-      if (!parsed || !["pass", "table_only", "reject"].includes(parsed.decision)) {
-        console.warn(`${LOG_PREFIX$j} AI evaluation returned invalid decision, falling back to deterministic.`);
-        return null;
-      }
-      return parsed;
-    } finally {
-      clearTimeout(timeout);
-    }
-  } catch (error) {
-    if (isEvidenceEvalTimeoutError(error)) {
-      console.info(`${LOG_PREFIX$j} AI evidence evaluation timed out, falling back to deterministic.`);
-      return null;
-    }
-    console.warn(`${LOG_PREFIX$j} AI evidence evaluation failed, falling back to deterministic.`, error);
-    return null;
-  }
-};
-const mapAiDecisionToReasonCodes = (aiDecision, semanticUnderstanding, plan, summary) => {
-  var _a;
-  if (aiDecision.decision === "pass" && aiDecision.chartWorthy) return [];
-  const codes = [];
-  const groupByColumn = ((_a = plan.query.groupBy) == null ? void 0 : _a[0]) ?? null;
-  if (groupByColumn && semanticUnderstanding.helperDimensions.includes(groupByColumn)) {
-    codes.push("helper_dimension");
-  }
-  if (semanticUnderstanding.unsafeForBusinessNarrative) {
-    codes.push("unsafe_business_narrative");
-  }
-  if (semanticUnderstanding.businessGrainConfidence === "low") {
-    codes.push("low_business_confidence");
-  }
-  if (summary.rowCount <= 2) {
-    codes.push("too_few_rows");
-  }
-  if ((summary.distinctGroupCount ?? 0) <= 1 && plan.queryMode === "aggregate") {
-    codes.push("single_group_result");
-  }
-  if (summary.isWideCategorySet) {
-    codes.push("fragmented_groups");
-  }
-  if (!aiDecision.chartWorthy) {
-    codes.push("not_chart_worthy");
-  }
-  return codes;
-};
-const enforceDecisionPriority = (current, floor) => {
-  const priority = {
-    reject: 2,
-    table_only: 1,
-    pass: 0
-  };
-  return priority[floor] > priority[current] ? floor : current;
-};
-const evaluateEvidenceValue = (params) => {
-  const {
-    semanticUnderstanding,
-    evidencePlan,
-    evidenceSummary,
-    existingAcceptedOutputs = [],
-    aiEvaluation,
-    harnessContext
-  } = params;
-  const querySignature = buildEvidenceSignature(evidencePlan);
-  const semanticSignature = buildSemanticSignature(evidencePlan, evidenceSummary, semanticUnderstanding);
-  const safetyFloor = evaluateDeterministicSafetyFloor({
-    semanticUnderstanding,
-    evidencePlan,
-    existingAcceptedOutputs,
-    querySignature,
-    semanticSignature,
-    harnessContext
-  });
-  if (safetyFloor.hardReject) {
-    return {
-      decision: "reject",
-      reasonCodes: safetyFloor.reasonCodes,
-      detail: buildDetail(safetyFloor.reasonCodes),
-      querySignature,
-      semanticSignature,
-      semanticRisk: "high"
-    };
-  }
-  const blockedDimensionFloor = safetyFloor.reasonCodes.includes("blocked_dimension") ? "table_only" : "pass";
-  let harnessReasonCodes = [];
-  let harnessFloorDecision = "pass";
-  if (harnessContext) {
-    const steeringFloor = evaluateSteeringFloor({
-      evidencePlan,
-      harnessContext
-    });
-    const harnessResult = evaluateHarnessContamination({
-      evidencePlan,
-      evidenceSummary,
-      harnessContext
-    });
-    harnessReasonCodes = [
-      ...steeringFloor.reasonCodes,
-      ...harnessResult.reasonCodes
-    ];
-    if (harnessResult.atLeastTableOnly) {
-      harnessFloorDecision = "table_only";
-    }
-    harnessFloorDecision = enforceDecisionPriority(harnessFloorDecision, steeringFloor.floorDecision);
-  }
-  if (aiEvaluation) {
-    const aiReasonCodes = mapAiDecisionToReasonCodes(aiEvaluation, semanticUnderstanding, evidencePlan, evidenceSummary);
-    const allReasonCodes2 = [
-      ...safetyFloor.reasonCodes,
-      ...harnessReasonCodes,
-      ...aiReasonCodes
-    ];
-    const uniqueReasonCodes2 = [...new Set(allReasonCodes2)];
-    let decision2 = aiEvaluation.decision;
-    if (decision2 === "pass" && !aiEvaluation.chartWorthy) {
-      decision2 = "table_only";
-      if (!uniqueReasonCodes2.includes("not_chart_worthy")) {
-        uniqueReasonCodes2.push("not_chart_worthy");
-      }
-    }
-    if (hasRecoverableChartWorthiness({
-      aiDecision: aiEvaluation,
-      aiReasonCodes,
-      semanticUnderstanding,
-      evidencePlan,
-      evidenceSummary,
-      harnessContext,
-      harnessFloorDecision
-    })) {
-      decision2 = "pass";
-      const notChartWorthyIndex = uniqueReasonCodes2.indexOf("not_chart_worthy");
-      if (notChartWorthyIndex >= 0) {
-        uniqueReasonCodes2.splice(notChartWorthyIndex, 1);
-      }
-    }
-    decision2 = enforceDecisionPriority(decision2, harnessFloorDecision);
-    decision2 = enforceDecisionPriority(decision2, blockedDimensionFloor);
-    const degradationSteps2 = [];
-    if (blockedDimensionFloor !== "pass") degradationSteps2.push(`blocked_dimension→${blockedDimensionFloor}`);
-    if (harnessFloorDecision !== "pass") degradationSteps2.push(`harness→${harnessFloorDecision}`);
-    const semanticRisk2 = decision2 === "pass" ? "low" : decision2 === "table_only" ? "medium" : "high";
-    return {
-      decision: decision2,
-      reasonCodes: uniqueReasonCodes2,
-      detail: aiEvaluation.reasoning || buildDetail(uniqueReasonCodes2),
-      querySignature,
-      semanticSignature,
-      semanticRisk: semanticRisk2,
-      degradationPath: degradationSteps2.length > 0 ? degradationSteps2.join(" + ") : void 0
-    };
-  }
-  const deterministicQuality = evaluateDeterministicQuality({
-    semanticUnderstanding,
-    evidencePlan,
-    evidenceSummary,
-    harnessContext
-  });
-  const allReasonCodes = [
-    ...safetyFloor.reasonCodes,
-    ...harnessReasonCodes,
-    ...deterministicQuality.reasonCodes
-  ];
-  const uniqueReasonCodes = [...new Set(allReasonCodes)];
-  let decision = deterministicQuality.decision;
-  decision = enforceDecisionPriority(decision, harnessFloorDecision);
-  decision = enforceDecisionPriority(decision, blockedDimensionFloor);
-  const degradationSteps = [];
-  if (blockedDimensionFloor !== "pass") degradationSteps.push(`blocked_dimension→${blockedDimensionFloor}`);
-  if (harnessFloorDecision !== "pass") degradationSteps.push(`harness→${harnessFloorDecision}`);
-  const semanticRisk = decision === "pass" ? "low" : decision === "table_only" ? "medium" : "high";
-  return {
-    decision,
-    reasonCodes: uniqueReasonCodes,
-    detail: buildDetail(uniqueReasonCodes),
-    querySignature,
-    semanticSignature,
-    semanticRisk,
-    degradationPath: degradationSteps.length > 0 ? degradationSteps.join(" + ") : void 0
-  };
 };
 const quoteId = (value) => `"${value.replace(/"/g, '""')}"`;
 const quoteLit = (value) => `'${value.replace(/'/g, "''")}'`;
@@ -37218,7 +36596,7 @@ const classifyUnnamedColumnLabels = async (columns, binding, settings) => {
   }
   let isProviderConfigured2;
   try {
-    const providerConfig = await __vitePreload(() => import("./csv_data_analysis_app-ai.js").then((n) => n.Y), true ? __vite__mapDeps([0,1,2,3]) : void 0, import.meta.url);
+    const providerConfig = await __vitePreload(() => import("./csv_data_analysis_app-ai.js").then((n) => n.a6), true ? __vite__mapDeps([0,1,2,3]) : void 0, import.meta.url);
     isProviderConfigured2 = providerConfig.isProviderConfigured;
   } catch {
     return {};
@@ -37276,11 +36654,11 @@ ${columnDescriptions}`;
       return { generateText: generateText3 };
     }, true ? __vite__mapDeps([0,1,2]) : void 0, import.meta.url);
     const { createProviderModel: createProviderModel2 } = await __vitePreload(async () => {
-      const { createProviderModel: createProviderModel3 } = await import("./csv_data_analysis_app-ai.js").then((n) => n.Y);
+      const { createProviderModel: createProviderModel3 } = await import("./csv_data_analysis_app-ai.js").then((n) => n.a6);
       return { createProviderModel: createProviderModel3 };
     }, true ? __vite__mapDeps([0,1,2,3]) : void 0, import.meta.url);
     const { withTransientRetry: withTransientRetry2 } = await __vitePreload(async () => {
-      const { withTransientRetry: withTransientRetry3 } = await import("./csv_data_analysis_app-ai.js").then((n) => n.Z);
+      const { withTransientRetry: withTransientRetry3 } = await import("./csv_data_analysis_app-ai.js").then((n) => n.a7);
       return { withTransientRetry: withTransientRetry3 };
     }, true ? __vite__mapDeps([0,1,2,3]) : void 0, import.meta.url);
     const { model, modelId } = createProviderModel2(settings, settings.simpleModel);
@@ -37391,7 +36769,7 @@ const validateHierarchyCandidatesWithAI = async (candidates, columnName, sampleV
   }
   let isProviderConfigured2;
   try {
-    const providerConfig = await __vitePreload(() => import("./csv_data_analysis_app-ai.js").then((n) => n.Y), true ? __vite__mapDeps([0,1,2,3]) : void 0, import.meta.url);
+    const providerConfig = await __vitePreload(() => import("./csv_data_analysis_app-ai.js").then((n) => n.a6), true ? __vite__mapDeps([0,1,2,3]) : void 0, import.meta.url);
     isProviderConfigured2 = providerConfig.isProviderConfigured;
   } catch {
     return validateWithKeywordFallback(candidates);
@@ -37406,11 +36784,11 @@ const validateHierarchyCandidatesWithAI = async (candidates, columnName, sampleV
       return { generateText: generateText3 };
     }, true ? __vite__mapDeps([0,1,2]) : void 0, import.meta.url);
     const { createProviderModel: createProviderModel2 } = await __vitePreload(async () => {
-      const { createProviderModel: createProviderModel3 } = await import("./csv_data_analysis_app-ai.js").then((n) => n.Y);
+      const { createProviderModel: createProviderModel3 } = await import("./csv_data_analysis_app-ai.js").then((n) => n.a6);
       return { createProviderModel: createProviderModel3 };
     }, true ? __vite__mapDeps([0,1,2,3]) : void 0, import.meta.url);
     const { withTransientRetry: withTransientRetry2 } = await __vitePreload(async () => {
-      const { withTransientRetry: withTransientRetry3 } = await import("./csv_data_analysis_app-ai.js").then((n) => n.Z);
+      const { withTransientRetry: withTransientRetry3 } = await import("./csv_data_analysis_app-ai.js").then((n) => n.a7);
       return { withTransientRetry: withTransientRetry3 };
     }, true ? __vite__mapDeps([0,1,2,3]) : void 0, import.meta.url);
     const { model, modelId } = createProviderModel2(settings, settings.simpleModel);
@@ -38393,7 +37771,7 @@ const runDataInvestigationHarness = async (columns, binding, semanticUnderstandi
   const descCol = findDescriptionColumn(columns, semanticUnderstanding);
   const valueCandidates = findValueColumns(columns, semanticUnderstanding);
   if (!descCol || valueCandidates.length === 0) {
-    console.log(`${LOG_PREFIX$l} Skipped — no suitable description or value column found.`);
+    console.log(`${LOG_PREFIX$k} Skipped — no suitable description or value column found.`);
     return null;
   }
   const rowClassCol = findRowClassColumn(columns);
@@ -38426,7 +37804,7 @@ const runDataInvestigationHarness = async (columns, binding, semanticUnderstandi
       const retentionRatio = totalCount > 0 ? filteredCount / totalCount : 0;
       if (filteredCount === 0 || retentionRatio < 0.1) {
         console.warn(
-          `${LOG_PREFIX$l} Detail row filter "${rowClassCol.name}" = "${rowClassDetailValue}" retains ${filteredCount}/${totalCount} rows (${(retentionRatio * 100).toFixed(1)}%) — disabling filter.`
+          `${LOG_PREFIX$k} Detail row filter "${rowClassCol.name}" = "${rowClassDetailValue}" retains ${filteredCount}/${totalCount} rows (${(retentionRatio * 100).toFixed(1)}%) — disabling filter.`
         );
         rowClassDetailValue = null;
       }
@@ -38435,7 +37813,7 @@ const runDataInvestigationHarness = async (columns, binding, semanticUnderstandi
   }
   const descriptionQueryLimit = (descCol.uniqueValues ?? 0) > HIGH_CARDINALITY_DESCRIPTION_THRESHOLD ? HIGH_CARDINALITY_DESCRIPTION_LIMIT : DEFAULT_DESCRIPTION_LIMIT;
   if (descriptionQueryLimit === HIGH_CARDINALITY_DESCRIPTION_LIMIT) {
-    console.log(`${LOG_PREFIX$l} High-cardinality column "${descCol.name}" (${descCol.uniqueValues} unique values) — using LIMIT ${HIGH_CARDINALITY_DESCRIPTION_LIMIT} for description query.`);
+    console.log(`${LOG_PREFIX$k} High-cardinality column "${descCol.name}" (${descCol.uniqueValues} unique values) — using LIMIT ${HIGH_CARDINALITY_DESCRIPTION_LIMIT} for description query.`);
   }
   const descriptionCardinality = descCol.uniqueValues ?? 0;
   const minDescriptionThreshold = descriptionCardinality <= 50 ? 1 : 3;
@@ -38463,7 +37841,7 @@ const runDataInvestigationHarness = async (columns, binding, semanticUnderstandi
       }
     } catch (error) {
       const category = classifyDuckDbError(error);
-      console.warn(`${LOG_PREFIX$l} Description query with metric "${candidate.name}" failed, trying next.`, error);
+      console.warn(`${LOG_PREFIX$k} Description query with metric "${candidate.name}" failed, trying next.`, error);
       if (_options == null ? void 0 : _options.store) {
         emitSilentFailure(_options.store, error, {
           component: "DataInvestigationHarness",
@@ -38485,11 +37863,11 @@ const runDataInvestigationHarness = async (columns, binding, semanticUnderstandi
       );
       if (fallbackTotals.length >= minDescriptionThreshold) {
         totals = fallbackTotals;
-        console.log(`${LOG_PREFIX$l} Metric-based description totals were insufficient; continuing investigation with row-count fallback for "${descCol.name}".`);
+        console.log(`${LOG_PREFIX$k} Metric-based description totals were insufficient; continuing investigation with row-count fallback for "${descCol.name}".`);
       }
     } catch (error) {
       const category = classifyDuckDbError(error);
-      console.warn(`${LOG_PREFIX$l} Row-count fallback for "${descCol.name}" failed, skipping harness.`, error);
+      console.warn(`${LOG_PREFIX$k} Row-count fallback for "${descCol.name}" failed, skipping harness.`, error);
       if (_options == null ? void 0 : _options.store) {
         emitSilentFailure(_options.store, error, {
           component: "DataInvestigationHarness",
@@ -38501,10 +37879,10 @@ const runDataInvestigationHarness = async (columns, binding, semanticUnderstandi
     }
   }
   if (totals.length < minDescriptionThreshold) {
-    console.log(`${LOG_PREFIX$l} Skipped — fewer than ${minDescriptionThreshold} distinct descriptions (${totals.length}) after trying ${valueCandidates.length} metric(s).`);
+    console.log(`${LOG_PREFIX$k} Skipped — fewer than ${minDescriptionThreshold} distinct descriptions (${totals.length}) after trying ${valueCandidates.length} metric(s).`);
     return null;
   }
-  console.log(`${LOG_PREFIX$l} Investigating ${totals.length} descriptions from column "${descCol.name}".`);
+  console.log(`${LOG_PREFIX$k} Investigating ${totals.length} descriptions from column "${descCol.name}".`);
   const PLANNED_PHASES = 10;
   let phaseAttempted = 0;
   let phaseSucceeded = 0;
@@ -38530,7 +37908,7 @@ const runDataInvestigationHarness = async (columns, binding, semanticUnderstandi
     } catch (error) {
       if (timeoutId !== null) clearTimeout(timeoutId);
       const category = classifyDuckDbError(error);
-      console.warn(`${LOG_PREFIX$l} ${name} failed, continuing.`, error);
+      console.warn(`${LOG_PREFIX$k} ${name} failed, continuing.`, error);
       if (_options == null ? void 0 : _options.store) {
         emitSilentFailure(_options.store, error, {
           component: "DataInvestigationHarness",
@@ -38617,13 +37995,13 @@ const runDataInvestigationHarness = async (columns, binding, semanticUnderstandi
       });
     }
   } catch (error) {
-    console.warn(`${LOG_PREFIX$l} Topic constraint build failed, continuing with empty constraints.`, error);
+    console.warn(`${LOG_PREFIX$k} Topic constraint build failed, continuing with empty constraints.`, error);
   }
   let suggestedDerivedTopics = [];
   try {
     suggestedDerivedTopics = buildDerivedTopicSuggestions(metricRelationships, semanticCategories);
   } catch (error) {
-    console.warn(`${LOG_PREFIX$l} Derived topic suggestions failed, continuing with empty.`, error);
+    console.warn(`${LOG_PREFIX$k} Derived topic suggestions failed, continuing with empty.`, error);
   }
   let runtimeDirectives = createEmptyRuntimeDirectives();
   try {
@@ -38636,7 +38014,7 @@ const runDataInvestigationHarness = async (columns, binding, semanticUnderstandi
       descCol.name
     );
   } catch (error) {
-    console.warn(`${LOG_PREFIX$l} Runtime directive build failed, continuing with empty directives.`, error);
+    console.warn(`${LOG_PREFIX$k} Runtime directive build failed, continuing with empty directives.`, error);
   }
   runtimeDirectives.inferredColumnLabels = inferredColumnLabels;
   try {
@@ -38654,15 +38032,15 @@ const runDataInvestigationHarness = async (columns, binding, semanticUnderstandi
     );
     runtimeDirectives.suggestedPivots = pivotCandidates;
   } catch (error) {
-    console.warn(`${LOG_PREFIX$l} Pivot candidate detection failed, continuing with empty.`, error);
+    console.warn(`${LOG_PREFIX$k} Pivot candidate detection failed, continuing with empty.`, error);
   }
   try {
     runtimeDirectives.widePivotShape = detectWidePivotShape(columns);
     if (runtimeDirectives.widePivotShape) {
-      console.log(`${LOG_PREFIX$l} Wide pivot shape detected (${columns.length} columns). Row-based analysis safe; column-dimension analysis needs explicit column selection.`);
+      console.log(`${LOG_PREFIX$k} Wide pivot shape detected (${columns.length} columns). Row-based analysis safe; column-dimension analysis needs explicit column selection.`);
     }
   } catch (error) {
-    console.warn(`${LOG_PREFIX$l} Wide pivot shape detection failed, continuing.`, error);
+    console.warn(`${LOG_PREFIX$k} Wide pivot shape detection failed, continuing.`, error);
   }
   try {
     if (runtimeDirectives.widePivotShape) {
@@ -38670,17 +38048,17 @@ const runDataInvestigationHarness = async (columns, binding, semanticUnderstandi
         columns.map((c) => c.name)
       );
       if (runtimeDirectives.periodColumnFamilies.length > 0) {
-        console.log(`${LOG_PREFIX$l} Period column families: ${runtimeDirectives.periodColumnFamilies.map(
+        console.log(`${LOG_PREFIX$k} Period column families: ${runtimeDirectives.periodColumnFamilies.map(
           (f) => `${f.pattern}/${f.year ?? "no-year"} (${f.columns.length} cols)`
         ).join(", ")}`);
         if (!runtimeDirectives.promotedChartType) {
           runtimeDirectives.promotedChartType = "line";
-          console.log(`${LOG_PREFIX$l} Promoted chart type to 'line' for period column families.`);
+          console.log(`${LOG_PREFIX$k} Promoted chart type to 'line' for period column families.`);
         }
       }
     }
   } catch (error) {
-    console.warn(`${LOG_PREFIX$l} Period column detection failed, continuing.`, error);
+    console.warn(`${LOG_PREFIX$k} Period column detection failed, continuing.`, error);
   }
   try {
     if (runtimeDirectives.periodColumnFamilies.length > 0) {
@@ -38691,13 +38069,13 @@ const runDataInvestigationHarness = async (columns, binding, semanticUnderstandi
       runtimeDirectives.suggestedUnpivotPlan = unpivotResult.operation;
       runtimeDirectives.unpivotExcludedColumns = unpivotResult.excludedColumns;
       if (unpivotResult.operation) {
-        console.log(`${LOG_PREFIX$l} Auto-unpivot plan generated: ${unpivotResult.operation.sourceColumns.length} period columns → long table (${unpivotResult.operation.keyColumn}, ${unpivotResult.operation.valueColumn}). Excluded: [${unpivotResult.excludedColumns.join(", ")}].`);
+        console.log(`${LOG_PREFIX$k} Auto-unpivot plan generated: ${unpivotResult.operation.sourceColumns.length} period columns → long table (${unpivotResult.operation.keyColumn}, ${unpivotResult.operation.valueColumn}). Excluded: [${unpivotResult.excludedColumns.join(", ")}].`);
       } else {
-        console.log(`${LOG_PREFIX$l} Auto-unpivot skipped: ${unpivotResult.skipReason}`);
+        console.log(`${LOG_PREFIX$k} Auto-unpivot skipped: ${unpivotResult.skipReason}`);
       }
     }
   } catch (error) {
-    console.warn(`${LOG_PREFIX$l} Auto-unpivot plan generation failed, continuing.`, error);
+    console.warn(`${LOG_PREFIX$k} Auto-unpivot plan generation failed, continuing.`, error);
   }
   try {
     if (runtimeDirectives.widePivotShape) {
@@ -38709,35 +38087,35 @@ const runDataInvestigationHarness = async (columns, binding, semanticUnderstandi
         reasons.push("period_columns_override_hierarchy");
         reasons.push(`period_families=${runtimeDirectives.periodColumnFamilies.length}`);
         reasons.push(`parent_descriptions=${parentDescriptions.length}`);
-        console.log(`${LOG_PREFIX$l} Reshape conflict resolved: period columns (${runtimeDirectives.periodColumnFamilies.length} families) override hierarchy (${parentDescriptions.length} parents) → reshape_required.`);
+        console.log(`${LOG_PREFIX$k} Reshape conflict resolved: period columns (${runtimeDirectives.periodColumnFamilies.length} families) override hierarchy (${parentDescriptions.length} parents) → reshape_required.`);
       } else if (hasPeriodFamilies) {
         runtimeDirectives.reshapeDecision = "reshape_required";
         reasons.push("period_columns_detected");
         reasons.push(`period_families=${runtimeDirectives.periodColumnFamilies.length}`);
-        console.log(`${LOG_PREFIX$l} Reshape decision: period columns detected → reshape_required.`);
+        console.log(`${LOG_PREFIX$k} Reshape decision: period columns detected → reshape_required.`);
       } else if (hasHierarchySignals) {
         runtimeDirectives.reshapeDecision = "annotation_fallback";
         reasons.push("hierarchy_without_period_columns");
         reasons.push(`parent_descriptions=${parentDescriptions.length}`);
-        console.log(`${LOG_PREFIX$l} Reshape decision: hierarchy without period columns → annotation_fallback.`);
+        console.log(`${LOG_PREFIX$k} Reshape decision: hierarchy without period columns → annotation_fallback.`);
       } else {
         runtimeDirectives.reshapeDecision = null;
         reasons.push("wide_pivot_no_period_no_hierarchy");
         reasons.push("deferred_to_ai");
-        console.log(`${LOG_PREFIX$l} Reshape decision: wide pivot but no period columns or hierarchy — deferring to AI agent.`);
+        console.log(`${LOG_PREFIX$k} Reshape decision: wide pivot but no period columns or hierarchy — deferring to AI agent.`);
       }
       runtimeDirectives.reshapeDecisionReasons = reasons;
     }
   } catch (error) {
-    console.warn(`${LOG_PREFIX$l} Reshape conflict resolution failed, continuing.`, error);
+    console.warn(`${LOG_PREFIX$k} Reshape conflict resolution failed, continuing.`, error);
   }
   try {
     runtimeDirectives.formattedNumberColumns = columns.filter((c) => c.hasFormattedNumbers === true).map((c) => c.name);
     if (runtimeDirectives.formattedNumberColumns.length > 0) {
-      console.log(`${LOG_PREFIX$l} Comma-formatted number columns: ${runtimeDirectives.formattedNumberColumns.join(", ")}. Cleaning required before SQL CAST.`);
+      console.log(`${LOG_PREFIX$k} Comma-formatted number columns: ${runtimeDirectives.formattedNumberColumns.join(", ")}. Cleaning required before SQL CAST.`);
     }
   } catch (error) {
-    console.warn(`${LOG_PREFIX$l} Formatted number column detection failed, continuing.`, error);
+    console.warn(`${LOG_PREFIX$k} Formatted number column detection failed, continuing.`, error);
   }
   let crossDimensionCardinality = [];
   try {
@@ -38746,7 +38124,7 @@ const runDataInvestigationHarness = async (columns, binding, semanticUnderstandi
       [...semanticUnderstanding.blockedDimensions, ...runtimeDirectives.blockGroupBy]
     );
   } catch (error) {
-    console.warn(`${LOG_PREFIX$l} Cross-dimension cardinality check failed, continuing with empty.`, error);
+    console.warn(`${LOG_PREFIX$k} Cross-dimension cardinality check failed, continuing with empty.`, error);
   }
   let dimensionCompleteness = [];
   try {
@@ -38755,7 +38133,7 @@ const runDataInvestigationHarness = async (columns, binding, semanticUnderstandi
       [...semanticUnderstanding.blockedDimensions, ...runtimeDirectives.blockGroupBy]
     );
   } catch (error) {
-    console.warn(`${LOG_PREFIX$l} Dimension completeness check failed, continuing with empty.`, error);
+    console.warn(`${LOG_PREFIX$k} Dimension completeness check failed, continuing with empty.`, error);
   }
   if ((valueConcentration == null ? void 0 : valueConcentration.isPareto) && valueConcentration.recommendedTopN !== null) {
     const paretoTopN = valueConcentration.recommendedTopN;
@@ -38802,7 +38180,7 @@ const runDataInvestigationHarness = async (columns, binding, semanticUnderstandi
       runtimeDirectives.unpivotExcludedColumns
     );
   } catch (error) {
-    console.warn(`${LOG_PREFIX$l} Summary build failed, continuing with empty summary.`, error);
+    console.warn(`${LOG_PREFIX$k} Summary build failed, continuing with empty summary.`, error);
   }
   const coverageMetric = {
     planned: PLANNED_PHASES,
@@ -38811,7 +38189,7 @@ const runDataInvestigationHarness = async (columns, binding, semanticUnderstandi
     skipped: phaseSkipped,
     successRate: phaseAttempted === 0 ? 1 : phaseSucceeded / phaseAttempted
   };
-  console.log(`${LOG_PREFIX$l} Found ${hierarchyGroups.length} hierarchy(s), ${duplicateLabels.length} duplicate(s), ${metricRelationships.length} relationship(s), ${outlierDescriptions.length} outlier(s), ${missingDataPatterns.length} missing pattern(s), ${leafDescriptions.length} leaves, ${suggestedDerivedTopics.length} derived topic(s), ${runtimeDirectives.suggestedPivots.length} pivot candidate(s). Directives: prefer=${runtimeDirectives.preferredDimensions.join(",")}, block=${runtimeDirectives.blockedDimensions.join(",")}, metrics=${runtimeDirectives.preferredMetrics.join(",")}, topN=${runtimeDirectives.recommendedTopN}, inferredLabels=${Object.keys(inferredColumnLabels).length}. Coverage: ${phaseSucceeded}/${phaseAttempted} phases succeeded (${phaseSkipped} skipped).`);
+  console.log(`${LOG_PREFIX$k} Found ${hierarchyGroups.length} hierarchy(s), ${duplicateLabels.length} duplicate(s), ${metricRelationships.length} relationship(s), ${outlierDescriptions.length} outlier(s), ${missingDataPatterns.length} missing pattern(s), ${leafDescriptions.length} leaves, ${suggestedDerivedTopics.length} derived topic(s), ${runtimeDirectives.suggestedPivots.length} pivot candidate(s). Directives: prefer=${runtimeDirectives.preferredDimensions.join(",")}, block=${runtimeDirectives.blockedDimensions.join(",")}, metrics=${runtimeDirectives.preferredMetrics.join(",")}, topN=${runtimeDirectives.recommendedTopN}, inferredLabels=${Object.keys(inferredColumnLabels).length}. Coverage: ${phaseSucceeded}/${phaseAttempted} phases succeeded (${phaseSkipped} skipped).`);
   const analysisSteering = buildCanonicalAnalysisSteering({
     semanticUnderstanding,
     base: {
@@ -39453,75 +38831,7 @@ const quoteValue = (value) => {
   }
   return String(value);
 };
-const describeOperator = (operator, language) => {
-  const labels = {
-    English: {
-      eq: "equals",
-      neq: "does not equal",
-      gt: "is greater than",
-      gte: "is greater than or equal to",
-      lt: "is less than",
-      lte: "is less than or equal to",
-      between: "is between",
-      contains: "contains",
-      starts_with: "starts with",
-      ends_with: "ends with",
-      in: "is in",
-      not_in: "is not in",
-      is_null: "is null",
-      not_null: "is not null"
-    },
-    Mandarin: {
-      eq: "等于",
-      neq: "不等于",
-      gt: "大于",
-      gte: "大于等于",
-      lt: "小于",
-      lte: "小于等于",
-      between: "介于",
-      contains: "包含",
-      starts_with: "以",
-      ends_with: "以",
-      in: "属于",
-      not_in: "不属于",
-      is_null: "为空",
-      not_null: "不为空"
-    },
-    Malay: {
-      eq: "bersamaan dengan",
-      neq: "tidak bersamaan dengan",
-      gt: "lebih besar daripada",
-      gte: "lebih besar atau sama dengan",
-      lt: "lebih kecil daripada",
-      lte: "lebih kecil atau sama dengan",
-      between: "di antara",
-      contains: "mengandungi",
-      starts_with: "bermula dengan",
-      ends_with: "berakhir dengan",
-      in: "terdapat dalam",
-      not_in: "tidak terdapat dalam",
-      is_null: "kosong",
-      not_null: "tidak kosong"
-    },
-    Japanese: {
-      eq: "と等しい",
-      neq: "と等しくない",
-      gt: "より大きい",
-      gte: "以上",
-      lt: "より小さい",
-      lte: "以下",
-      between: "の間にある",
-      contains: "を含む",
-      starts_with: "で始まる",
-      ends_with: "で終わる",
-      in: "に含まれる",
-      not_in: "に含まれない",
-      is_null: "が空である",
-      not_null: "が空でない"
-    }
-  };
-  return labels[language][operator];
-};
+const describeOperator = (operator, language) => getTranslation(`filter_op_${operator}`, language);
 const buildFinalReply = (language, operation, observation) => {
   const singlePredicate = getSinglePredicate(operation);
   const matchedCount = observation.matchedRowCount;
@@ -42132,6 +41442,7 @@ const executeSuggestionAction = async (toolName, suggestionId, store) => {
   };
 };
 const executeCardRefineAction = (action, store) => {
+  var _a, _b, _c;
   if (action.type !== "tool_call" || !action.args) {
     return {
       status: "error",
@@ -42141,9 +41452,16 @@ const executeCardRefineAction = (action, store) => {
       retryHint: "Provide cardId and a changes object."
     };
   }
-  const { cardId, changes } = action.args;
+  let { cardId, changes } = action.args;
   const { getState, setState } = store;
   const state = getState();
+  if (!cardId) {
+    const mentionedIds = extractMentionedCardIds(((_a = state.activeTurn) == null ? void 0 : _a.userMessage) ?? "");
+    if (mentionedIds.length === 1) {
+      cardId = mentionedIds[0];
+      console.log(`${LOG_PREFIX$c} card.refine: auto-injected cardId from @mention: ${cardId}`);
+    }
+  }
   const cardIndex = state.analysisCards.findIndex((c) => c.id === cardId);
   if (cardIndex === -1) {
     return {
@@ -42156,6 +41474,7 @@ const executeCardRefineAction = (action, store) => {
   }
   const appliedChanges = [];
   setState((prev) => {
+    var _a2;
     const newCards = [...prev.analysisCards];
     const card = { ...newCards[cardIndex] };
     if (changes.topN !== void 0) {
@@ -42174,20 +41493,34 @@ const executeCardRefineAction = (action, store) => {
       card.isDataVisible = changes.isDataVisible;
       appliedChanges.push(`isDataVisible → ${changes.isDataVisible}`);
     }
+    if (changes.summary !== void 0) {
+      const lang = ((_a2 = prev.settings) == null ? void 0 : _a2.language) ?? card.summary.language ?? "English";
+      card.summary = { language: lang, text: changes.summary };
+      appliedChanges.push("summary updated");
+    }
     newCards[cardIndex] = card;
     return { analysisCards: newCards };
   });
-  const summary = appliedChanges.length > 0 ? `Refined card "${cardId}": ${appliedChanges.join(", ")}.` : `No changes applied to card "${cardId}".`;
-  console.log(`${LOG_PREFIX$c} card.refine: ${summary}`);
+  const cardTitle = ((_c = (_b = state.analysisCards[cardIndex]) == null ? void 0 : _b.plan) == null ? void 0 : _c.title) ?? cardId;
+  const changeDesc = appliedChanges.join(", ");
+  const friendlyMessage = appliedChanges.length > 0 ? `Updated "${cardTitle}" — ${changeDesc}.` : `No changes applied to "${cardTitle}".`;
+  console.log(`${LOG_PREFIX$c} card.refine: ${friendlyMessage}`);
+  if (appliedChanges.length > 0) {
+    if (changes.summary !== void 0) {
+      navigateToCardNarrative(cardId);
+    } else {
+      getState().handleShowCardFromChat(cardId);
+    }
+  }
   return {
     status: "success",
     toolName: "card.refine",
-    message: summary,
-    shouldStop: false,
+    message: friendlyMessage,
+    shouldStop: true,
     observation: {
       type: "tool_result",
       status: "success",
-      summary,
+      summary: friendlyMessage,
       toolName: "card.refine",
       detail: { cardId, changes }
     }
@@ -42212,9 +41545,16 @@ const resolveSqlBinding = (store) => {
   });
 };
 const executePlanAction = async (plan, store, options) => {
-  const { getState } = store;
+  const { getState, setState } = store;
   if (!getState().csvData) return null;
   console.log(`${LOG_PREFIX$c} Executing plan: "${plan.title}"`);
+  const precomputed = getState().pendingPrecomputedCardData;
+  if (precomputed && precomputed.length > 0) {
+    setState({ pendingPrecomputedCardData: null });
+    console.log(`${LOG_PREFIX$c} Using precomputed data (${precomputed.length} rows) from GroupByTest for "${plan.title}".`);
+    const normalizedPlan = isSqlAnalysisPlanLike(plan) ? mapSqlAnalysisPlanToAnalysisPlan(plan) : plan;
+    return createNewCard(normalizedPlan, precomputed, store);
+  }
   if (isSqlAnalysisPlanLike(plan)) {
     const binding = resolveSqlBinding(store);
     return executeSqlPlanAndCreateCard(plan, store, binding);
@@ -42903,7 +42243,7 @@ const getDestructiveRowDeleteSignature = (action) => {
 };
 const isDestructiveRowDeleteAction = (action) => getDestructiveRowDeleteSignature(action) !== null;
 const LOG_PREFIX$b = "[ClarificationAssessment]";
-const AI_TIMEOUT_MS = 5e3;
+const AI_TIMEOUT_MS = 1e4;
 const normalizeOption = (option) => {
   if (!option || typeof option !== "object") {
     return null;
@@ -43022,26 +42362,17 @@ const classifyWithAi = async (clarificationQuestion, userReply, availableOptions
   try {
     const { model, modelId } = createProviderModel(settings, settings.simpleModel);
     const prompt = buildClarificationAssessmentPrompt(clarificationQuestion, userReply, availableOptions);
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(new Error("clarification_assessment_timeout")), AI_TIMEOUT_MS);
-    let result;
-    try {
-      result = await withTransientRetry(
-        (fb) => generateText({
-          model: fb ?? model,
-          messages: [
-            { role: "system", content: prompt.system },
-            { role: "user", content: prompt.user }
-          ],
-          abortSignal: controller.signal
-        }),
-        { settings, primaryModelId: modelId, label: "runtimeClarification", abortSignal: controller.signal }
-      );
-      clearTimeout(timer);
-    } catch (err) {
-      clearTimeout(timer);
-      throw err;
-    }
+    const result = await withTransientRetry(
+      (fb) => streamGenerateText({
+        model: fb ?? model,
+        messages: [
+          { role: "system", content: prompt.system },
+          { role: "user", content: prompt.user }
+        ],
+        activityTimeoutMs: AI_TIMEOUT_MS
+      }),
+      { settings, primaryModelId: modelId, label: "runtimeClarification" }
+    );
     const assessment = parseAiAssessment(result.text);
     if (assessment) {
       console.log(`${LOG_PREFIX$b} AI: ${assessment} (model: ${modelId})`);
@@ -43818,15 +43149,11 @@ const explainDuckDbUnavailableReason = (fallbackReason) => {
   return reason;
 };
 const syncSessionState = (store, session, isActive = true) => {
-  store.setState((state) => ({
+  store.setState({
     activeAnalysisSession: isActive ? session : null,
     latestAnalysisSession: session,
-    visibleAnalysisTrace: session.trace,
-    columnRegistry: buildEffectiveColumnRegistryFromState({
-      ...state,
-      latestAnalysisSession: session
-    })
-  }));
+    visibleAnalysisTrace: session.trace
+  });
 };
 const SEMANTIC_DIAGNOSTIC_REASON = "Semantic screening did not identify a safe business grain for trusted narrative analysis.";
 const buildHarnessCoverageState = (coverageMetric) => {
@@ -43895,7 +43222,7 @@ const requireDuckDbBinding = async (store, dataForAnalysis) => {
     loadVersion: sync.loadVersion
   };
 };
-const buildSessionTraceRecorder = (store, getSession, setSession) => (record) => {
+const buildSessionTraceRecorder = (store, getSession, setSession, options) => (record) => {
   var _a, _b;
   const session = getSession();
   if (session.stepsUsed >= session.maxSteps - DATA_ANALYSIS_FINALIZE_RESERVE_STEPS) {
@@ -43928,7 +43255,9 @@ const buildSessionTraceRecorder = (store, getSession, setSession) => (record) =>
     });
   }
   setSession(updatedSession);
-  syncSessionState(store, updatedSession, true);
+  if (!(options == null ? void 0 : options.suppressSync)) {
+    syncSessionState(store, updatedSession, true);
+  }
   (_b = (_a = store.getState()).logTelemetryEvent) == null ? void 0 : _b.call(_a, {
     stage: "planner_ready",
     responseType: "analysis_step",
@@ -44263,7 +43592,8 @@ const applyInvestigationSteering = (datasetContext, semanticUnderstanding, inves
       pairingSignals: d.pairingSignals,
       duplicateSignatureHints: d.duplicateSignatureHints ?? [],
       reshapeDecision: d.reshapeDecision ?? null,
-      reshapeDecisionReasons: d.reshapeDecisionReasons ?? []
+      reshapeDecisionReasons: d.reshapeDecisionReasons ?? [],
+      inferredColumnLabels: d.inferredColumnLabels
     }
   });
   datasetContext.analysisSteering = cloneAnalysisSteering(steering);
@@ -44374,6 +43704,12 @@ const runDataAnalysisSession = async (params) => {
     session = nextSession;
   };
   const recordStep = buildSessionTraceRecorder(store, () => session, persistSession);
+  const recordStepSuppressed = buildSessionTraceRecorder(
+    store,
+    () => session,
+    persistSession,
+    { suppressSync: true }
+  );
   const observe = appendDataAnalysisStep(session, {
     type: "observe_dataset",
     status: "succeeded",
@@ -44474,16 +43810,20 @@ const runDataAnalysisSession = async (params) => {
       status: "acting",
       title: "Starting analysis session",
       titleKey: "ai_task_starting_analysis",
-      subtitle: "Exploring data distributions with SQL",
-      subtitleKey: "ai_task_session_exploring_data",
+      subtitle: "Exploring data & running investigation diagnostics",
+      subtitleKey: "ai_task_session_exploring_and_investigating",
       totalSteps: 4,
       currentStep: 2
     });
-    explorationContext = await buildAndRunExplorationQueries(
-      columnProfiles,
-      binding,
-      store
-    );
+    const [explorationResult, investigationResult] = await Promise.all([
+      buildAndRunExplorationQueries(columnProfiles, binding, store),
+      runDataInvestigationHarness(columnProfiles, binding, semanticUnderstanding, {
+        store,
+        settings: store.getState().settings
+      })
+    ]);
+    explorationContext = explorationResult;
+    investigationFindings = investigationResult;
     const explorationStep = appendDataAnalysisStep(session, {
       type: "explore_data_with_sql",
       status: explorationContext ? "succeeded" : "skipped",
@@ -44498,21 +43838,6 @@ const runDataAnalysisSession = async (params) => {
     });
     session = explorationStep.session;
     syncSessionState(store, session, true);
-    updateAgentTaskStatus(store, {
-      status: "acting",
-      title: "Starting analysis session",
-      titleKey: "ai_task_starting_analysis",
-      subtitle: "Running data investigation diagnostics",
-      subtitleKey: "ai_task_session_investigation",
-      totalSteps: 4,
-      currentStep: 2
-    });
-    investigationFindings = await runDataInvestigationHarness(
-      columnProfiles,
-      binding,
-      semanticUnderstanding,
-      { store, settings: store.getState().settings }
-    );
     harnessSummary = (investigationFindings == null ? void 0 : investigationFindings.investigationSummary) ?? null;
   } else {
     const explorationStep = appendDataAnalysisStep(session, {
@@ -44875,11 +44200,44 @@ const runDataAnalysisSession = async (params) => {
     decision: card.evidenceValueGate.decision,
     title: card.plan.title
   }));
+  const preGeneratedPlans = /* @__PURE__ */ new Map();
+  {
+    const plannable = hypotheses.filter((h) => !h.plannedToolCall && h.status === "pending");
+    if (plannable.length > 0) {
+      const preGenStart = performance.now();
+      console.log(`[Perf:PlanD] Pre-generating ${plannable.length} evidence plans in parallel...`);
+      const planResults = await Promise.all(
+        plannable.map(async (h) => {
+          const t0 = performance.now();
+          try {
+            const plan = await generateEvidenceQueryPlanStepped(
+              h.topic,
+              columnProfiles,
+              store.getState().settings,
+              harnessSummary,
+              datasetContext,
+              { preferredGroupBy: h.grain, preferredMetric: h.metric, preferredFilterIntent: h.filterIntent }
+            );
+            console.log(`[Perf:PlanD] Plan "${h.topic.slice(0, 40)}" OK in ${Math.round(performance.now() - t0)}ms`);
+            return { id: h.id, plan };
+          } catch {
+            console.log(`[Perf:PlanD] Plan "${h.topic.slice(0, 40)}" FAILED in ${Math.round(performance.now() - t0)}ms`);
+            return null;
+          }
+        })
+      );
+      for (const r of planResults) {
+        if (r) preGeneratedPlans.set(r.id, r.plan);
+      }
+      const preGenTotal = Math.round(performance.now() - preGenStart);
+      console.log(`[Perf:PlanD] Pre-generated ${preGeneratedPlans.size}/${plannable.length} plans in ${preGenTotal}ms (parallel). Serial estimate: ${plannable.length} × avg = ~${Math.round(preGenTotal * plannable.length / Math.max(preGeneratedPlans.size, 1))}ms`);
+    }
+  }
   let processedHypotheses = 0;
   let topicRound = 1;
   const topicRoundLimit = allMetricsZero ? 1 : resolveTopicRoundLimit(harnessContext);
   while (session.stepsUsed < session.maxSteps - DATA_ANALYSIS_FINALIZE_RESERVE_STEPS) {
-    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
     const stopReason = shouldStopDataAnalysisSession(session);
     if (stopReason) {
       if (stopReason === "all_hypotheses_exhausted" && !effectiveDiagnosticMode && topicRound < topicRoundLimit && session.acceptedOutputs.length < effectiveMinTargetCards && canStartNextHypothesis(session)) {
@@ -45138,6 +44496,8 @@ const runDataAnalysisSession = async (params) => {
       }
       processedHypotheses += 1;
     } else {
+      const hypothesisStart = performance.now();
+      const hasPreGen = preGeneratedPlans.has(nextHypothesis.id);
       const result = await processSingleTopic(
         nextHypothesis.topic,
         semanticDataForAnalysis,
@@ -45157,9 +44517,11 @@ const runDataAnalysisSession = async (params) => {
             preferredMetric: nextHypothesis.metric,
             preferredFilterIntent: nextHypothesis.filterIntent
           },
-          recordAnalysisStep: recordStep
+          preGeneratedPlan: preGeneratedPlans.get(nextHypothesis.id),
+          recordAnalysisStep: recordStepSuppressed
         }
       );
+      console.log(`[Perf:PlanD] Hypothesis "${nextHypothesis.topic.slice(0, 40)}" completed in ${Math.round(performance.now() - hypothesisStart)}ms (preGen=${hasPreGen}, status=${result.status})`);
       if (result.status === "aborted") {
         session = finalizeDataAnalysisSession(session, "cancelled", "analysis_aborted");
         break;
@@ -45224,14 +44586,10 @@ const runDataAnalysisSession = async (params) => {
         }));
       }
     }
-    store.setState((state2) => ({
+    store.setState({
       activeAnalysisSession: session,
       latestAnalysisSession: session,
       visibleAnalysisTrace: session.trace,
-      columnRegistry: buildEffectiveColumnRegistryFromState({
-        ...state2,
-        latestAnalysisSession: session
-      }),
       reportGenerationProgress: {
         completed: processedHypotheses,
         total: session.hypotheses.length || 1,
@@ -45247,8 +44605,15 @@ const runDataAnalysisSession = async (params) => {
         totalSteps: session.hypotheses.length,
         currentStep: processedHypotheses
       }
-    }));
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
   }
+  store.setState((state2) => ({
+    columnRegistry: buildEffectiveColumnRegistryFromState({
+      ...state2,
+      latestAnalysisSession: session
+    })
+  }));
   if (!session.summary) {
     session = finalizeDataAnalysisSession(
       session,
@@ -45323,6 +44688,23 @@ const runDataAnalysisSession = async (params) => {
         sessionRunId: session.runId
       }
     });
+  }
+  const cardsToUpsert = store.getState().analysisCards.filter(
+    (c) => c.analysisSessionRunId === session.runId
+  );
+  if (cardsToUpsert.length > 0) {
+    const memStart = performance.now();
+    console.log(`[Perf:Memory] Batch upserting ${cardsToUpsert.length} card memory documents (background)...`);
+    (async () => {
+      for (const card of cardsToUpsert) {
+        try {
+          await upsertCardMemoryDocument(store, card.id);
+        } catch {
+        }
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      console.log(`[Perf:Memory] Batch upsert complete: ${Math.round(performance.now() - memStart)}ms`);
+    })();
   }
   syncSessionState(store, session, false);
   return {
@@ -45790,6 +45172,7 @@ const handleInitialAnalysis = async (dataForAnalysis, goal, store, options) => {
       });
     }
     if (sessionResult.acceptedCardCount > 0) {
+      setState({ isSummaryGenerating: true });
       summaryPromise = generateAllSummaries(store).catch((error) => {
         console.error(`${LOG_PREFIX$8} generateAllSummaries failed in main path, continuing without summaries.`, error);
         emitSilentFailure(store, error, {
@@ -46499,7 +45882,7 @@ const workspaceDataQuery = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.
 }, Symbol.toStringTag, { value: "Module" }));
 const prepareOpenAiSchema = (schema) => prepareSchemaForProvider(schema, "openai");
 const shouldUseStructuredOutput = (provider) => provider !== "google";
-const runSingleCompletion = async (model, provider, messages, responseSchema, stream, abortSignal, onTextChunk) => {
+const runSingleCompletion = async (model, provider, messages, responseSchema, stream, abortSignal, onTextChunk, onActivity) => {
   if (!shouldUseStructuredOutput(provider)) {
     if (stream) {
       const result2 = streamText({
@@ -46507,11 +45890,14 @@ const runSingleCompletion = async (model, provider, messages, responseSchema, st
         messages,
         abortSignal
       });
-      if (onTextChunk) {
+      if (onTextChunk || onActivity) {
         let accumulated = "";
-        for await (const chunk of result2.textStream) {
-          accumulated += chunk;
-          onTextChunk(accumulated);
+        for await (const part of result2.fullStream) {
+          onActivity == null ? void 0 : onActivity();
+          if (part.type === "text-delta") {
+            accumulated += part.text;
+            onTextChunk == null ? void 0 : onTextChunk(accumulated);
+          }
         }
         return {
           content: accumulated,
@@ -46544,11 +45930,14 @@ const runSingleCompletion = async (model, provider, messages, responseSchema, st
       output: output_exports.object({ schema: jsonSchema(preparedSchema) }),
       abortSignal
     });
-    if (onTextChunk) {
+    if (onTextChunk || onActivity) {
       let accumulated = "";
-      for await (const chunk of result.textStream) {
-        accumulated += chunk;
-        onTextChunk(accumulated);
+      for await (const part of result.fullStream) {
+        onActivity == null ? void 0 : onActivity();
+        if (part.type === "text-delta") {
+          accumulated += part.text;
+          onTextChunk == null ? void 0 : onTextChunk(accumulated);
+        }
       }
     }
     let object = null;
@@ -46608,10 +45997,11 @@ const runChatCompletion = async ({
   abortSignal,
   fallbackModel,
   fallbackModelId,
-  onTextChunk
+  onTextChunk,
+  onActivity
 }) => {
   try {
-    const response = await runSingleCompletion(model, provider, messages, responseSchema, stream, abortSignal, onTextChunk);
+    const response = await runSingleCompletion(model, provider, messages, responseSchema, stream, abortSignal, onTextChunk, onActivity);
     return { ...response, usedFallbackModel: void 0 };
   } catch (primaryError) {
     if (!fallbackModel || !isTransientProviderError(primaryError)) {
@@ -46623,7 +46013,7 @@ const runChatCompletion = async ({
       primaryError instanceof Error ? primaryError.message : primaryError
     );
     try {
-      const response = await runSingleCompletion(fallbackModel, provider, messages, responseSchema, stream, abortSignal, onTextChunk);
+      const response = await runSingleCompletion(fallbackModel, provider, messages, responseSchema, stream, abortSignal, onTextChunk, onActivity);
       return { ...response, usedFallbackModel: fbId };
     } catch (fallbackError) {
       console.error(`[chatCompletion] Fallback model "${fbId}" also failed:`, fallbackError);
@@ -46790,60 +46180,42 @@ const withRuntimeContractState = (turn, options) => ({
   runtimeCommitment: options.runtimeCommitment ?? turn.runtimeCommitment ?? null,
   recoveryState: options.recoveryState ?? turn.recoveryState ?? null
 });
-const buildObservationFromResult = (action, result) => {
-  if (result.observation) {
-    return result.observation;
-  }
-  const firstDiagnostic = Array.isArray(result.diagnostics) ? result.diagnostics[0] : null;
-  const inferredCode = result.status === "blocked" ? (firstDiagnostic == null ? void 0 : firstDiagnostic.code) === "blocked_tool" ? "blocked_tool" : (firstDiagnostic == null ? void 0 : firstDiagnostic.code) === "tool_unavailable" ? "tool_unavailable" : (firstDiagnostic == null ? void 0 : firstDiagnostic.code) === "malformed_tool_payload" || (firstDiagnostic == null ? void 0 : firstDiagnostic.code) === "invalid_args" || (firstDiagnostic == null ? void 0 : firstDiagnostic.code) === "invalid_action" ? "validation_failed" : void 0 : void 0;
-  return {
-    type: action.type === "assistant_message" ? "assistant_message" : "tool_result",
-    status: result.status,
-    summary: result.message,
-    toolName: result.toolName,
-    code: inferredCode,
-    retryHint: result.retryHint ?? null,
-    detail: {
-      ...result.payload ?? {},
-      ...result.artifactMetadata ? { artifactMetadata: result.artifactMetadata } : {},
-      ...result.policyDecision ? { policyDecision: result.policyDecision } : {},
-      ...firstDiagnostic ? { error: firstDiagnostic } : {}
+const truncateStepResultArtifacts = (turn) => {
+  var _a;
+  const lastStep = turn.steps.at(-1);
+  if (!((_a = lastStep == null ? void 0 : lastStep.result) == null ? void 0 : _a.artifacts)) return turn;
+  const artifacts = { ...lastStep.result.artifacts };
+  let changed = false;
+  const adq = artifacts.activeDataQuery;
+  if ((adq == null ? void 0 : adq.result) && typeof adq.result === "object") {
+    const result = adq.result;
+    if (Array.isArray(result.rows) && result.rows.length > STEP_ARTIFACT_RETAINED_ROWS) {
+      artifacts.activeDataQuery = {
+        ...adq,
+        result: {
+          ...result,
+          rows: result.rows.slice(0, STEP_ARTIFACT_RETAINED_ROWS),
+          _truncatedFrom: result.rows.length
+        }
+      };
+      changed = true;
     }
+  }
+  for (const key of ["rows", "aggregatedData"]) {
+    if (Array.isArray(artifacts[key]) && artifacts[key].length > STEP_ARTIFACT_RETAINED_ROWS) {
+      const original = artifacts[key];
+      artifacts[key] = original.slice(0, STEP_ARTIFACT_RETAINED_ROWS);
+      artifacts[`_${key}TruncatedFrom`] = original.length;
+      changed = true;
+    }
+  }
+  if (!changed) return turn;
+  const steps = [...turn.steps];
+  steps[steps.length - 1] = {
+    ...lastStep,
+    result: { ...lastStep.result, artifacts }
   };
-};
-const buildObservationFromError = (action, message, options) => ({
-  type: "runtime_error",
-  status: (options == null ? void 0 : options.status) ?? "error",
-  summary: message,
-  toolName: (action == null ? void 0 : action.type) === "tool_call" ? action.toolName : (action == null ? void 0 : action.type) === "assistant_message" ? "assistant_message" : void 0,
-  code: options == null ? void 0 : options.code,
-  retryHint: (options == null ? void 0 : options.retryHint) ?? message,
-  detail: options == null ? void 0 : options.detail
-});
-const buildSemanticRecoveryObservation = (action, options) => ({
-  type: "runtime_error",
-  status: "blocked",
-  summary: options.summary,
-  toolName: action.type === "tool_call" ? action.toolName : "assistant_message",
-  code: options.code,
-  retryHint: options.retryHint,
-  detail: options.detail
-});
-const buildRetryFeedback = (action, observation) => {
-  const actionLabel = (action == null ? void 0 : action.type) === "tool_call" ? action.toolName : (action == null ? void 0 : action.type) === "assistant_message" ? "assistant_message" : "decision";
-  if (observation.code === "clarification_needed") {
-    return `Your last step (${actionLabel}) produced this observation: "${observation.summary}". ${observation.retryHint ?? "Your next action MUST be conversation.request_clarification."} Do not repeat the same tool call before the user clarifies the target.`;
-  }
-  if (observation.code === "semantic_miss") {
-    return `Your last step (${actionLabel}) produced this observation: "${observation.summary}". ${observation.retryHint ?? "Choose a better next action."} Do not repeat the same tool call with the same assumptions, columns, or filters.`;
-  }
-  if (observation.code === "validation_failed") {
-    return `Your last step (${actionLabel}) violated the tool contract: "${observation.summary}". ${observation.retryHint ?? "Return a payload that matches the required tool schema exactly."} Fix the payload instead of repeating the same malformed tool call.`;
-  }
-  if (observation.code === "tool_contract") {
-    return `Your last step (${actionLabel}) violated a runtime tool contract: "${observation.summary}". ${observation.retryHint ?? "Choose the required validation or derivation path before retrying."} Do not repeat the same tool call until the prerequisite workflow is complete.`;
-  }
-  return `Your last step (${actionLabel}) produced this observation: "${observation.summary}". ${observation.retryHint ?? "Choose a better next action and do not repeat the same failure."}`;
+  return { ...turn, steps };
 };
 const QUERY_MISSING_COLUMN_PATTERN = /Query [^:]+ references missing column:\s*([^.!?\n]+)/i;
 const QUERY_MISSING_COLUMNS_PATTERN = /Query [^:]+ references missing columns:\s*([^.!?\n]+)/i;
@@ -47452,7 +46824,8 @@ const finalizeRuntimeOutcome = ({
   store.setState((prev) => {
     const patch = {};
     if (turn && preserveActiveTurn) {
-      patch.activeTurn = turn;
+      const isTerminal = normalizedOutcome.lifecycleState !== "waiting_for_clarification";
+      patch.activeTurn = isTerminal ? { ...turn, recoveryState: null } : turn;
     } else if (!preserveActiveTurn) {
       patch.activeTurn = null;
       patch.isBusy = false;
@@ -47464,6 +46837,7 @@ const finalizeRuntimeOutcome = ({
       patch.chatLifecycleState = chatState;
     }
     if (normalizedOutcome.assistantMessage) {
+      patch.streamingMessage = null;
       patch.chatHistory = [
         ...prev.chatHistory,
         createChatMessage({
@@ -47569,6 +46943,7 @@ const handleAcceptedStep = ({
         runtimeStepContract: nextRuntimeStepContract2
       };
     }
+    store.getState().clearStreamingMessage();
     handleChatAction(action, store);
     const completedTurn = completeAgentTurn(turn, action.message);
     finalizeRuntimeOutcome({
@@ -49453,84 +48828,60 @@ const extractDecisionAction = (response) => {
     };
   }
 };
-const runtimeEvaluationSchema = {
-  type: "object",
-  properties: {
-    decision: {
-      type: "string",
-      enum: ["accept", "retry", "clarify"],
-      description: "Whether the last completed runtime step should be accepted, retried, or redirected to clarification."
-    },
-    reason: {
-      type: "string",
-      description: "A concise explanation grounded in the last action and observation."
-    },
-    retryHint: {
-      type: "string",
-      description: "Optional guidance for the next runtime step when decision is retry or clarify."
-    },
-    isFinalEnough: {
-      type: "boolean",
-      description: "Whether the current request could reasonably end after this accepted step."
-    },
-    needsExplanation: {
-      type: "boolean",
-      description: "Whether the accepted step still needs a grounded assistant_message to explain it to the user."
-    },
-    scorecard: {
-      type: "object",
-      description: "Qualitative self-evaluation scorecard for the step. Optional — omit when confidence is low.",
-      properties: {
-        goalMatch: {
-          type: "string",
-          enum: ["low", "medium", "high"],
-          description: "How well the step output matches the user goal."
-        },
-        evidenceQuality: {
-          type: "string",
-          enum: ["low", "medium", "high"],
-          description: "Quality of the evidence produced by this step."
-        },
-        toolFit: {
-          type: "string",
-          enum: ["poor", "adequate", "strong"],
-          description: "How well the chosen tool matched the task."
-        },
-        repeatRisk: {
-          type: "string",
-          enum: ["low", "medium", "high"],
-          description: "Risk that retrying would produce the same outcome."
-        },
-        completionReadiness: {
-          type: "string",
-          enum: ["low", "medium", "high"],
-          description: "How close the task is to being fully complete."
-        },
-        failurePattern: {
-          type: "string",
-          enum: ["none", "semantic_miss", "tool_mismatch", "tool_contract", "tool_policy", "weak_evidence", "premature_answer", "parse_failure", "unknown"],
-          description: "Identified failure pattern if the step did not fully succeed."
-        },
-        insightValue: {
-          type: "string",
-          enum: ["low", "medium", "high"],
-          description: "Business insight value of the result. low = all values nearly identical (flat metric), medium = some variation exists, high = clear pattern or outlier visible."
-        }
-      },
-      required: ["goalMatch", "evidenceQuality", "toolFit", "repeatRisk", "completionReadiness", "failurePattern"]
-    },
-    finalReadiness: {
-      type: "string",
-      enum: ["ready", "needs_response", "partial_only", "not_ready"],
-      description: "Overall readiness to finalize the task after this step."
-    },
-    recommendedNextMode: {
-      type: "string",
-      enum: ["accept", "retry", "clarify", "fallback_answer", "repair", "replan", "stop"],
-      description: "Recommended next action mode. May differ from decision when richer recovery is available."
+const runStreamingProseResponse = async (opts) => {
+  const { model, messages, store, abortSignal, activityTimeoutMs } = opts;
+  const streamMessages = [
+    ...messages,
+    {
+      role: "user",
+      content: 'IMPORTANT: For this response only, reply in plain prose text. Do NOT wrap your response in JSON, do NOT use the action envelope format, do NOT include "type" or "thought" fields. Just write your answer naturally as a data analyst assistant.'
     }
-  },
-  required: ["decision", "reason"]
+  ];
+  const stream = streamText({
+    model,
+    messages: streamMessages,
+    abortSignal
+  });
+  const { promise, signalActivity } = raceWithActivityTimeout(
+    (async () => {
+      let accumulated = "";
+      let formatDetected = false;
+      let isProse = false;
+      for await (const part of stream.fullStream) {
+        signalActivity();
+        if (part.type === "text-delta") {
+          accumulated += part.text;
+          if (!formatDetected) {
+            const trimmed = accumulated.trimStart();
+            if (trimmed.length > 0) {
+              isProse = trimmed[0] !== "{" && trimmed[0] !== "[";
+              formatDetected = true;
+            }
+          }
+          if (isProse) {
+            store.getState().setStreamingMessage(accumulated);
+          }
+        }
+      }
+      const [text, finishReason] = await Promise.all([
+        stream.text,
+        stream.finishReason
+      ]);
+      return {
+        text: text || accumulated,
+        finishReason,
+        wasStreamed: isProse
+      };
+    })(),
+    activityTimeoutMs
+  );
+  try {
+    const result = await promise;
+    return result;
+  } catch (error) {
+    store.getState().clearStreamingMessage();
+    throw error;
+  }
 };
 const DETERMINISTIC_ACCEPT_SCORECARD = {
   goalMatch: "high",
@@ -49544,10 +48895,10 @@ const DETERMINISTIC_ACCEPT_SCORECARD = {
 const tryDeterministicEvaluation = (input) => {
   var _a, _b, _c, _d, _e;
   const { action, observation, runtimeStepContract } = input;
-  if (action.type === "assistant_message" && runtimeStepContract.completionMode === "final_response" && runtimeStepContract.allowAssistantResponse === true) {
+  if (action.type === "assistant_message" && runtimeStepContract.allowAssistantResponse === true) {
     return {
       decision: "accept",
-      reason: "Deterministic accept: assistant_message in final_response mode with explicit permission.",
+      reason: "Deterministic accept: assistant_message with explicit permission.",
       isFinalEnough: true,
       scorecard: DETERMINISTIC_ACCEPT_SCORECARD,
       finalReadiness: "ready",
@@ -49629,11 +48980,42 @@ const formatQualityContext = (observation, artifacts) => {
   }
   return lines.length > 0 ? lines.join("\n") : "No quality assessment available for this step.";
 };
+const truncateArtifactRows = (artifacts) => {
+  const clone = { ...artifacts };
+  const adq = clone.activeDataQuery;
+  if ((adq == null ? void 0 : adq.result) && typeof adq.result === "object") {
+    const result = adq.result;
+    if (Array.isArray(result.rows) && result.rows.length > CONTEXT_ARTIFACT_PREVIEW_ROWS) {
+      clone.activeDataQuery = {
+        ...adq,
+        result: {
+          ...result,
+          rows: result.rows.slice(0, CONTEXT_ARTIFACT_PREVIEW_ROWS),
+          _truncatedFrom: result.rows.length
+        }
+      };
+    }
+  }
+  for (const key of ["rows", "aggregatedData"]) {
+    if (Array.isArray(clone[key]) && clone[key].length > CONTEXT_ARTIFACT_PREVIEW_ROWS) {
+      const original = clone[key];
+      clone[key] = original.slice(0, CONTEXT_ARTIFACT_PREVIEW_ROWS);
+      clone[`_${key}TruncatedFrom`] = original.length;
+    }
+  }
+  return clone;
+};
 const summarizeArtifacts = (artifacts) => {
   if (!artifacts || Object.keys(artifacts).length === 0) {
     return "No artifacts were returned.";
   }
-  return stringifyCompact(artifacts);
+  const truncated = truncateArtifactRows(artifacts);
+  const serialized = stringifyCompact(truncated);
+  if (serialized.length <= CONTEXT_ARTIFACT_SUMMARY_MAX_CHARS) {
+    return serialized;
+  }
+  return serialized.slice(0, CONTEXT_ARTIFACT_SUMMARY_MAX_CHARS - 40) + `
+... [truncated, ${Object.keys(artifacts).length} artifact keys]`;
 };
 const formatHarnessCoverageContext = (harnessCoverage) => {
   if (!harnessCoverage) {
@@ -49819,6 +49201,18 @@ const evaluateRuntimeStep = async ({
   if (fastPath) {
     console.log(`[RuntimeEvaluator] Deterministic fast-path: ${fastPath.reason}`);
     return fastPath;
+  }
+  if (observation.status === "success" && action.type === "tool_call" && (action.toolName === "card.refine" || action.toolName === "card.delete")) {
+    console.log(`[RuntimeEvaluator] Deterministic fast-path: ${action.toolName} succeeded — accept final, no explanation.`);
+    return {
+      decision: "accept",
+      reason: `${action.toolName} executed successfully.`,
+      scorecard: null,
+      isFinalEnough: true,
+      needsExplanation: false,
+      finalReadiness: null,
+      recommendedNextMode: null
+    };
   }
   if (observation.status === "success" && action.type === "tool_call" && ((_a = action.toolName) == null ? void 0 : _a.startsWith("analysis."))) {
     console.log(`[RuntimeEvaluator] Phase D: Successful execution → fixed accept (tool=${action.toolName})`);
@@ -50035,6 +49429,24 @@ const formatRecentAcceptedCards = (analysisCards, limit = 5) => {
   }
   return lines.join("\n");
 };
+const formatMentionedCards = (message, analysisCards) => {
+  var _a, _b, _c, _d, _e;
+  const cardIds = extractMentionedCardIds(message);
+  if (cardIds.length === 0) return null;
+  const lines = ["User Referenced Cards (via @mention — act on these specifically):"];
+  for (const id of cardIds) {
+    const card = analysisCards.find((c) => c.id === id);
+    if (!card) continue;
+    const title = ((_a = card.plan) == null ? void 0 : _a.title) ?? "(untitled)";
+    const groupBy = ((_b = card.plan) == null ? void 0 : _b.groupByColumn) ?? "—";
+    const valueCol = ((_c = card.plan) == null ? void 0 : _c.valueColumn) ?? "—";
+    const agg = ((_d = card.plan) == null ? void 0 : _d.aggregation) ?? "—";
+    const chart = card.displayChartType ?? "—";
+    const rows = ((_e = card.aggregatedData) == null ? void 0 : _e.length) ?? 0;
+    lines.push(`- [${id}] ${title} | chartType=${chart} | groupBy=${groupBy} | value=${valueCol} | agg=${agg} | ${rows} rows`);
+  }
+  return lines.length > 1 ? lines.join("\n") : null;
+};
 const formatHarnessCoverage = (harnessCoverage) => {
   if (!harnessCoverage) {
     return null;
@@ -50157,6 +49569,10 @@ ${harnessContext}`);
     sessionGoalParts.push(`Analysis Steering:
 ${steeringContext}`);
   }
+  const mentionedCardsContext = formatMentionedCards(message, state.analysisCards ?? []);
+  if (mentionedCardsContext) {
+    sessionGoalParts.push(mentionedCardsContext);
+  }
   const recentCardsContext = formatRecentAcceptedCards(state.analysisCards ?? []);
   if (recentCardsContext) {
     sessionGoalParts.push(recentCardsContext);
@@ -50205,110 +49621,6 @@ ${steeringContext}`);
     observeContextSections ?? null,
     preSelectedTool ?? null
   );
-};
-const MAX_QUEUED_AGENT_RUNS_PER_SESSION = AGENT_MAX_QUEUED_RUNS_PER_SESSION;
-const createQueueId = () => createId("queued-agent-run");
-const getSessionQueue = (store) => {
-  const state = store.getState();
-  return (state.queuedAgentRuns ?? []).filter((run) => run.sessionId === state.sessionId).sort((left, right) => left.enqueuedAt.getTime() - right.enqueuedAt.getTime());
-};
-const enqueueAgentRun = (store, message) => {
-  const state = store.getState();
-  const sessionQueue = getSessionQueue(store);
-  const activeTurn = state.activeTurn;
-  if (sessionQueue.length >= MAX_QUEUED_AGENT_RUNS_PER_SESSION) {
-    const runId = createQueueId();
-    const reason = "queue_overflow";
-    const visibleMessage = "Another agent run is already active and the runtime queue is full. Please wait for queued work to finish before sending more requests.";
-    store.setState((prev) => ({
-      chatHistory: [
-        ...prev.chatHistory,
-        createChatMessage({
-          sender: "ai",
-          text: visibleMessage,
-          timestamp: /* @__PURE__ */ new Date(),
-          type: "ai_message",
-          isError: true
-        })
-      ]
-    }));
-    const logTelemetryEvent = state.logTelemetryEvent;
-    if (typeof logTelemetryEvent === "function") {
-      logTelemetryEvent({
-        stage: "chat",
-        responseType: "runtime_queue_overflow",
-        detail: visibleMessage,
-        meta: {
-          sessionQueueLength: sessionQueue.length,
-          activeTurnId: (activeTurn == null ? void 0 : activeTurn.turnId) ?? null
-        }
-      });
-    }
-    return {
-      queued: false,
-      overflowOutcome: {
-        runId,
-        turnId: (activeTurn == null ? void 0 : activeTurn.turnId) ?? null,
-        sessionId: state.sessionId,
-        outcomeKind: "blocked",
-        lifecycleState: "failed",
-        stage: "queued",
-        reason,
-        retryable: false,
-        eventType: "turn_blocked",
-        eventMessage: visibleMessage,
-        eventDetail: {
-          queueOverflow: true,
-          sessionQueueLength: sessionQueue.length,
-          activeTurnId: (activeTurn == null ? void 0 : activeTurn.turnId) ?? null
-        }
-      },
-      overflowRecord: {
-        runId,
-        turnId: null,
-        sessionId: state.sessionId,
-        userMessage: message,
-        lifecycleState: "failed",
-        outcomeKind: "blocked",
-        reason,
-        retryCount: 0,
-        toolSequence: [],
-        finalObservationSummary: visibleMessage,
-        createdAt: /* @__PURE__ */ new Date()
-      }
-    };
-  }
-  const queueEntry = {
-    queueId: createQueueId(),
-    sessionId: state.sessionId,
-    message,
-    enqueuedAt: /* @__PURE__ */ new Date(),
-    source: "chat"
-  };
-  state.enqueueAgentRun(queueEntry);
-  recordRuntimeEvent(store, {
-    runId: queueEntry.queueId,
-    turnId: activeTurn == null ? void 0 : activeTurn.turnId,
-    type: "turn_queued",
-    stage: "queued",
-    reason: "active_turn_running",
-    retryable: true,
-    message: "Queued agent run because another run is already executing.",
-    detail: {
-      queueId: queueEntry.queueId,
-      source: queueEntry.source,
-      activeTurnId: (activeTurn == null ? void 0 : activeTurn.turnId) ?? null,
-      sessionQueueLength: sessionQueue.length + 1
-    }
-  });
-  return { queued: true, queueEntry };
-};
-const takeNextQueuedAgentRun = (store) => {
-  const nextQueuedRun = getSessionQueue(store)[0] ?? null;
-  if (!nextQueuedRun) {
-    return null;
-  }
-  return store.getState().dequeueQueuedAgentRun(nextQueuedRun.queueId);
 };
 const cloneSnapshotValue = (value) => {
   if (value === null || value === void 0) {
@@ -50415,89 +49727,6 @@ const recordStepOutcome = (store, turnId, runId, stepId, resultMessage, observat
       source: "runtime_observation"
     })
   });
-};
-const complexTaskKeywords = ["analyze", "chart", "clean", "group", "aggregate", "plan", "分析", "图表", "清洗", "分组", "聚合", "计划"];
-const getModelForTask = (prompt, settings) => {
-  const lowerPrompt = prompt.toLowerCase();
-  const isComplex = complexTaskKeywords.some((keyword) => lowerPrompt.includes(keyword));
-  return isComplex ? settings.complexModel : settings.simpleModel;
-};
-const buildCancellationObservation = () => buildObservationFromError(
-  null,
-  RUNTIME_TURN_ABORT_MESSAGE,
-  {
-    code: "cancelled",
-    retryHint: "Start a new request when you are ready to continue.",
-    status: "blocked"
-  }
-);
-const isCancellationRequested = (store, turnId) => store.getState().cancelRequestedTurnId === turnId;
-const getRemainingStepSlots = (turn) => Math.max(0, turn.budgetStatus.maxSteps - turn.budgetStatus.stepsUsed);
-const getRequiredStepSlots = (action, runtimeStepContract) => {
-  if (action.type === "assistant_message") {
-    return 1;
-  }
-  if (action.toolName === "conversation.request_clarification") {
-    return 1;
-  }
-  if (runtimeStepContract.completionMode === "direct_completion") {
-    return 1;
-  }
-  if (runtimeStepContract.taskMode === "derive_metric" && !runtimeStepContract.allowAssistantResponse) {
-    return 1;
-  }
-  return 2;
-};
-const buildForbiddenActionObservation = (action, runtimeStepContract) => {
-  var _a, _b;
-  const toolName = action.type === "tool_call" ? action.toolName : "assistant_message";
-  const allowedToolNames = runtimeStepContract.allowedToolNames ?? [];
-  const forbiddenToolNames = ((_a = runtimeStepContract.recoveryDirective) == null ? void 0 : _a.forbiddenToolNames) ?? [];
-  const preferredToolNames = ((_b = runtimeStepContract.recoveryDirective) == null ? void 0 : _b.preferredToolNames) ?? [];
-  const forbiddenByRecovery = action.type === "tool_call" && forbiddenToolNames.includes(action.toolName);
-  const preferredHint = preferredToolNames.length > 0 ? ` Prefer ${preferredToolNames.join(", ")} next.` : "";
-  return buildObservationFromError(action, forbiddenByRecovery ? `Tool "${toolName}" is forbidden by the current recovery directive.` : `Tool "${toolName}" is not allowed for this runtime step.`, {
-    code: "blocked_tool",
-    retryHint: `Do not choose that tool again. Allowed tool calls this step: ${allowedToolNames.join(", ") || "none"}.${preferredHint}`.trim(),
-    status: "blocked",
-    detail: {
-      source: forbiddenByRecovery ? "recovery_directive" : "runtime_step_contract",
-      allowedToolNames,
-      forbiddenToolNames,
-      preferredToolNames,
-      recoveryDirective: runtimeStepContract.recoveryDirective ?? null
-    }
-  });
-};
-const PROVIDER_MODEL_CALL_TIMEOUT_MS = 6e4;
-class ProviderTimeoutError extends Error {
-  constructor(ms) {
-    super(`Provider model call timed out after ${ms}ms`);
-    this.timeoutReason = "model_call_timeout";
-    this.name = "ProviderTimeoutError";
-    this.timeoutMs = ms;
-  }
-}
-const isProviderTimeoutError = (error) => error instanceof ProviderTimeoutError;
-const raceWithModelTimeout = (promise, timeoutMs) => {
-  let timeoutHandle;
-  const timeoutPromise = new Promise((_, reject) => {
-    timeoutHandle = setTimeout(() => reject(new ProviderTimeoutError(timeoutMs)), timeoutMs);
-  });
-  return Promise.race([promise, timeoutPromise]).finally(() => {
-    clearTimeout(timeoutHandle);
-  });
-};
-const scheduleQueuedRunDrain = (store, runAgentTurnFn) => {
-  const activeTurn = store.getState().activeTurn;
-  if ((activeTurn == null ? void 0 : activeTurn.status) === "running") {
-    return;
-  }
-  const nextQueuedRun = takeNextQueuedAgentRun(store);
-  if (!nextQueuedRun) {
-    return;
-  }
-  void Promise.resolve().then(() => runAgentTurnFn(nextQueuedRun.message, store));
 };
 const validateActionBeforeExecution = (params) => {
   var _a;
@@ -50774,8 +50003,9 @@ const runAgentTurn = async (message, store, intentFindings, queryUnderstandingAr
   });
   let pendingMutationRollbackSnapshot = null;
   setActiveTurn(turn);
-  const syncTurnContractState = (nextTurn, nextContract, blockedReason) => {
+  const syncTurnContractState = (nextTurn, nextContract, blockedReason, clearRecovery) => {
     var _a2, _b2, _c2, _d2, _e2, _f2;
+    const isCleanSlate = !!clearRecovery && !blockedReason;
     const updatedTurn = withRuntimeContractState(nextTurn, {
       runtimeCommitment: nextContract.taskCommitment ?? nextTurn.runtimeCommitment ?? null,
       recoveryState: {
@@ -50784,9 +50014,9 @@ const runAgentTurn = async (message, store, intentFindings, queryUnderstandingAr
           sameQuestionFingerprint: null,
           bestEffortConsumed: false
         },
-        recoveryDirective: nextContract.recoveryDirective ?? ((_b2 = nextTurn.recoveryState) == null ? void 0 : _b2.recoveryDirective) ?? null,
-        lastBlockedReason: blockedReason ?? ((_c2 = nextTurn.recoveryState) == null ? void 0 : _c2.lastBlockedReason) ?? null,
-        lastDeniedToolName: ((_e2 = (_d2 = nextContract.recoveryDirective) == null ? void 0 : _d2.forbiddenToolNames) == null ? void 0 : _e2[0]) ?? ((_f2 = nextTurn.recoveryState) == null ? void 0 : _f2.lastDeniedToolName) ?? null
+        recoveryDirective: isCleanSlate ? nextContract.recoveryDirective ?? null : nextContract.recoveryDirective ?? ((_b2 = nextTurn.recoveryState) == null ? void 0 : _b2.recoveryDirective) ?? null,
+        lastBlockedReason: isCleanSlate ? null : blockedReason ?? ((_c2 = nextTurn.recoveryState) == null ? void 0 : _c2.lastBlockedReason) ?? null,
+        lastDeniedToolName: isCleanSlate ? null : ((_e2 = (_d2 = nextContract.recoveryDirective) == null ? void 0 : _d2.forbiddenToolNames) == null ? void 0 : _e2[0]) ?? ((_f2 = nextTurn.recoveryState) == null ? void 0 : _f2.lastDeniedToolName) ?? null
       }
     });
     setActiveTurn(updatedTurn);
@@ -50912,47 +50142,111 @@ const runAgentTurn = async (message, store, intentFindings, queryUnderstandingAr
         setActiveTurn(turn);
         const { model, modelId } = createProviderModel(settings, modelForThisTask);
         let preSelectedTool = null;
+        if (turn.steps.length === 0 && extractMentionedCardIds(message).length > 0) {
+          const hasDeleteIntent = /\b(delete|remove|drop|discard|get rid of)\b/i.test(message);
+          const hasModifyIntent = /\b(rewrite|update|change|modify|edit|amend|replace|revise|focus|improve)\b/i.test(message);
+          if (hasDeleteIntent) {
+            preSelectedTool = "card.delete";
+          } else if (hasModifyIntent) {
+            preSelectedTool = "card.refine";
+          }
+        }
         const baseCompactionMode = useCompactContext ? "overflow_retry" : "normal";
         useCompactContext = false;
-        const response = await raceWithModelTimeout(
-          runWithOverflowCompaction({
-            provider: settings.provider,
+        const shouldStreamFirst = turn.steps.length === 0 && runtimeStepContract.allowAssistantResponse === true;
+        let response;
+        if (shouldStreamFirst) {
+          const request = await buildRuntimeChatRequest(
+            message,
+            store,
+            settings,
+            runtimeFeedback,
+            runtimeStepContract,
+            modelId,
+            "normal",
+            observeContextSections,
+            preSelectedTool
+          );
+          throwIfAborted(abortSignal);
+          const streamResult = await runStreamingProseResponse({
+            model,
+            messages: request.messages,
+            store,
             abortSignal,
-            execute: async (compactionMode) => {
-              const effectiveMode = baseCompactionMode === "overflow_retry" ? "overflow_retry" : compactionMode;
-              throwIfAborted(abortSignal);
-              const request = await buildRuntimeChatRequest(
-                message,
-                store,
-                settings,
-                runtimeFeedback,
-                runtimeStepContract,
-                modelId,
-                effectiveMode,
-                observeContextSections,
-                preSelectedTool
-              );
-              throwIfAborted(abortSignal);
-              const fallback = createFallbackProviderModel(settings, modelId);
-              return runChatCompletion({
-                model,
-                provider: settings.provider,
-                messages: request.messages,
-                responseSchema: request.responseSchema,
-                stream: request.stream,
-                abortSignal,
-                fallbackModel: fallback == null ? void 0 : fallback.model,
-                fallbackModelId: fallback == null ? void 0 : fallback.modelId
-                // NOTE: onTextChunk is NOT wired here because all runtime
-                // loop responses are structured JSON (both tool_call and
-                // assistant_message are wrapped in an action envelope).
-                // Streaming raw JSON to the user is not useful.
-                // Future: stream from a dedicated prose-generation path.
-              });
-            }
-          }),
-          PROVIDER_MODEL_CALL_TIMEOUT_MS
-        );
+            activityTimeoutMs: PROVIDER_MODEL_CALL_TIMEOUT_MS
+          });
+          if (streamResult.wasStreamed) {
+            const syntheticJson = JSON.stringify({
+              action: {
+                type: "assistant_message",
+                message: streamResult.text || "Analysis complete.",
+                thought: "Streamed final response."
+              }
+            });
+            response = {
+              content: syntheticJson,
+              object: null,
+              stopReason: streamResult.finishReason
+            };
+          } else {
+            response = {
+              content: streamResult.text,
+              object: null,
+              stopReason: streamResult.finishReason
+            };
+          }
+        } else {
+          const { promise: timedPromise, signalActivity } = raceWithActivityTimeout(
+            runWithOverflowCompaction({
+              provider: settings.provider,
+              abortSignal,
+              execute: async (compactionMode) => {
+                var _a2, _b2;
+                const effectiveMode = baseCompactionMode === "overflow_retry" ? "overflow_retry" : compactionMode;
+                throwIfAborted(abortSignal);
+                if (effectiveMode === "overflow_retry" && ((_b2 = (_a2 = runtimeStepContract.recoveryDirective) == null ? void 0 : _a2.forbiddenToolNames) == null ? void 0 : _b2.length)) {
+                  runtimeStepContract = {
+                    ...runtimeStepContract,
+                    recoveryDirective: {
+                      ...runtimeStepContract.recoveryDirective,
+                      forbiddenToolNames: []
+                    }
+                  };
+                }
+                const request = await buildRuntimeChatRequest(
+                  message,
+                  store,
+                  settings,
+                  runtimeFeedback,
+                  runtimeStepContract,
+                  modelId,
+                  effectiveMode,
+                  observeContextSections,
+                  preSelectedTool
+                );
+                throwIfAborted(abortSignal);
+                const fallback = createFallbackProviderModel(settings, modelId);
+                return runChatCompletion({
+                  model,
+                  provider: settings.provider,
+                  messages: request.messages,
+                  responseSchema: request.responseSchema,
+                  stream: request.stream,
+                  abortSignal,
+                  fallbackModel: fallback == null ? void 0 : fallback.model,
+                  fallbackModelId: fallback == null ? void 0 : fallback.modelId,
+                  // NOTE: onTextChunk is NOT wired here because all runtime
+                  // loop responses are structured JSON (both tool_call and
+                  // assistant_message are wrapped in an action envelope).
+                  // Streaming prose uses the dedicated path above.
+                  onActivity: signalActivity
+                });
+              }
+            }),
+            PROVIDER_MODEL_CALL_TIMEOUT_MS
+          );
+          response = await timedPromise;
+        }
         if (response.usedFallbackModel) {
           console.warn(`[RuntimeLoop] Response served by fallback model: "${response.usedFallbackModel}"`);
           recordRuntimeEvent(store, {
@@ -51198,12 +50492,12 @@ const runAgentTurn = async (message, store, intentFindings, queryUnderstandingAr
               }
             }
           }
-          const decideDirectives = runDecideHarness({
-            action,
-            runtimeStepContract,
-            sourceColumnNames,
-            activeQueryColumns
-          });
+          const decideDirectives = runHarnessGuarded(
+            "DecideHarness",
+            { verdict: "allow", blockReason: null, retryHint: null, preferredNextMode: null, contractOverride: null, findings: null },
+            () => runDecideHarness({ action, runtimeStepContract, sourceColumnNames, activeQueryColumns }),
+            store
+          );
           if (decideDirectives.verdict === "hard_block") {
             recordRuntimeEvent(store, {
               runId: turn.runId,
@@ -51540,13 +50834,13 @@ const runAgentTurn = async (message, store, intentFindings, queryUnderstandingAr
         }
         if (evaluation.decision === "accept") {
           const isNonDataAction = action.type === "assistant_message" || ((_r = action.toolName) == null ? void 0 : _r.startsWith("conversation."));
-          const evaluateDirectives = isNonDataAction ? { blockCardCreation: false, blockCardReason: null, retryWithCorrection: null, feedbackForNextObserve: "", qualityVerdict: "useful", confidenceGate: "pass" } : runEvaluateHarness({
-            action,
-            result,
-            observation,
-            runtimeStepContract,
-            scorecard: evaluation.scorecard ?? null
-          });
+          const evaluateDefault = { blockCardCreation: false, blockCardReason: null, retryWithCorrection: null, feedbackForNextObserve: "", qualityVerdict: "useful", confidenceGate: "pass" };
+          const evaluateDirectives = isNonDataAction ? evaluateDefault : runHarnessGuarded(
+            "EvaluateHarness",
+            evaluateDefault,
+            () => runEvaluateHarness({ action, result, observation, runtimeStepContract, scorecard: evaluation.scorecard ?? null }),
+            store
+          );
           if (evaluateDirectives.blockCardCreation && action.type === "tool_call" && ((_s = action.toolName) == null ? void 0 : _s.startsWith("analysis."))) {
             recordRuntimeEvent(store, {
               runId: turn.runId,
@@ -51565,13 +50859,13 @@ const runAgentTurn = async (message, store, intentFindings, queryUnderstandingAr
             });
           }
           discardPendingMutationRollbackSnapshot();
-          const answerabilityDirectives = action.type === "tool_call" && action.toolName === "data.query" ? runAnswerabilityHarness({
-            action,
-            result,
-            evaluateDirectives,
-            runtimeStepContract,
-            userMessage: message
-          }) : null;
+          turn = truncateStepResultArtifacts(turn);
+          const answerabilityDirectives = action.type === "tool_call" && action.toolName === "data.query" ? runHarnessGuarded(
+            "AnswerabilityHarness",
+            null,
+            () => runAnswerabilityHarness({ action, result, evaluateDirectives, runtimeStepContract, userMessage: message }),
+            store
+          ) : null;
           if (answerabilityDirectives == null ? void 0 : answerabilityDirectives.contractOverride) {
             runtimeStepContract = {
               ...runtimeStepContract,
@@ -51608,12 +50902,14 @@ const runAgentTurn = async (message, store, intentFindings, queryUnderstandingAr
             store,
             setActiveTurn
           });
-          turn = syncTurnContractState(acceptedResult.turn, acceptedResult.runtimeStepContract);
-          runtimeStepContract = acceptedResult.runtimeStepContract;
           if (acceptedResult.completed) {
+            turn = acceptedResult.turn;
+            runtimeStepContract = acceptedResult.runtimeStepContract;
             shouldDrainQueuedRuns = true;
             return;
           }
+          turn = syncTurnContractState(acceptedResult.turn, acceptedResult.runtimeStepContract, void 0, true);
+          runtimeStepContract = acceptedResult.runtimeStepContract;
           if (action.type === "tool_call" && ((_t = action.toolName) == null ? void 0 : _t.startsWith("analysis.")) && result.status === "success" && !runtimeStepContract.allowAssistantResponse) {
             runtimeStepContract = {
               ...runtimeStepContract,
@@ -51661,31 +50957,41 @@ const runAgentTurn = async (message, store, intentFindings, queryUnderstandingAr
               }
             }
           }
-          const observeDirectives = runObserveHarness({
-            action,
-            observation,
-            evaluateDirectives,
-            priorRuntimeFeedback: presentationFeedback ? `${acceptedResult.runtimeFeedback ?? ""}
+          const observeDirectives = runHarnessGuarded(
+            "ObserveHarness",
+            { enrichedFeedback: "", correctColumnNames: [], warningsForAi: [], shouldIncludeDataSample: false, contextSections: [] },
+            () => runObserveHarness({
+              action,
+              observation,
+              evaluateDirectives,
+              priorRuntimeFeedback: presentationFeedback ? `${acceptedResult.runtimeFeedback ?? ""}
 ${presentationFeedback}`.trim() : acceptedResult.runtimeFeedback,
-            runtimeStepContract,
-            visibleEvidenceSummary: runtimeStepContract.groundedArtifactSummary ?? runtimeStepContract.visibleEvidenceSummary ?? null
-          });
+              runtimeStepContract,
+              visibleEvidenceSummary: runtimeStepContract.groundedArtifactSummary ?? runtimeStepContract.visibleEvidenceSummary ?? null
+            }),
+            store
+          );
           runtimeFeedback = observeDirectives.enrichedFeedback;
           observeContextSections = observeDirectives.contextSections;
-          const orientDirectives = runOrientHarness({
-            observeDirectives,
-            currentContract: runtimeStepContract,
-            action,
-            observation,
-            evaluateDirectives,
-            turn: { steps: (turn.steps ?? []).map((s) => {
-              var _a2, _b2;
-              return {
-                toolName: ((_a2 = s.action) == null ? void 0 : _a2.type) === "tool_call" ? s.action.toolName : (_b2 = s.action) == null ? void 0 : _b2.type,
-                status: s.status
-              };
-            }) }
-          });
+          const orientDirectives = runHarnessGuarded(
+            "OrientHarness",
+            { shouldRebuildContract: false, updatedContract: null, adjustedToolSet: null, aiSituationBrief: "", contractOverrideReason: null },
+            () => runOrientHarness({
+              observeDirectives,
+              currentContract: runtimeStepContract,
+              action,
+              observation,
+              evaluateDirectives,
+              turn: { steps: (turn.steps ?? []).map((s) => {
+                var _a2, _b2;
+                return {
+                  toolName: ((_a2 = s.action) == null ? void 0 : _a2.type) === "tool_call" ? s.action.toolName : (_b2 = s.action) == null ? void 0 : _b2.type,
+                  status: s.status
+                };
+              }) }
+            }),
+            store
+          );
           if (orientDirectives.shouldRebuildContract && orientDirectives.updatedContract) {
             runtimeStepContract = { ...runtimeStepContract, ...orientDirectives.updatedContract };
           }
@@ -51730,6 +51036,7 @@ ${presentationFeedback}`.trim() : acceptedResult.runtimeFeedback,
           continue;
         }
         restorePendingMutationRollbackSnapshot();
+        turn = truncateStepResultArtifacts(turn);
         if (observation.status === "success") {
           console.log(
             `[RuntimeLoop] Phase D: Evaluator said ${evaluation.decision} but tool succeeded. Treating as advisory, not retrying. Reason: ${evaluation.reason}`
@@ -51757,12 +51064,14 @@ ${presentationFeedback}`.trim() : acceptedResult.runtimeFeedback,
             runtimeStepContract,
             stepId: currentStep == null ? void 0 : currentStep.stepId
           });
-          turn = syncTurnContractState(acceptResult.turn, acceptResult.runtimeStepContract);
-          runtimeStepContract = acceptResult.runtimeStepContract;
           if (acceptResult.completed) {
+            turn = acceptResult.turn;
+            runtimeStepContract = acceptResult.runtimeStepContract;
             shouldDrainQueuedRuns = true;
             return;
           }
+          turn = syncTurnContractState(acceptResult.turn, acceptResult.runtimeStepContract, void 0, true);
+          runtimeStepContract = acceptResult.runtimeStepContract;
           continue;
         }
         const effectiveClarificationCode = evaluation.decision === "clarify" || evaluation.decision === "retry" && evaluation.recommendedNextMode === "clarify" ? "clarification_needed" : "semantic_miss";
@@ -51800,6 +51109,7 @@ ${presentationFeedback}`.trim() : acceptedResult.runtimeFeedback,
           return;
         }
       } catch (error) {
+        store.getState().clearStreamingMessage();
         if (isRuntimeAbortError(error, abortSignal)) {
           restorePendingMutationRollbackSnapshot();
           stopCancelledTurn((_x = turn.steps.at(-1)) == null ? void 0 : _x.stepId, "transport_abort", "provider_chat_completion", "propagated");
@@ -52415,7 +51725,7 @@ const projectToIntentFindings = (artifact) => ({
   classifiedBy: artifact.classifiedBy
 });
 const LOG_PREFIX$1 = "[IntentClassifier]";
-const INTENT_AI_TIMEOUT_MS = 8e3;
+const INTENT_AI_TIMEOUT_MS = 3e4;
 const parseAiArtifact = (text) => {
   const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
   try {
@@ -52530,19 +51840,31 @@ const classifyWithAiRich = async (message, settings, columnSummary, abortSignal)
   try {
     const { model, modelId } = createProviderModel(settings, settings.simpleModel);
     const prompt = buildQueryUnderstandingPrompt(message, columnSummary);
-    const callModel = (m) => Promise.race([
-      generateText({
+    const callModel = async (m) => {
+      const stream = streamText({
         model: m,
         messages: [
           { role: "system", content: prompt.system },
           { role: "user", content: prompt.user }
         ],
         abortSignal
-      }),
-      new Promise(
-        (_, reject) => setTimeout(() => reject(new Error("intent_classification_timeout")), INTENT_AI_TIMEOUT_MS)
-      )
-    ]);
+      });
+      const { promise, signalActivity } = raceWithActivityTimeout(
+        (async () => {
+          for await (const part of stream.fullStream) {
+            signalActivity();
+            void part;
+          }
+          const [text, finishReason] = await Promise.all([
+            stream.text,
+            stream.finishReason
+          ]);
+          return { text, finishReason };
+        })(),
+        INTENT_AI_TIMEOUT_MS
+      );
+      return promise;
+    };
     let result;
     let usedModelId = modelId;
     try {
@@ -52818,6 +52140,7 @@ const orchestrateChatResponse = async (message, store) => {
     return;
   }
   const columnSummary = buildColumnSummaryForClassifier(message, getState().columnProfiles);
+  getState().addProgress(getTranslation("chat_classifying_intent", settings.language));
   const routingDirective = await classifyChatIntent(
     message,
     settings,
@@ -53927,263 +53250,256 @@ const selectDebugOperatorSummary = (state) => {
   };
 };
 export {
-  evaluateAutoAnalysisCards as $,
-  recordRuntimeEvent as A,
-  buildEvidenceSignature as B,
-  buildPlanOnlySemanticSignature as C,
+  CONTEXT_CHAT_SOFT_BUDGET_CAP as $,
+  evaluateEvidenceValue as A,
+  executePresentationPlanAndCreateCard as B,
+  findTemplateMatches as C,
   vectorStore as D,
-  executeEvidenceQuery as E,
-  buildEvidenceResultSummary as F,
-  callAiEvidenceEvaluation as G,
-  evaluateEvidenceValue as H,
-  executePresentationPlanAndCreateCard as I,
-  findTemplateMatches as J,
-  resolveEffectiveReportContext as K,
-  getSemanticSampleRows as L,
-  formatPatternPreferences as M,
-  mapGoalCandidatesToSuggestedActions as N,
-  getTranslation as O,
-  buildAnalysisRankingHints as P,
-  createChatMessage as Q,
-  PROVIDER_GEMINI_CONTEXT_WINDOW as R,
-  PROVIDER_MIN_KEEP_RECENT_TOKENS as S,
-  PROVIDER_KEEP_RECENT_RATIO as T,
-  PROVIDER_MIN_RESERVE_TOKENS as U,
-  PROVIDER_RESERVE_RATIO as V,
-  PROVIDER_GPT_CONTEXT_WINDOW as W,
-  getForceFallbackModel as X,
-  safeJsonStringify as Y,
-  resolveLongSessionContextPolicy as Z,
-  getDataQueryTraceLabel as _,
-  createAnalysisTopicsSchema as a,
-  buildDataPreparationWorkflowBundle as a$,
-  resolveToolOutputCutoff as a0,
-  CONTEXT_CHAT_SOFT_BUDGET_CAP as a1,
-  CONTEXT_PLANNER_SOFT_BUDGET_CAP as a2,
-  CONTEXT_SUMMARY_SOFT_BUDGET_CAP as a3,
-  CONTEXT_RUNTIME_EVAL_SOFT_BUDGET_CAP as a4,
-  CONTEXT_SUMMARY_TRIGGER_LENGTH as a5,
-  CONTEXT_SUMMARY_REFRESH_DELTA as a6,
-  __vitePreload as a7,
-  CONTEXT_COMPACTION_SUMMARY_MAX_PARTS as a8,
-  CONTEXT_COMPACTION_SUMMARY_OVERHEAD_TOKENS as a9,
-  resolveAllowedTools as aA,
-  buildToolAvailabilityContext as aB,
-  buildBuiltinToolRegistry as aC,
-  ALL_RUNTIME_TOOLS as aD,
-  formatAnalystCapabilitySelection as aE,
-  formatDatasetSemanticsForPrompt as aF,
-  formatAnalysisIntentBrief as aG,
-  formatReportContextForPrompt as aH,
-  formatRuntimeStepContract as aI,
-  createChatDecisionSchema as aJ,
-  filterFunctionSchema as aK,
-  emitSilentFailure as aL,
-  analysisGoalCandidateSchema as aM,
-  proactiveInsightSchema as aN,
-  normalizeToolAvailabilityContext as aO,
-  getWorkspaceRuleViolation$1 as aP,
-  buildSemanticDatasetVersion as aQ,
-  datasetSemanticAnnotationSchema as aR,
-  sanitizeDatasetSemanticSnapshot as aS,
-  inferTabularShapeContext as aT,
-  detectTabularRowRole as aU,
-  cardEnhancementSuggestionsSchema as aV,
-  robustParseFloat as aW,
-  saveReportArtifactRecord as aX,
-  getReportArtifactRecord as aY,
-  classifyAnalysisColumnRole as aZ,
-  buildCleaningInspectionBundle as a_,
-  CONTEXT_COMPACTION_SAFETY_MARGIN as aa,
-  buildMergedBoundaryHeaders as ab,
-  reportStructureProposalSchema as ac,
-  normalizeReportCellText as ad,
-  intakeStructureBoundarySchema as ae,
-  reportContextExtractionSchema as af,
-  sanitizeAiExtractedReportContext as ag,
-  mergeAiExtractedReportContextWithFallback as ah,
-  createFallbackReportContext as ai,
-  applyDataOperations as aj,
-  reconcileAiCleaningStep as ak,
-  isRepeatedAttributeBundleTable as al,
-  ensureStructuralMetadataOutputColumns as am,
-  detectReportShape as an,
-  buildWideReshapeFallbackAction as ao,
-  buildDeterministicCleaningFallbackAction as ap,
-  normalizeUnpivotHierarchyDepthMappings as aq,
-  verifyCleanedDatasetShape as ar,
-  buildReshapeHypotheses as as,
-  getDataPreparationProviderSchema as at,
-  normalizeDataPreparationPlan as au,
-  isWideReportShape as av,
-  createAiCleaningProgramFromPlan as aw,
-  createId as ax,
-  sqlPrecheckAssessmentSchema as ay,
-  buildRuntimeStepContract as az,
+  resolveEffectiveReportContext as E,
+  getSemanticSampleRows as F,
+  formatPatternPreferences as G,
+  mapGoalCandidatesToSuggestedActions as H,
+  getTranslation as I,
+  buildAnalysisRankingHints as J,
+  createChatMessage as K,
+  PROVIDER_MIN_KEEP_RECENT_TOKENS as L,
+  PROVIDER_KEEP_RECENT_RATIO as M,
+  PROVIDER_MIN_RESERVE_TOKENS as N,
+  PROVIDER_RESERVE_RATIO as O,
+  PROVIDER_GEMINI_CONTEXT_WINDOW as P,
+  PROVIDER_GEMMA_CONTEXT_WINDOW as Q,
+  PROVIDER_GPT_CONTEXT_WINDOW as R,
+  getForceFallbackModel as S,
+  raceWithActivityTimeout as T,
+  getDataOperationSchemaForTypes as U,
+  getDataOperationSchema as V,
+  safeJsonStringify as W,
+  resolveLongSessionContextPolicy as X,
+  getDataQueryTraceLabel as Y,
+  evaluateAutoAnalysisCards as Z,
+  resolveToolOutputCutoff as _,
+  formatAnalysisSteeringBundle as a,
+  shouldAllowLogsSurface as a$,
+  CONTEXT_PLANNER_SOFT_BUDGET_CAP as a0,
+  CONTEXT_SUMMARY_SOFT_BUDGET_CAP as a1,
+  CONTEXT_RUNTIME_EVAL_SOFT_BUDGET_CAP as a2,
+  CONTEXT_SUMMARY_TRIGGER_LENGTH as a3,
+  CONTEXT_SUMMARY_REFRESH_DELTA as a4,
+  __vitePreload as a5,
+  CONTEXT_COMPACTION_SUMMARY_MAX_PARTS as a6,
+  CONTEXT_COMPACTION_SUMMARY_OVERHEAD_TOKENS as a7,
+  CONTEXT_COMPACTION_SAFETY_MARGIN as a8,
+  buildMergedBoundaryHeaders as a9,
+  formatReportContextForPrompt as aA,
+  formatRuntimeStepContract as aB,
+  emitSilentFailure as aC,
+  normalizeToolAvailabilityContext as aD,
+  getWorkspaceRuleViolation$1 as aE,
+  buildSemanticDatasetVersion as aF,
+  sanitizeDatasetSemanticSnapshot as aG,
+  inferTabularShapeContext as aH,
+  detectTabularRowRole as aI,
+  robustParseFloat as aJ,
+  saveReportArtifactRecord as aK,
+  getReportArtifactRecord as aL,
+  classifyAnalysisColumnRole as aM,
+  buildCleaningInspectionBundle as aN,
+  buildDataPreparationWorkflowBundle as aO,
+  analyzeDatasetQualityGovernance as aP,
+  attachAutoAnalysisEvaluationToCards as aQ,
+  getTemporalSortTimestamp as aR,
+  hasDuplicateNormalizedBuckets as aS,
+  isSortableSequence as aT,
+  resolveOrdinalIndices as aU,
+  isMonotonicSequence as aV,
+  formatTemporalDisplayValue as aW,
+  getOrdinalSortKey as aX,
+  applyPreFilter as aY,
+  shouldAllowAgentThinkingSurface as aZ,
+  shouldAllowLongTermMemorySurface as a_,
+  normalizeReportCellText as aa,
+  sanitizeAiExtractedReportContext as ab,
+  mergeAiExtractedReportContextWithFallback as ac,
+  createFallbackReportContext as ad,
+  applyDataOperations as ae,
+  reconcileAiCleaningStep as af,
+  isRepeatedAttributeBundleTable as ag,
+  ensureStructuralMetadataOutputColumns as ah,
+  detectReportShape as ai,
+  buildWideReshapeFallbackAction as aj,
+  buildDeterministicCleaningFallbackAction as ak,
+  normalizeUnpivotHierarchyDepthMappings as al,
+  verifyCleanedDatasetShape as am,
+  buildReshapeHypotheses as an,
+  normalizeDataPreparationPlan as ao,
+  isWideReportShape as ap,
+  createAiCleaningProgramFromPlan as aq,
+  createId as ar,
+  buildRuntimeStepContract as as,
+  resolveAllowedTools as at,
+  buildToolAvailabilityContext as au,
+  buildBuiltinToolRegistry as av,
+  ALL_RUNTIME_TOOLS as aw,
+  formatAnalystCapabilitySelection as ax,
+  formatDatasetSemanticsForPrompt as ay,
+  formatAnalysisIntentBrief as az,
   isRuntimeAbortError as b,
-  resolveSuggestedActionPrompt as b$,
-  analyzeDatasetQualityGovernance as b0,
-  attachAutoAnalysisEvaluationToCards as b1,
-  analystMemoSchema as b2,
-  forumSummarySchema as b3,
-  getTemporalSortTimestamp as b4,
-  isSortableSequence as b5,
-  formatTemporalDisplayValue as b6,
-  getOrdinalSortKey as b7,
-  applyPreFilter as b8,
-  shouldAllowAgentThinkingSurface as b9,
-  profileDataWithWorker as bA,
-  createBindingDuckDbSessionStatus as bB,
-  getOriginalData as bC,
-  getAllowedColumns as bD,
-  createProgressMessage as bE,
-  trimProgressMessages as bF,
-  isDuckDbSessionStatusEqual as bG,
-  primeDuckDbDataset as bH,
-  createDuckDbSessionStatusFromBinding as bI,
-  createWorkerDiagnosticsTelemetryReporter as bJ,
-  buildCorrelationFields as bK,
-  toSerializable as bL,
-  getSettings as bM,
-  shouldShowNewSessionButton as bN,
-  shouldShowHistoryButton as bO,
-  shouldShowDatabaseButton as bP,
-  shouldShowWorkflowButton as bQ,
-  shouldShowLogsButton as bR,
-  shouldShowChangeGoalButton as bS,
-  shouldShowAssistantToggleButton as bT,
-  checkStorageHealth as bU,
-  shouldShowAgentThinkingModal as bV,
-  shouldShowLongTermMemory as bW,
-  formatUserError as bX,
-  isEndUserMode as bY,
-  normalizeClarificationRequest as bZ,
-  resolveEffectivePendingClarification as b_,
-  shouldAllowLongTermMemorySurface as ba,
-  shouldAllowLogsSurface as bb,
-  shouldAllowWorkflowSurface as bc,
-  shouldAllowWorkspaceSurface as bd,
-  shouldAllowDatabaseSurface as be,
-  shouldAllowSettingsSurface as bf,
-  getDefaultSettings as bg,
-  normalizeRuntimeAccessControlSettings as bh,
-  normalizeAppLanguage as bi,
-  saveSettings as bj,
-  disposeDuckDbQueryEngine as bk,
-  getReport as bl,
-  CURRENT_SESSION_KEY as bm,
-  saveReport as bn,
-  deleteReport as bo,
-  deleteOriginalData as bp,
-  createIdleDuckDbSessionStatus as bq,
-  normalizeRestoredAppState as br,
-  normalizeRestoredGoalState as bs,
-  appendUnfinishedCleaningNotice as bt,
-  getReportsList as bu,
-  navigateToCard as bv,
-  buildColumnRegistry as bw,
-  buildEffectiveColumnRegistryFromState as bx,
-  duckDbWorkerClient as by,
-  DUCKDB_INIT_TIMEOUT_MS as bz,
+  buildPivotStackedChartState as b$,
+  shouldAllowWorkflowSurface as b0,
+  shouldAllowWorkspaceSurface as b1,
+  shouldAllowDatabaseSurface as b2,
+  shouldAllowSettingsSurface as b3,
+  getDefaultSettings as b4,
+  normalizeRuntimeAccessControlSettings as b5,
+  normalizeAppLanguage as b6,
+  saveSettings as b7,
+  disposeDuckDbQueryEngine as b8,
+  getReport as b9,
+  buildCorrelationFields as bA,
+  toSerializable as bB,
+  getSettings as bC,
+  shouldShowNewSessionButton as bD,
+  shouldShowHistoryButton as bE,
+  shouldShowDatabaseButton as bF,
+  shouldShowWorkflowButton as bG,
+  shouldShowLogsButton as bH,
+  shouldShowChangeGoalButton as bI,
+  shouldShowAssistantToggleButton as bJ,
+  checkStorageHealth as bK,
+  APP_HEADER_HIDE_FOR_CARD_NAVIGATION_EVENT as bL,
+  shouldShowAgentThinkingModal as bM,
+  shouldShowLongTermMemory as bN,
+  formatUserError as bO,
+  isEndUserMode as bP,
+  normalizeClarificationRequest as bQ,
+  resolveEffectivePendingClarification as bR,
+  resolveSuggestedActionPrompt as bS,
+  MAX_TIMELINE_CHAT_MESSAGES as bT,
+  TERMINAL_CHAT_LIFECYCLE_STATES as bU,
+  shouldShowSettingsButton as bV,
+  summarizeDataQualityForEndUser as bW,
+  normalizeCategoryLabel as bX,
+  parseNumericValue as bY,
+  formatAnalysisValue as bZ,
+  applyTopNWithOthers as b_,
+  CURRENT_SESSION_KEY as ba,
+  saveReport as bb,
+  deleteReport as bc,
+  deleteOriginalData as bd,
+  createIdleDuckDbSessionStatus as be,
+  purgeAllStorage as bf,
+  normalizeRestoredAppState as bg,
+  normalizeRestoredGoalState as bh,
+  appendUnfinishedCleaningNotice as bi,
+  getReportsList as bj,
+  navigateToCard as bk,
+  buildColumnRegistry as bl,
+  buildEffectiveColumnRegistryFromState as bm,
+  duckDbWorkerClient as bn,
+  DUCKDB_INIT_TIMEOUT_MS as bo,
+  profileDataWithWorker as bp,
+  createBindingDuckDbSessionStatus as bq,
+  getOriginalData as br,
+  getAllowedColumns as bs,
+  createProgressMessage as bt,
+  trimProgressMessages as bu,
+  isDuckDbSessionStatusEqual as bv,
+  primeDuckDbDataset as bw,
+  createDuckDbSessionStatusFromBinding as bx,
+  createWorkerDiagnosticsTelemetryReporter as by,
+  parseCardMentions as bz,
   createEmptyRuntimeDirectives as c,
-  datasetBinding as c$,
-  MAX_TIMELINE_CHAT_MESSAGES as c0,
-  TERMINAL_CHAT_LIFECYCLE_STATES as c1,
-  shouldShowSettingsButton as c2,
-  normalizeCategoryLabel as c3,
-  parseNumericValue as c4,
-  formatAnalysisValue as c5,
-  applyTopNWithOthers as c6,
-  buildPivotStackedChartState as c7,
-  DEFAULT_STACKED_PIVOT_COLUMN_TOP_N as c8,
-  getBarChartReadabilityHints as c9,
-  summarizeTraceContract as cA,
-  WORKSPACE_QUERY_LIMIT_OPTIONS as cB,
-  DEFAULT_WORKSPACE_QUERY_LIMIT as cC,
-  WORKSPACE_QUERY_TEMPLATE_OPTIONS as cD,
-  createDefaultWorkspaceQueryDrafts as cE,
-  buildWorkspaceBundle as cF,
-  isWorkspaceWritablePath as cG,
-  buildWorkflowSnapshotExport as cH,
-  buildCleaningFailureBundleExport as cI,
-  selectDebugTimelineEntries as cJ,
-  selectDebugFlows as cK,
-  selectRuntimeLogsExport as cL,
-  selectRecentPayloadSnapshotsExport as cM,
-  selectIrDiagnostics as cN,
-  selectPlannerFailureBundle as cO,
-  selectSqlFailureBundle as cP,
-  selectDebugOperatorSummary as cQ,
-  selectAiDebugBundle as cR,
-  workspaceFileUtils as cS,
-  storageService as cT,
-  datasetSemantics as cU,
-  dataOperationRunner as cV,
-  runtimeAbort as cW,
-  runtimeControlPlaneContract as cX,
-  cleaningRunState as cY,
-  vectorMemorySync as cZ,
-  reportStructureState as c_,
-  PIVOT_FOLDED_OTHERS_KEY as ca,
-  collectOrderedColumnNames as cb,
-  getNumericColumns$1 as cc,
-  getAnalysisColumnLabels as cd,
-  formatAnalysisCellValue as ce,
-  getLocalizedText as cf,
-  getAvailableChartTypes as cg,
-  buildStackedPivotChartPlan as ch,
-  getPivotCardQualitySummary as ci,
-  summarizeDataQualityForEndUser as cj,
-  isUsableReportTitle as ck,
-  shouldShowDataWarnings as cl,
-  applySpreadsheetFilterOperation as cm,
-  resolveDatasetBindingTarget as cn,
-  buildDisplayLabelMap as co,
-  getSemanticHiddenRowCount as cp,
-  isPreviewDataQuery as cq,
-  SUPPORTED_APP_LANGUAGES as cr,
-  DEFAULT_MAX_AGENT_TURNS as cs,
-  MAX_MAX_AGENT_TURNS as ct,
-  MIN_MAX_AGENT_TURNS as cu,
-  DEFAULT_TOOL_OUTPUT_CUTOFF as cv,
-  MAX_TOOL_OUTPUT_CUTOFF as cw,
-  MIN_TOOL_OUTPUT_CUTOFF as cx,
-  getStorageEstimate as cy,
-  flushPendingVectorMemoryDocs as cz,
+  dataQueryExecution as c$,
+  DEFAULT_STACKED_PIVOT_COLUMN_TOP_N as c0,
+  getBarChartReadabilityHints as c1,
+  PIVOT_FOLDED_OTHERS_KEY as c2,
+  collectOrderedColumnNames as c3,
+  getNumericColumns$1 as c4,
+  getAnalysisColumnLabels as c5,
+  formatAnalysisCellValue as c6,
+  getLocalizedText as c7,
+  getAvailableChartTypes as c8,
+  buildStackedPivotChartPlan as c9,
+  buildWorkflowSnapshotExport as cA,
+  buildCleaningFailureBundleExport as cB,
+  selectDebugTimelineEntries as cC,
+  selectDebugFlows as cD,
+  selectRuntimeLogsExport as cE,
+  selectRecentPayloadSnapshotsExport as cF,
+  selectIrDiagnostics as cG,
+  selectPlannerFailureBundle as cH,
+  selectSqlFailureBundle as cI,
+  selectDebugOperatorSummary as cJ,
+  selectAiDebugBundle as cK,
+  workspaceFileUtils as cL,
+  storageService as cM,
+  datasetSemantics as cN,
+  dataOperationRunner as cO,
+  runtimeAbort as cP,
+  runtimeControlPlaneContract as cQ,
+  agentMonitor as cR,
+  cleaningRunState as cS,
+  vectorMemorySync as cT,
+  reportStructureState as cU,
+  datasetBinding as cV,
+  reportStructureOrchestrator as cW,
+  autonomousCleaningPipeline as cX,
+  analysisDefaults as cY,
+  analysisDatasetProfiles as cZ,
+  fileOrchestrator as c_,
+  getPivotCardQualitySummary as ca,
+  isUsableReportTitle as cb,
+  shouldShowDataWarnings as cc,
+  applySpreadsheetFilterOperation as cd,
+  resolveDatasetBindingTarget as ce,
+  buildDisplayLabelMap as cf,
+  getSemanticHiddenRowCount as cg,
+  isPreviewDataQuery as ch,
+  SUPPORTED_APP_LANGUAGES as ci,
+  DEFAULT_MAX_AGENT_TURNS as cj,
+  MAX_MAX_AGENT_TURNS as ck,
+  MIN_MAX_AGENT_TURNS as cl,
+  DEFAULT_TOOL_OUTPUT_CUTOFF as cm,
+  MAX_TOOL_OUTPUT_CUTOFF as cn,
+  MIN_TOOL_OUTPUT_CUTOFF as co,
+  getStorageBreakdown as cp,
+  clearAllCacheStorage as cq,
+  clearStore as cr,
+  flushPendingVectorMemoryDocs as cs,
+  summarizeTraceContract as ct,
+  WORKSPACE_QUERY_LIMIT_OPTIONS as cu,
+  DEFAULT_WORKSPACE_QUERY_LIMIT as cv,
+  WORKSPACE_QUERY_TEMPLATE_OPTIONS as cw,
+  createDefaultWorkspaceQueryDrafts as cx,
+  buildWorkspaceBundle as cy,
+  isWorkspaceWritablePath as cz,
   detectQuarterIntent as d,
-  reportStructureOrchestrator as d0,
-  agentMonitor as d1,
-  autonomousCleaningPipeline as d2,
-  analysisDefaults as d3,
-  analysisDatasetProfiles as d4,
-  fileOrchestrator as d5,
-  dataQueryExecution as d6,
-  runtimeClarification as d7,
-  actionHandler as d8,
-  analysisOrchestrator as d9,
-  sessionManager as da,
-  workspaceDataQuery as db,
-  chatOrchestrator as dc,
-  isStructuralMetadataColumn as e,
+  runtimeClarification as d0,
+  actionHandler as d1,
+  analysisOrchestrator as d2,
+  sessionManager as d3,
+  workspaceDataQuery as d4,
+  chatOrchestrator as d5,
+  isProviderTimeoutError as e,
   findMissingQuarterColumns as f,
   isTimeLikeDimensionColumn as g,
-  formatAnalysisSteeringBundle as h,
+  detectPeriodColumnFamilies as h,
   injectDirectivesIntoQueryPlan as i,
-  detectPeriodColumnFamilies as j,
-  compileQueryPlanToDuckDbSql as k,
-  createSqlEvidenceQueryPlanSchema as l,
-  createSqlPresentationPlanSchema as m,
+  compileQueryPlanToDuckDbSql as j,
+  isAggregationType as k,
+  isStructuralMetadataColumn as l,
+  isSequentialDimensionName as m,
   normalizePreFilterOperator as n,
   recommendChartType as o,
-  isSequentialDimensionName as p,
-  resolvePivotDecision as q,
+  emitAgentEvent as p,
+  buildDatasetContext as q,
   robustlyParseJsonObject as r,
-  hasDuplicateNormalizedBuckets as s,
+  buildRuntimeSemanticUnderstanding as s,
   throwIfAborted as t,
-  isMonotonicSequence as u,
-  resolveOrdinalIndices as v,
-  emitAgentEvent as w,
-  buildDatasetContext as x,
-  buildRuntimeSemanticUnderstanding as y,
-  buildAnalysisIntentBrief as z
+  buildAnalysisIntentBrief as u,
+  recordRuntimeEvent as v,
+  buildEvidenceSignature as w,
+  buildPlanOnlySemanticSignature as x,
+  executeEvidenceQuery as y,
+  buildEvidenceResultSummary as z
 };
